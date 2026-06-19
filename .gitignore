@@ -18,6 +18,7 @@ venv/
 *.q4nx
 weights/
 models/
+tools/ref/data/
 
 # Toolchain installs (pinned in docs/toolchain-setup.md instead)
 mlir-aie/
