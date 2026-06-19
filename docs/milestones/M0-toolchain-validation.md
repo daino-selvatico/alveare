@@ -1,6 +1,6 @@
 # M0 — Toolchain validation
 
-**Status: current.** Nothing past this gate is worth starting until it passes.
+**Status: done.** Fully verified on hardware.
 
 ## Goal
 
@@ -48,3 +48,23 @@ We build one of the upstream MLIR-AIE/IRON **example designs** (a vector-add or 
 ## Explicitly NOT in M0
 
 Writing any of our own kernels. M0 is purely "can we build and run *anything* on the NPU." Our first real kernel is M1.
+
+## Results & Verification (2026-06-19)
+
+### 1. Verified Toolchain Versions
+- **Python**: `3.14.6` (Conda env `alveare-aie`)
+- **`mlir_aie`**: `1.3.3.dev9+g8ed2e6b` (Git commit: `8ed2e6b`)
+- **`llvm-aie`** (Peano): `21.0.0.2026061901+a76244b4` (Git commit: `a76244b4`)
+- **Host XRT**: `2.21.75` (`libxrt-npu2` & `libxrt2`)
+- **LLVM Toolchain** (on host): `21.1.8` (provides `llvm-objcopy`)
+
+### 2. Examples Executed & Verified Correct
+- **`00_memcpy`** (Vector Passthrough): Saturation benchmark compiled and ran on NPU.
+  - **Performance**: NPU time: `~2193 us` (Effective bandwidth: `61.20 GB/s`).
+  - **Status**: `PASS!`
+- **`01_SAXPY`** (Vector Compute): $Z = a*X + Y$ ran on a single AIE core and verified against a CPU reference.
+  - **Status**: `PASS!`
+
+### 3. Key Deviations & Resolutions
+- **Python 3.14**: The host system's `libxrt-npu2` package (Ubuntu 26.04) contains `pyxrt` Python bindings compiled specifically for Python 3.14. Running Python 3.12 (as originally planned) was impossible because it was binary-incompatible with the host's `pyxrt.so`. Recreating the conda environment with Python 3.14 resolved the import error.
+- **Host `llvm` installation**: The kernel compilation/renaming step uses `llvm-objcopy` to rename symbols on AIE object files. Host's default GNU `objcopy` fails with AIE object files. Installing `llvm` via apt provided the necessary `llvm-objcopy` binary on the PATH.
