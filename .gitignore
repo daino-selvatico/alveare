@@ -1,0 +1,34 @@
+# Build artifacts
+build/
+*.xclbin
+*.o
+*.elf
+*.bin
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Model weights / large data (commit sources + instructions, not blobs)
+*.gguf
+*.safetensors
+*.q4nx
+weights/
+models/
+
+# Toolchain installs (pinned in docs/toolchain-setup.md instead)
+mlir-aie/
+llvm-aie/
+ironenv/
+
+# Benchmark scratch
+tests/bench/*.raw
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
