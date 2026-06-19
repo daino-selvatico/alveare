@@ -48,16 +48,17 @@ def dequantize_combined(w_combined: np.ndarray) -> np.ndarray:
     """
     N, K_blocks_20 = w_combined.shape
     K_blocks = K_blocks_20 // 20
-    K = K_blocks * 32
     
-    w_q4 = np.empty((N, K_blocks * 16), dtype=np.uint8)
-    scales_bytes = np.empty((N, K_blocks), dtype=np.uint16)
+    # Reshape to (N, K_blocks, 20) to avoid loops
+    w_reshaped = w_combined.reshape(N, K_blocks, 20)
     
-    for b in range(K_blocks):
-        w_q4[:, b*16 : (b+1)*16] = w_combined[:, b*20 : b*20 + 16]
-        scales_bytes[:, b] = w_combined[:, b*20 + 16].astype(np.uint16) | (w_combined[:, b*20 + 17].astype(np.uint16) << 8)
-        
+    # Extract weights: first 16 bytes of each block
+    w_q4 = w_reshaped[:, :, :16].copy().reshape(N, K_blocks * 16)
+    
+    # Extract scales: bytes 16 and 17 of each block
+    scales_bytes = w_reshaped[:, :, 16].astype(np.uint16) | (w_reshaped[:, :, 17].astype(np.uint16) << 8)
     scales = scales_bytes.view(bfloat16)
+    
     return dequantize_q4_0(w_q4, scales)
 
 def gemv_q(w_q4: np.ndarray, scales: np.ndarray, x: np.ndarray) -> np.ndarray:

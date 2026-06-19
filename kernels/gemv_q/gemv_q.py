@@ -43,7 +43,7 @@ def gemv_q_npu(
     x_ty = np.ndarray[(k_tile,), np.dtype[bfloat16]]
     y_ty = np.ndarray[(m,), np.dtype[bfloat16]]
 
-    kernel_flags = [f"-DDIM_M={m}", f"-DDIM_K={k_tile}"]
+    kernel_flags = [f"-DDIM_M={m}", f"-DDIM_K={k_tile}", "-O3"]
 
     # Custom AIE Kernels
     gemv_kernel = ExternalFunction(

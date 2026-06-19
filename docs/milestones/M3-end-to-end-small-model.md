@@ -31,3 +31,34 @@ Not benchmark-quality — just: given a simple prompt, the small model produces 
 ## After M3
 
 This is the first genuinely *usable* (if slow) milestone — an open NPU LLM runtime that serves a real model. Everything after is scale + speed (M4).
+ 
+## Milestone M3 Verification Notes
+ 
+### What Works
+- Serving Llama-3.2-1B-Instruct end-to-end on the NPU (int4 weights, bfloat16 activations) via an OpenAI-compatible FastAPI/Uvicorn server.
+- Routing requests successfully using the lemonade router based on prompt keywords (matched under the `npu-chat` route).
+- Compile-once-reuse JIT caching (exactly 1 hardware context created for `gemv_q`, no compile steps after warmup).
+ 
+### Side-by-Side Greedy Continuation (from tests/generation_test_results.txt)
+- **Prompt:** `capital of France is`
+- **Virtual Model used:** `router/auto` (routed to `Llama-3.2-1B-Instruct`)
+- **Greedy Outputs:**
+  - **NPU (Alveare):** `The capital of France is`
+  - **llama.cpp (Reference):** `The capital of France is`
+ 
+### Performance & Latency
+- **Prefill (CPU fallback):** ~0.55s per token (~21s for 42 prompt tokens).
+- **Per-Token Wall-time (NPU):** ~176.5 seconds per token.
+- **Kernel compilations per token:** 0 after warmup (cached in `~/.npu/cache`).
+ 
+### Hardware Partitioning (Host vs. NPU)
+- **NPU:** Heavy matrix-vector multiplications (`gemv_q` for Q/K/V/O, gate/up/down projections, and LM head).
+- **Host (CPU):** Embedding lookup, attention score calculation, SwiGLU activations, RMSNorm, and RoPE.
+- *Reasoning for CPU offloading of RMSNorm and RoPE:* Conserves XDNA hardware context slots to stay within system-limits, avoiding `DRM_IOCTL_AMDXDNA_CREATE_HWCTX` errors when multiple serving processes are active.
+ 
+### Router Configuration
+Mapped `Llama-3.2-1B-Instruct` to `"http://127.0.0.1:8008"` in `~/lemonade_router/rules.yaml`:
+```yaml
+backends:
+  Llama-3.2-1B-Instruct: "http://127.0.0.1:8008"
+```

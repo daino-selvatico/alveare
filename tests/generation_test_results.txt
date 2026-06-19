@@ -1,0 +1,11 @@
+=== NPU vs llama.cpp Side-by-Side Greedy Continuation ===
+Prompt: capital of France is
+
+NPU Output:
+The capital of France is
+
+llama.cpp Output:
+The capital of France is
+
+NPU Latencies (ms) after first token: ['176600.6', '176599.3', '176583.4', '176589.0']
+Average latency after first token: 176593.1 ms
