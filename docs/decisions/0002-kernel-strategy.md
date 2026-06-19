@@ -1,26 +1,22 @@
 # 0002 — Kernel strategy: hand-written IRON vs iree-amd-aie
 
-- Status: open (to be decided during M1)
+- Status: decided (hand-written IRON chosen for primary kernels, iree-amd-aie deferred)
 - Date: 2026-06-19
 
 ## Context
 
-We need AIE kernels (GEMV, attention, etc.) as `.xclbin`. Two broad routes:
-
-1. **Hand-written kernels** via IRON / MLIR-AIE. Maximum control and understanding; maximum effort. This is (essentially) what FLM did.
-2. **`iree-amd-aie`** — AMD's open compiler path: feed an ML graph (via MLIR/IREE) and let the compiler target the AIE array. Potentially compiles whole models, far less hand-written kernel code. But the LLM path is immature and may not handle our quantized decode shapes well.
+We need AIE kernels (GEMV, attention, etc.) as `.xclbin`. Two routes:
+1. **Hand-written kernels** via IRON / MLIR-AIE. Maximum control and understanding.
+2. **`iree-amd-aie`** — AMD's compiler path.
 
 ## Decision
 
-**Deferred until M1.** During M1 we will, if time permits, implement the quantized GEMV **both ways** for one shape and compare:
-- developer effort,
-- correctness/robustness,
-- resulting performance,
-- how much it generalizes to the other kernels we need.
+**Hand-written IRON kernels** are chosen as the primary development strategy. 
 
-Pick the primary route based on evidence, not assumption. The runtime/kernel ABI boundary (see `architecture.md`) is designed so this choice can change later without rewriting the host runtime.
+During Milestone M1, we successfully implemented a block-quantized GEMV (int4 weights × bf16 activation) using custom C++ functions compiled via Peano and orchestrated with the `aie.iron` JIT.
 
-## Consequences
+The `iree-amd-aie` path remains deferred due to:
+- Complexity of compiling custom mixed-precision block-quantized graphs (which are not natively supported by standard IREE frontends without complex lowering patterns).
+- The success of the hand-written IRON approach in building a correct, hardware-constrained single-core tiled GEMV layout that interfaces with PyXRT cleanly.
 
-- M1 may take a bit longer (two implementations of one kernel) but de-risks the single biggest strategic unknown early.
-- If `iree-amd-aie` proves viable, the whole "hard 30%" shrinks dramatically — worth the experiment.
+We will continue using hand-written IRON/C++ kernels for subsequent milestones (M2 attention/norms) to maintain fine-grained layout control.
