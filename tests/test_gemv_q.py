@@ -142,7 +142,7 @@ def run_benchmarks():
     print("\n=== Running Latency Microbenchmarks ===")
     m = 32
     k_tile = 256
-    shapes = [(256, 256), (2560, 2560)]
+    shapes = [(256, 256), (2048, 2048), (2560, 2560)]
     
     # Warmup NPU context
     print("Warmup NPU...")

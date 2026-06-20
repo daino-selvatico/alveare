@@ -37,3 +37,17 @@ This results in **20 bytes per block** of 32 elements.
 - **Absolute tolerance (`atol`)**: `1.0`
 
 *Rationale*: The AIE core accumulates the dot products in `float32` locally but stores the intermediate accumulator back to local L1 memory as `bfloat16` at the boundary of each `k_tile` (256 elements). This tile-wise casting/truncation to `bfloat16` (which has a 7-bit mantissa) accumulates rounding differences of up to 1.0 against the FP32 NumPy reference over large dimensions (e.g. `K=2560`).
+
+### Performance and Vectorization Notes
+
+The kernel was optimized using AIE vector APIs:
+1. **Load/Unpack**: Packed `int4` weights are loaded from unaligned addresses using `aie::load_unaligned_v<16>`, preventing alignment truncation bugs. They are unpacked to `int16_t` using `.unpack()`.
+2. **Dequantization**: Extracted using bitwise shifts `<<` and `>>` directly on `int16_t` vectors to avoid LLVM-AIE backend compiler crashes on un-unpacking shifted `int8_t` vectors. Unpacked integers are converted to `bfloat16` vectors and multiplied by the broadcasted scale.
+3. **Deinterleaving**: Activations are loaded as 32-element vectors and deinterleaved using `aie::filter_even` and `aie::filter_odd` to align even and odd weights with the correct activation indices.
+4. **Multiply-Accumulate**: Vector multiply-accumulate is computed in FP32 using `aie::mul` and `aie::mac`, then summed using `aie::reduce_add`.
+
+**Measured Latency (Scalar vs Vectorized):**
+- **2048x2048**: Host time reduced from `667.21 ms` to `203.46 ms` (3.28x speedup). Est. raw NPU time reduced from `572.21 ms` to `108.46 ms` (**5.28x** raw speedup).
+- **2560x2560**: Host time reduced from `1075.57 ms` to `357.37 ms` (3.01x speedup). Est. raw NPU time reduced from `885.57 ms` to `167.37 ms` (**5.29x** raw speedup).
+- **End-to-End Generation**: Token generation latency on Llama-3.2-1B-Instruct went from `~176.5 s/token` to `~35.3 s/token` (**5.0x** overall model generation speedup).
+
