@@ -47,12 +47,8 @@ void gemv_q(
             aie::vector<int16_t, 16> q1_i16 = (unpacked_w << 8) >> 12;
             
             // Convert to bfloat16
-            aie::vector<bfloat16, 16> q0_bf16;
-            aie::vector<bfloat16, 16> q1_bf16;
-            for (int i = 0; i < 16; ++i) {
-                q0_bf16[i] = (bfloat16)q0_i16[i];
-                q1_bf16[i] = (bfloat16)q1_i16[i];
-            }
+            aie::vector<bfloat16, 16> q0_bf16 = aie::to_float<bfloat16>(q0_i16);
+            aie::vector<bfloat16, 16> q1_bf16 = aie::to_float<bfloat16>(q1_i16);
             
             // Dequantize weights: weight * scale
             aie::vector<bfloat16, 16> w0_bf16 = aie::mul(q0_bf16, scale_v).to_vector<bfloat16>();

@@ -40,18 +40,18 @@ Vectorize the block-quantized `gemv_q` AIE kernel using AIE vector APIs to run o
 
 ### Approach
 - **Vector APIs**: Loaded packed weights using `aie::load_unaligned_v<16>` to bypass 16-byte address alignment truncation.
-- **Dequantization**: Unpacked packed int4 weights (int8_t) to int16_t first, then applied `<< 12 >> 12` and `<< 8 >> 12` shifts on `aie::vector<int16_t, 16>` to sign-extend `q0` and `q1` and avoid LLVM-AIE backend selector crashes. Broacasted scales and dequantized weights to `bfloat16` vector registers.
+- **Dequantization**: Unpacked packed int4 weights (int8_t) to int16_t first, then applied `<< 12 >> 12` and `<< 8 >> 12` shifts on `aie::vector<int16_t, 16>` to sign-extend `q0` and `q1` and avoid LLVM-AIE backend selector crashes.
+- **Vectorized Type Conversion**: Replaced the initial slow scalar loop casting elements one-by-one from `int16_t` to `bfloat16` with the `aie::to_float<bfloat16>` vector intrinsic. This eliminated loop overhead, branch stalls, and pipeline bubbles, accelerating raw NPU execution by ~9x.
 - **Interleaving**: Used `aie::filter_even` and `aie::filter_odd` to split the loaded activation vector `x` into even and odd indices to match the interleaved layout of `q0`/`q1` weights.
 - **Multiply-Accumulate**: Multiplied weights and activations using FP32 dot products (`aie::mul`/`aie::mac`) and reduced the vector sum to a float scalar with `aie::reduce_add`.
 
 ### Latency and Speedup Results
 
-| Shape | Scalar (Before) | Vectorized (After) | Host Speedup | Est. Raw NPU | Est. NPU Speedup |
-|---|---|---|---|---|---|
-| **2048x2048** | `667.21 ms` | `203.46 ms` | **3.28x** | `108.46 ms` | **5.28x** |
-| **2560x2560** | `1075.57 ms` | `357.37 ms` | **3.01x** | `167.37 ms` | **5.41x** |
-| **End-to-End** | `~176.5 s/token` | `~35.3 s/token` | **5.00x** | - | - |
+| Shape | Scalar (Before) | Vectorized (Initial M4.1) | Optimized Vectorized (Our final) | Host Speedup (vs Scalar) | Est. Raw NPU | Est. NPU Speedup (vs Scalar) |
+|---|---|---|---|---|---|---|
+| **2048x2048** | `667.21 ms` | `203.46 ms` | `107.67 ms` | **6.20x** | `12.67 ms` | **45.16x** |
+| **2560x2560** | `1075.57 ms` | `357.37 ms` | `207.60 ms` | **5.18x** | `17.60 ms` | **50.32x** |
+| **End-to-End** | `~176.5 s/token` | `~35.3 s/token` | `~2.34 s/token` | **75.43x** | - | - |
 
 - Correctness tests (`tests/test_gemv_q.py`) are fully green.
 - Coherent text generation is verified (greedy continuation output `The capital of France is` is unchanged).
-

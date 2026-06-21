@@ -46,8 +46,8 @@ The kernel was optimized using AIE vector APIs:
 3. **Deinterleaving**: Activations are loaded as 32-element vectors and deinterleaved using `aie::filter_even` and `aie::filter_odd` to align even and odd weights with the correct activation indices.
 4. **Multiply-Accumulate**: Vector multiply-accumulate is computed in FP32 using `aie::mul` and `aie::mac`, then summed using `aie::reduce_add`.
 
-**Measured Latency (Scalar vs Vectorized):**
-- **2048x2048**: Host time reduced from `667.21 ms` to `203.46 ms` (3.28x speedup). Est. raw NPU time reduced from `572.21 ms` to `108.46 ms` (**5.28x** raw speedup).
-- **2560x2560**: Host time reduced from `1075.57 ms` to `357.37 ms` (3.01x speedup). Est. raw NPU time reduced from `885.57 ms` to `167.37 ms` (**5.29x** raw speedup).
-- **End-to-End Generation**: Token generation latency on Llama-3.2-1B-Instruct went from `~176.5 s/token` to `~35.3 s/token` (**5.0x** overall model generation speedup).
+**Measured Latency (Scalar vs Vectorized vs Optimized Vectorized):**
+- **2048x2048**: Host time reduced from `667.21 ms` (Scalar) to `107.67 ms` (Optimized Vectorized). Est. raw NPU time reduced from `572.21 ms` to `12.67 ms` (**45.16x** raw speedup).
+- **2560x2560**: Host time reduced from `1075.57 ms` (Scalar) to `207.60 ms` (Optimized Vectorized). Est. raw NPU time reduced from `885.57 ms` to `17.60 ms` (**50.32x** raw speedup).
+- **End-to-End Generation**: Token generation latency on Llama-3.2-1B-Instruct went from `~176.5 s/token` (Scalar) to `~2.34 s/token` (Optimized Vectorized) (**75.43x** overall model generation speedup).
 
