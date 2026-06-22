@@ -1,19 +1,4 @@
-AMD Ryzen AI NPU (XDNA2) - gemv_q Benchmark Results (Scalar vs Vectorized vs Optimized Vectorized)
-
------------------------------------------------------------------------------------------------------------------------------------------
-Shape      | Scalar (M1)   | Vectorized (Initial M4.1) | Optimized Vectorized (Our final) | Host Speedup (vs Scalar) | Est. Raw NPU Speedup
------------------------------------------------------------------------------------------------------------------------------------------
-256x256    | 93.55 ms      | 87.88 ms                  | 94.35 ms                         | 0.99x                    | ~2.1x (Est. ~1.0 ms)
-2048x2048  | 667.21 ms     | 203.46 ms                 | 107.67 ms                        | 6.20x                    | 45.16x (Est. 12.67 ms)
-2560x2560  | 1075.57 ms    | 357.37 ms                 | 207.60 ms                        | 5.18x                    | 50.32x (Est. 17.60 ms)
------------------------------------------------------------------------------------------------------------------------------------------
-
-Notes:
-- The measured times include Host-to-Device streaming and PyXRT queue submission overheads (estimated at ~95 ms per 2048-row chunk execution).
-- Raw NPU Estimation is calculated by subtracting the ~95 ms PyXRT overhead per chunk (2048 rows).
-  - For 2048x2048 (1 chunk): Raw NPU = 107.67 ms - 95 ms = 12.67 ms (vs 572.21 ms Scalar and 108.46 ms Initial Vectorized).
-  - For 2560x2560 (2 chunks): Raw NPU = 207.60 ms - 190 ms = 17.60 ms (vs 885.57 ms Scalar and 167.37 ms Initial Vectorized).
-- Replacing the scalar type conversion loop with `aie::to_float<bfloat16>` vector intrinsics yields:
-  - An additional ~8.5x to ~9.5x raw speedup over the initial vectorization attempt.
-  - A total of ~45x to ~50x raw speedup over the original scalar implementation.
-- End-to-End Llama-3.2-1B-Instruct generation latency improved from ~176.5 s/token (Scalar) and ~35.3 s/token (Initial Vectorized) to ~2.34 s/token (Optimized Vectorized), achieving a 75.4x overall speedup.
+Machine:  / AMD NPU (XDNA2)
+Shape: 256x256 | CPU: 0.55 ms | NPU: 92.86 ms | Speedup: 0.01x
+Shape: 2048x2048 | CPU: 47.91 ms | NPU: 96.51 ms | Speedup: 0.50x
+Shape: 2560x2560 | CPU: 76.19 ms | NPU: 185.47 ms | Speedup: 0.41x

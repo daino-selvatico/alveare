@@ -1,0 +1,14 @@
+=== ALVEARE DECODE STEP PROFILE ===
+Total step latency: 690.07 ms
+GEMV calls count: 319
+
+- raw NPU GEMV compute (sum over all calls): 558.12 ms (80.9%)
+- per-call host/PyXRT overhead x calls: 41.58 ms (6.0%)
+- host<->device tensor sync/copy time: 76.55 ms (11.1%)
+- CPU light ops total: 7.47 ms (1.1%)
+  * rmsnorm: 2.05 ms
+  * rope: 2.62 ms
+  * attention/softmax: 2.13 ms
+  * swiglu: 0.67 ms
+- LM head GEMV specifically (chunked): 128.56 ms (18.6%)
+- Other CPU overhead (data prep/other): 2.57 ms (0.4%)

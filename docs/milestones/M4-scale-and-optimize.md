@@ -55,3 +55,52 @@ Vectorize the block-quantized `gemv_q` AIE kernel using AIE vector APIs to run o
 
 - Correctness tests (`tests/test_gemv_q.py`) are fully green.
 - Coherent text generation is verified (greedy continuation output `The capital of France is` is unchanged).
+
+---
+
+## M4.2 multi-core gemv_q parallelization
+
+**Status**: **PASSED (Done)**
+
+### Goal
+Profile a single decode token to identify the dominant performance cost, then optimize the single dominant cost by parallelizing the `gemv_q` kernel across multiple AIE cores.
+
+### Profiling Results (Before Optimization)
+A detailed breakdown of a single NPU decode step (Step 2) before multi-core optimization:
+- **Total step latency**: `2370.25 ms`
+- **GEMV calls count**: `319`
+- **raw NPU GEMV compute (sum over all calls)**: `2140.55 ms (90.3%)`  <-- **DOMINANT COST**
+- **per-call host/PyXRT overhead x calls**: `96.67 ms (4.1%)`
+- **host<->device tensor sync/copy time**: `105.40 ms (4.4%)`
+- **CPU light ops total**: `10.23 ms (0.4%)`
+  - *rmsnorm*: `2.99 ms`
+  - *rope*: `3.58 ms`
+  - *attention/softmax*: `2.81 ms`
+  - *swiglu*: `0.85 ms`
+- **LM head GEMV specifically (chunked)**: `456.46 ms (19.3%)`
+- **Other CPU overhead (data prep/other)**: `8.01 ms (0.3%)`
+
+The profiling breakdown was saved to `tests/bench/token_profile.txt`. Since **raw NPU GEMV compute** dominated, we proceeded with multi-core parallelization.
+
+### Approach
+- **Dynamic Core Partitioning**: Modified the `gemv_q_npu` design in `kernels/gemv_q/gemv_q.py` to dynamically partition the row dimension (N) across `n_cores` AIE cores (up to 4 cores) depending on the shape: `n_cores = 4` if `N % (4 * m) == 0` else `2` if `N % (2 * m) == 0` else `1`.
+- **Shared Activations / Partitioned Weights**: Each AIE core instantiates a private worker executing `core_fn` for its row slice. Weight ObjectFIFOs and output ObjectFIFOs are private to each core, while the input activation ObjectFIFO (`of_x`) is shared across all cores.
+- **Tiling & Task Groups**: Leveraged `TensorTiler2D.group_tiler` to partition `W_combined` and output `Y` along the rows. Applied a single explicit `task_group` in the `Runtime` sequence to submit all fills and drains concurrently, allowing the 4 AIE cores to run in parallel and preventing sequential blocking on the host side.
+
+### Latency and Speedup Results (After Optimization)
+A detailed breakdown of a single NPU decode step (Step 2) after multi-core optimization:
+- **Total step latency**: `690.07 ms`
+- **GEMV calls count**: `319`
+- **raw NPU GEMV compute (sum over all calls)**: `558.12 ms (80.9%)`
+- **per-call host/PyXRT overhead x calls**: `41.58 ms (6.0%)`
+- **host<->device tensor sync/copy time**: `76.55 ms (11.1%)`
+- **CPU light ops total**: `7.47 ms (1.1%)`
+- **LM head GEMV specifically (chunked)**: `128.56 ms (18.6%)`
+
+| Metric | Before (M4.1) | After (M4.2) | Speedup |
+|---|---|---|---|
+| **Raw NPU GEMV Compute** | `2140.55 ms` | `558.12 ms` | **3.83x** (96% scaling efficiency) |
+| **Average Per-Token Latency** | `2.33 s` | `0.70 s` | **3.32x** |
+
+- Correctness tests (`tests/test_gemv_q.py`) are fully green.
+- Coherent text generation is verified (greedy continuation output `The capital of France is` is unchanged).

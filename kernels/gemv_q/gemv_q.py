@@ -38,6 +38,16 @@ def gemv_q_npu(
     m: CompileTime[int],
     k_tile: CompileTime[int],
 ):
+    # Dynamically select n_cores based on shape N and m
+    if N % (4 * m) == 0:
+        n_cores = 4
+    elif N % (2 * m) == 0:
+        n_cores = 2
+    else:
+        n_cores = 1
+
+    N_div_n_cores = N // n_cores
+
     # Dimensions inside core
     w_ty = np.ndarray[(m * (k_tile // 32) * 20,), np.dtype[np.uint8]]
     x_ty = np.ndarray[(k_tile,), np.dtype[bfloat16]]
@@ -63,13 +73,15 @@ def gemv_q_npu(
     )
 
     # Object FIFOs in local AIE memory
-    of_w = ObjectFifo(w_ty, name="of_w")
     of_x = ObjectFifo(x_ty, name="of_x")
-    of_y = ObjectFifo(y_ty, name="of_y")
+    
+    memW_fifos = []
+    outY_fifos = []
+    workers = []
 
-    # Core function execution flow
+    # Core function execution flow (each core does N_div_n_cores // m iterations)
     def core_fn(of_w, of_x, of_y, zero_k, gemv_k):
-        for _ in range_(N // m):
+        for _ in range_(N_div_n_cores // m):
             elem_y = of_y.acquire(1)
             zero_k(elem_y)
             for _ in range_(K // k_tile):
@@ -80,45 +92,61 @@ def gemv_q_npu(
                 of_x.release(1)
             of_y.release(1)
 
-    # Instantiate worker on AIE core
-    worker = Worker(
-        core_fn,
-        fn_args=[
-            of_w.cons(),
-            of_x.cons(),
-            of_y.prod(),
-            zero_kernel,
-            gemv_kernel,
-        ],
-        stack_size=0xF00,
-    )
+    for i in range(n_cores):
+        w_fifo = ObjectFifo(w_ty, name=f"of_w_{i}")
+        y_fifo = ObjectFifo(y_ty, name=f"of_y_{i}")
+        memW_fifos.append(w_fifo)
+        outY_fifos.append(y_fifo)
+        
+        workers.append(
+            Worker(
+                core_fn,
+                fn_args=[
+                    w_fifo.cons(),
+                    of_x.cons(),
+                    y_fifo.prod(),
+                    zero_kernel,
+                    gemv_kernel,
+                ],
+                stack_size=0xF00,
+            )
+        )
 
     # DRAM/Host buffers shapes
     W_ty = np.ndarray[(N, (K // 32) * 20), np.dtype[np.uint8]]
     X_ty = np.ndarray[(K,), np.dtype[bfloat16]]
     Y_ty = np.ndarray[(N,), np.dtype[bfloat16]]
 
-    # Combined weights tiler (streams all tiles row-by-row sequentially)
-    w_tap = TensorTiler2D.group_tiler(
-        (N, (K // 32) * 20), (m, (k_tile // 32) * 20), (N // m, K // k_tile), prune_step=False
-    )[0]
+    # Combined weights tiler: partition weights along rows across cores
+    w_taps = TensorTiler2D.group_tiler(
+        (N, (K // 32) * 20),
+        (m, (k_tile // 32) * 20),
+        (N_div_n_cores // m, K // k_tile),
+        prune_step=False
+    )
     
-    # Activation vector tiling (shape 1xK, tiled to 1xk_tile, repeated N/m times)
+    # Activation vector tiling (repeated N_div_n_cores // m times for each core)
     x_tap = TensorTiler2D.group_tiler(
-        (1, K), (1, k_tile), (1, K // k_tile), pattern_repeat=N // m, prune_step=False
+        (1, K), (1, k_tile), (1, K // k_tile), pattern_repeat=N_div_n_cores // m, prune_step=False
     )[0]
     
-    # Output vector tiling (shape 1xN, tiled to 1xm)
-    y_tap = TensorTiler2D.group_tiler(
-        (1, N), (1, m), (1, N // m), prune_step=False
-    )[0]
+    # Output vector tiling: partition output along rows across cores
+    y_taps = TensorTiler2D.group_tiler(
+        (1, N), (1, m), (1, N_div_n_cores // m), prune_step=False
+    )
 
     rt = Runtime()
     with rt.sequence(W_ty, X_ty, Y_ty) as (w_in, x_in, y_out):
-        rt.start(worker)
-        rt.fill(of_x.prod(), x_in, x_tap)
-        rt.fill(of_w.prod(), w_in, w_tap)
-        rt.drain(of_y.cons(), y_out, y_tap, wait=True)
+        rt.start(*workers)
+        
+        tg = rt.task_group()
+        rt.fill(of_x.prod(), x_in, x_tap, task_group=tg)
+        for i in range(n_cores):
+            rt.fill(memW_fifos[i].prod(), w_in, w_taps[i], task_group=tg)
+        
+        for i in range(n_cores):
+            rt.drain(outY_fifos[i].cons(), y_out, y_taps[i], wait=True, task_group=tg)
+        rt.finish_task_group(tg)
 
     return Program(iron.get_current_device(), rt).resolve_program()
 
