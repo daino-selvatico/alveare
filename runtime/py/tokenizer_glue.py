@@ -5,7 +5,11 @@ class TokenizerGlue:
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.bos_token_id = self.tokenizer.bos_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
-        self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        
+        if "gemma" in model_id.lower():
+            self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<end_of_turn>")
+        else:
+            self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<|eot_id|>")
         
     def encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text)
