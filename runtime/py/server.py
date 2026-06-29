@@ -28,7 +28,12 @@ model_id = "Llama-3.2-1B-Instruct"
 @app.on_event("startup")
 def startup_event():
     global model, tokenizer, model_id
-    weights_dir = Path(__file__).resolve().parents[2] / "quantized_weights"
+    weights_dir_env = os.getenv("ALVEARE_WEIGHTS_DIR")
+    if weights_dir_env:
+        weights_dir = Path(weights_dir_env)
+    else:
+        weights_dir = Path(__file__).resolve().parents[2] / "quantized_weights"
+        
     if not weights_dir.exists():
         print(f"Error: weights directory {weights_dir} does not exist!")
         sys.exit(1)
@@ -41,8 +46,11 @@ def startup_event():
         if config.get("model_type") == "gemma3":
             model_id = "gemma-3-1b-it"
             hf_model_id = "unsloth/gemma-3-1b-it"
+        elif config.get("model_type") == "gemma4":
+            model_id = "gemma-4-12b-it"
+            hf_model_id = "google/gemma-4-12b-it"
             
-    print(f"Initializing model on NPU ({model_id})...")
+    print(f"Initializing model on NPU ({model_id}) from {weights_dir}...")
     model = LlamaNPUModel(weights_dir)
     print("Loading tokenizer...")
     tokenizer = TokenizerGlue(model_id=hf_model_id)

@@ -6,7 +6,9 @@ class TokenizerGlue:
         self.bos_token_id = self.tokenizer.bos_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
         
-        if "gemma" in model_id.lower():
+        if "gemma-4" in model_id.lower() or "gemma_4" in model_id.lower() or "gemma4" in model_id.lower():
+            self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<turn|>")
+        elif "gemma" in model_id.lower():
             self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<end_of_turn>")
         else:
             self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<|eot_id|>")

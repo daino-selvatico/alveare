@@ -13,6 +13,21 @@ from kernels.gemv_q.gemv_q import gemv_q_npu
 from kernels.rmsnorm.rmsnorm import rmsnorm_npu
 from kernels.rope.rope import rope_npu
 
+class LazyLayerWeights:
+    def __init__(self, weights_dir: Path, layer_idx: int):
+        self.weights_dir = weights_dir
+        self.layer_idx = layer_idx
+        self._cache = {}
+        
+    def __getitem__(self, key):
+        if key not in self._cache:
+            path = self.weights_dir / f"blk.{self.layer_idx}.{key}.weight_packed.npy"
+            self._cache[key] = np.load(path)
+        return self._cache[key]
+        
+    def clear(self):
+        self._cache.clear()
+
 class LlamaNPUModel:
     def __init__(self, weights_dir: Path, max_seq_len: int = 2048):
         self.weights_dir = Path(weights_dir)
@@ -73,29 +88,37 @@ class LlamaNPUModel:
         if self.model_type == "gemma4":
             self.layer_output_scales = [np.load(self.weights_dir / f"blk.{l}.layer_output_scale.weight.npy")[0] for l in range(self.num_hidden_layers)]
             
-        print("Mmap-mapping layer matmul weights...")
-        self.layer_weights = []
-        for l in range(self.num_hidden_layers):
-            layer_w = {}
-            for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
-                path = self.weights_dir / f"blk.{l}.{proj}.weight_packed.npy"
-                layer_w[proj] = np.load(path, mmap_mode='r')
-            self.layer_weights.append(layer_w)
+        if self.model_type == "gemma4":
+            print("Initializing lazy layer weights for Gemma-4...")
+            self.layer_weights = [LazyLayerWeights(self.weights_dir, l) for l in range(self.num_hidden_layers)]
+        else:
+            print("Mmap-mapping layer matmul weights...")
+            self.layer_weights = []
+            for l in range(self.num_hidden_layers):
+                layer_w = {}
+                for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
+                    path = self.weights_dir / f"blk.{l}.{proj}.weight_packed.npy"
+                    layer_w[proj] = np.load(path, mmap_mode='r')
+                self.layer_weights.append(layer_w)
             
         print("Mmap-mapping LM head...")
         self.lm_head = np.load(self.weights_dir / "lm_head_packed.npy", mmap_mode='r')
         
-        print("Pre-dequantizing layer weights for fast CPU prefill...")
-        from tools.ref.gemv_q import dequantize_combined
-        self.layer_weights_dequant = []
-        for l in range(self.num_hidden_layers):
-            layer_w_dequant = {}
-            for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
-                layer_w_dequant[proj] = dequantize_combined(self.layer_weights[l][proj]).astype(bfloat16)
-            self.layer_weights_dequant.append(layer_w_dequant)
-            
-        print("Pre-dequantizing LM head...")
-        self.lm_head_dequant = dequantize_combined(self.lm_head).astype(bfloat16)
+        if self.model_type != "gemma4":
+            print("Pre-dequantizing layer weights for fast CPU prefill...")
+            from tools.ref.gemv_q import dequantize_combined
+            self.layer_weights_dequant = []
+            for l in range(self.num_hidden_layers):
+                layer_w_dequant = {}
+                for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
+                    layer_w_dequant[proj] = dequantize_combined(self.layer_weights[l][proj]).astype(bfloat16)
+                self.layer_weights_dequant.append(layer_w_dequant)
+                
+            print("Pre-dequantizing LM head...")
+            self.lm_head_dequant = dequantize_combined(self.lm_head).astype(bfloat16)
+        else:
+            self.layer_weights_dequant = None
+            self.lm_head_dequant = None
         
         if self.model_type == "gemma3":
             print("Precomputing Gemma RoPE tables...")
@@ -485,13 +508,27 @@ class LlamaNPUModel:
             if use_npu:
                 q = self.run_gemv_npu(self.layer_weights[l]["attn_q"], x_norm)[:q_size]
                 k = self.run_gemv_npu(self.layer_weights[l]["attn_k"], x_norm)[:k_size]
-                v = self.run_gemv_npu(self.layer_weights[l]["attn_v"], x_norm)[:v_size]
+                if is_sliding:
+                    v = self.run_gemv_npu(self.layer_weights[l]["attn_v"], x_norm)[:v_size]
+                else:
+                    v = k
             else:
+                # Dynamic on-the-fly dequantization for CPU path
+                from tools.ref.gemv_q import dequantize_combined
+                layer_w_dequant = {}
+                for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
+                    if proj == "attn_v" and not is_sliding:
+                        continue
+                    layer_w_dequant[proj] = dequantize_combined(self.layer_weights[l][proj]).astype(bfloat16)
+
                 x_norm_pad = np.zeros(4096, dtype=np.float32)
                 x_norm_pad[:3840] = x_norm.astype(np.float32)
-                q = (self.layer_weights_dequant[l]["attn_q"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:q_size]
-                k = (self.layer_weights_dequant[l]["attn_k"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:k_size]
-                v = (self.layer_weights_dequant[l]["attn_v"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:v_size]
+                q = (layer_w_dequant["attn_q"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:q_size]
+                k = (layer_w_dequant["attn_k"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:k_size]
+                if is_sliding:
+                    v = (layer_w_dequant["attn_v"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:v_size]
+                else:
+                    v = k
                 
             # 3. QK-Norm & V-Norm
             q_normed = np.zeros_like(q)
@@ -528,7 +565,7 @@ class LlamaNPUModel:
             else:
                 attn_out_pad = np.zeros(attn_out_size, dtype=np.float32)
                 attn_out_pad[:len(attn_out)] = attn_out.astype(np.float32)
-                attn_proj = (self.layer_weights_dequant[l]["attn_output"].astype(np.float32) @ attn_out_pad).astype(bfloat16)[:3840]
+                attn_proj = (layer_w_dequant["attn_output"].astype(np.float32) @ attn_out_pad).astype(bfloat16)[:3840]
                 
             # 8. Post-attention norm & residual add
             attn_proj_normed = self.run_rmsnorm_cpu(attn_proj, self.layer_post_attn_norms[l])
@@ -544,8 +581,8 @@ class LlamaNPUModel:
             else:
                 x_norm2_pad = np.zeros(4096, dtype=np.float32)
                 x_norm2_pad[:3840] = x_norm2.astype(np.float32)
-                gate = (self.layer_weights_dequant[l]["ffn_gate"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
-                up = (self.layer_weights_dequant[l]["ffn_up"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
+                gate = (layer_w_dequant["ffn_gate"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
+                up = (layer_w_dequant["ffn_up"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
                 
             # 11. GeGLU activation (gelu_pytorch_tanh)
             gate_fp32 = gate.astype(np.float32)
@@ -559,7 +596,7 @@ class LlamaNPUModel:
             else:
                 geglu_out_pad = np.zeros(16384, dtype=np.float32)
                 geglu_out_pad[:15360] = geglu_out.astype(np.float32)
-                down = (self.layer_weights_dequant[l]["ffn_down"].astype(np.float32) @ geglu_out_pad).astype(bfloat16)[:3840]
+                down = (layer_w_dequant["ffn_down"].astype(np.float32) @ geglu_out_pad).astype(bfloat16)[:3840]
                 
             # 13. Post-FFN norm & second residual add
             down_normed = self.run_rmsnorm_cpu(down, self.layer_post_ffw_norms[l])
@@ -567,6 +604,9 @@ class LlamaNPUModel:
             
             # 14. Layer Output Scale
             y_final = (y_final.astype(np.float32) * self.layer_output_scales[l]).astype(bfloat16)
+            
+            # Clear lazy weight cache to reclaim memory immediately
+            self.layer_weights[l].clear()
             
             return y_final
         else:
@@ -663,9 +703,11 @@ class LlamaNPUModel:
             if use_npu:
                 logits = self.run_gemv_npu(self.lm_head, x_norm)
             else:
+                from tools.ref.gemv_q import dequantize_combined
+                lm_head_dequant = dequantize_combined(self.lm_head).astype(bfloat16)
                 x_norm_pad = np.zeros(4096, dtype=np.float32)
                 x_norm_pad[:3840] = x_norm.astype(np.float32)
-                logits = (self.lm_head_dequant.astype(np.float32) @ x_norm_pad).astype(bfloat16)
+                logits = (lm_head_dequant.astype(np.float32) @ x_norm_pad).astype(bfloat16)
                 
             logits_unmasked = logits[:self.vocab_size].astype(np.float32)
             logits_softcapped = 30.0 * np.tanh(logits_unmasked / 30.0)

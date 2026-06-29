@@ -65,6 +65,18 @@ Spec: [`docs/milestones/M6-gemma4-layer.md`](docs/milestones/M6-gemma4-layer.md)
 
 ---
 
+## M7 — Gemma-4-12B End-to-End on NPU
+
+**Status**: **Completed**.
+
+**Goal**: Run the full Gemma-4-12B model end-to-end on the Ryzen AI NPU and generate coherent text.
+
+**Done when**: The model runs end-to-end on the NPU and generates coherent text whose greedy continuation matches `llama.cpp` side-by-side.
+
+Spec: [`docs/milestones/M7-gemma4-12b.md`](docs/milestones/M7-gemma4-12b.md)
+
+---
+
 ## Strategic shortcuts (evaluate before greenfielding)
 
 We do **not** want to hand-write every kernel from zero if there's leverage:
