@@ -1,279 +1,232 @@
 import os
 import sys
 import numpy as np
+import torch
 from pathlib import Path
+from transformers import AutoConfig
 
-# Add project root to path
-sys.path.append(str(Path(__file__).resolve().parents[2]))
-
-def gemma_rmsnorm(val, w, eps=1e-6):
-    # val is numpy array
-    variance = np.mean(val ** 2, axis=-1, keepdims=True)
-    normed = val * (1.0 / np.sqrt(variance + eps))
-    if w is not None:
-        normed = normed * w
-    return normed
-
-def rotate_half(x):
-    # x shape: (..., dim)
-    half = x.shape[-1] // 2
-    x1 = x[..., :half]
-    x2 = x[..., half:]
-    return np.concatenate((-x2, x1), axis=-1)
-
-def apply_rotary_pos_emb(x, cos, sin):
-    # x shape: (num_heads, seq_len, dim)
-    # cos, sin shape: (seq_len, dim)
-    cos_unsq = np.expand_dims(cos, axis=0) # (1, seq_len, dim)
-    sin_unsq = np.expand_dims(sin, axis=0) # (1, seq_len, dim)
-    return (x * cos_unsq) + (rotate_half(x) * sin_unsq)
-
-def gelu_pytorch_tanh(val):
-    return 0.5 * val * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (val + 0.044715 * (val ** 3))))
+# Add transformers models to path to import Gemma4UnifiedForConditionalGeneration
+sys.path.append("/home/daino/miniconda3/envs/gemma4-ref/lib/python3.12/site-packages")
+from transformers.models.gemma4_unified.modeling_gemma4_unified import Gemma4UnifiedForConditionalGeneration, apply_rotary_pos_emb
 
 def main():
     # Set random seed for reproducibility
+    torch.manual_seed(42)
     np.random.seed(42)
+
+    model_id = "google/gemma-4-12b-it"
+    print(f"Loading model {model_id} in bfloat16...")
+    # Load model on CPU/CUDA
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
     
-    weights_dir = Path(__file__).resolve().parents[2] / "quantized_weights_gemma4"
-    out_dir = Path(__file__).resolve().parents[2] / "tools" / "ref" / "data_gemma4"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    model = Gemma4UnifiedForConditionalGeneration.from_pretrained(
+        model_id, 
+        torch_dtype=torch.bfloat16, 
+        low_cpu_mem_usage=True, 
+        trust_remote_code=True
+    ).to(device)
+    model.eval()
     
-    print("Loading unquantized weights from GGUF extraction...")
-    # Since we saved dequantized float32 weights in quantized_weights_gemma4 as npy,
-    # we can load them directly.
-    # Note: token_embd is saved in float16, others are float32
-    token_embd = np.load(weights_dir / "token_embd.npy")
-    output_norm = np.load(weights_dir / "output_norm.weight.npy")
+    # Text model layers are under model.model.language_model.layers
+    layer = model.model.language_model.layers[0]
+    config = model.config.text_config
     
-    # Layer 0 weights
-    attn_norm = np.load(weights_dir / "blk.0.attn_norm.weight.npy")
-    post_attn_norm = np.load(weights_dir / "blk.0.post_attention_norm.weight.npy")
-    ffn_norm = np.load(weights_dir / "blk.0.ffn_norm.weight.npy")
-    post_ffw_norm = np.load(weights_dir / "blk.0.post_ffw_norm.weight.npy")
+    seq_len = 32
+    hidden_size = config.hidden_size # 3840
     
-    attn_q_norm = np.load(weights_dir / "blk.0.attn_q_norm.weight.npy")
-    attn_k_norm = np.load(weights_dir / "blk.0.attn_k_norm.weight.npy")
-    layer_output_scale = np.load(weights_dir / "blk.0.layer_output_scale.weight.npy")[0]
+    # Generate random input sequence (1, seq_len, hidden_size)
+    x = torch.randn(1, seq_len, hidden_size, dtype=torch.bfloat16, device=device)
     
-    # Linear projection weights (we dequantize from GGUF to FP32 in quantize_gemma4.py,
-    # but let's load the dequantized weights from GGUF or dequantize them here from the GGUF)
-    # Actually, in quantize_gemma4.py we did NOT save the unquantized weights for linear projections,
-    # we only saved the quantized ones!
-    # Wait, can we load the GGUF file and dequantize them here?
-    # Yes, we can read the GGUF file directly in this script!
-    print("Reading GGUF file to get unquantized projection weights...")
-    sys.path.append("/home/daino/llama-mtp/llama.cpp/gguf-py")
-    from gguf import GGUFReader
-    from gguf.quants import dequantize
-    from gguf.constants import GGMLQuantizationType
+    eps = layer.input_layernorm.eps # 1e-6
     
-    reader = GGUFReader("/home/daino/llama-mtp/models/gemma-4-12b-it-UD-Q4_K_XL.gguf")
-    
-    def get_dequantized_weight(name):
-        tensor = next(t for t in reader.tensors if t.name == name)
-        qtype = GGMLQuantizationType(tensor.tensor_type)
-        return dequantize(tensor.data, qtype).astype(np.float32)
+    def gemma_rmsnorm(val, w, eps):
+        variance = val.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        normed = val.to(torch.float32) * torch.rsqrt(variance + eps)
+        if w is not None:
+            normed = normed * w.to(torch.float32)
+        return normed.to(val.dtype)
         
-    w_q = get_dequantized_weight("blk.0.attn_q.weight")
-    w_k = get_dequantized_weight("blk.0.attn_k.weight")
-    w_v = get_dequantized_weight("blk.0.attn_v.weight")
-    w_o = get_dequantized_weight("blk.0.attn_output.weight")
-    w_gate = get_dequantized_weight("blk.0.ffn_gate.weight")
-    w_up = get_dequantized_weight("blk.0.ffn_up.weight")
-    w_down = get_dequantized_weight("blk.0.ffn_down.weight")
+    # Step 1: Input norm
+    x_norm = gemma_rmsnorm(x, layer.input_layernorm.weight, eps)
+    
+    # Step 2: Projections
+    q_proj = layer.self_attn.q_proj.weight.detach()
+    k_proj = layer.self_attn.k_proj.weight.detach()
+    v_proj = layer.self_attn.v_proj.weight.detach()
+    
+    Q = torch.matmul(x_norm, q_proj.T)
+    K = torch.matmul(x_norm, k_proj.T)
+    V = torch.matmul(x_norm, v_proj.T)
     
     # Dimensions
-    seq_len = 32
-    hidden_size = 3840
-    num_heads = 16
-    num_kv_heads = 8
-    head_dim = 256
-    eps = 1e-6
+    num_heads = config.num_attention_heads # 16
+    num_kv_heads = config.num_key_value_heads # 8
+    head_dim = config.head_dim # 256
     
-    # Generate random input sequence (seq_len, hidden_size)
-    x = np.random.randn(seq_len, hidden_size).astype(np.float32)
+    # Reshape
+    Q_reshaped = Q.view(1, seq_len, num_heads, head_dim)
+    K_reshaped = K.view(1, seq_len, num_kv_heads, head_dim)
+    V_reshaped = V.view(1, seq_len, num_kv_heads, head_dim)
     
-    # Run Layer 0 step-by-step
-    # 1. Input Norm
-    x_norm = gemma_rmsnorm(x, attn_norm, eps)
+    # Step 3: QK-Norm & V-norm
+    q_norm_weight = layer.self_attn.q_norm.weight.detach()
+    k_norm_weight = layer.self_attn.k_norm.weight.detach()
+    Q_normed = gemma_rmsnorm(Q_reshaped, q_norm_weight, eps)
+    K_normed = gemma_rmsnorm(K_reshaped, k_norm_weight, eps)
+    V_normed = gemma_rmsnorm(V_reshaped, None, eps)
     
-    # 2. Linear Projections (W shape is (out_features, in_features))
-    # We project each token individually
-    Q = x_norm @ w_q.T  # (seq_len, 4096)
-    K = x_norm @ w_k.T  # (seq_len, 2048)
-    V = x_norm @ w_v.T  # (seq_len, 2048)
+    # Step 4: RoPE
+    position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0)
+    rotary_emb = model.model.language_model.rotary_emb
+    cos_ref, sin_ref = rotary_emb(V_normed, position_ids, layer_type="sliding_attention")
+    cos = cos_ref.squeeze(0) # shape (seq_len, head_dim)
+    sin = sin_ref.squeeze(0)
     
-    # Reshape Q, K, V
-    Q_reshaped = Q.reshape(seq_len, num_heads, head_dim) # (seq_len, 16, 256)
-    K_reshaped = K.reshape(seq_len, num_kv_heads, head_dim) # (seq_len, 8, 256)
-    V_reshaped = V.reshape(seq_len, num_kv_heads, head_dim) # (seq_len, 8, 256)
-    
-    # 3. QK-Norm & V-Norm
-    # Q and K are normalized with weights, V is normalized with unit weights (no weights)
-    Q_normed = np.zeros_like(Q_reshaped)
-    for h in range(num_heads):
-        Q_normed[:, h, :] = gemma_rmsnorm(Q_reshaped[:, h, :], attn_q_norm, eps)
-        
-    K_normed = np.zeros_like(K_reshaped)
-    for h in range(num_kv_heads):
-        K_normed[:, h, :] = gemma_rmsnorm(K_reshaped[:, h, :], attn_k_norm, eps)
-        
-    V_normed = np.zeros_like(V_reshaped)
-    for h in range(num_kv_heads):
-        V_normed[:, h, :] = gemma_rmsnorm(V_reshaped[:, h, :], None, eps) # None means no weights
-        
-    # 4. RoPE
-    # SWA layer 0 uses base_freq = 10000.0
-    base_freq = 10000.0
-    inv_freq = 1.0 / (base_freq ** (np.arange(0, head_dim, 2, dtype=np.float32) / head_dim))
-    cos_sin_table = np.zeros((seq_len, head_dim), dtype=np.float32)
-    for pos in range(seq_len):
-        freqs = pos * inv_freq
-        cos_sin_table[pos] = np.concatenate([np.cos(freqs), np.sin(freqs)])
-        
     # Apply RoPE
-    cos = cos_sin_table[:, :head_dim//2]
-    sin = cos_sin_table[:, head_dim//2:]
+    Q_rope = apply_rotary_pos_emb(Q_normed, cos_ref, sin_ref, unsqueeze_dim=2)
+    K_rope = apply_rotary_pos_emb(K_normed, cos_ref, sin_ref, unsqueeze_dim=2)
     
-    Q_rope = np.zeros_like(Q_normed)
-    K_rope = np.zeros_like(K_normed)
-    for h in range(num_heads):
-        # Q_normed shape is (seq_len, 16, 256) -> transpose to (16, seq_len, 256) for apply_rotary
-        # Let's just do it token by token or transpose
-        q_h = Q_normed[:, h, :].T # (256, seq_len)
-        # Wait, apply_rotary_pos_emb expects (num_heads, seq_len, head_dim)
-        pass
+    # Step 5: Attention GQA
+    scaling = layer.self_attn.scaling # 1.0
     
-    # Let's write apply_rotary directly for numpy:
-    # x shape: (seq_len, num_heads, head_dim)
-    def rotate_half_2d(val):
-        half = val.shape[-1] // 2
-        return np.concatenate((-val[..., half:], val[..., :half]), axis=-1)
-        
-    cos_expanded = np.expand_dims(cos, axis=1) # (seq_len, 1, 128)
-    sin_expanded = np.expand_dims(sin, axis=1) # (seq_len, 1, 128)
+    Q_rope_trans = Q_rope.transpose(1, 2) # (1, 16, seq_len, 256)
+    K_rope_trans = K_rope.transpose(1, 2) # (1, 8, seq_len, 256)
+    V_normed_trans = V_normed.transpose(1, 2) # (1, 8, seq_len, 256)
     
-    # We apply RoPE on the full head_dim (256), meaning we split it into half_dim (128)
-    # x1 is (seq_len, num_heads, 128), x2 is (seq_len, num_heads, 128)
-    Q_rope = np.zeros_like(Q_normed)
-    K_rope = np.zeros_like(K_normed)
+    ratio = num_heads // num_kv_heads # 2
+    K_rope_rep = torch.repeat_interleave(K_rope_trans, ratio, dim=1) # (1, 16, seq_len, 256)
+    V_normed_rep = torch.repeat_interleave(V_normed_trans, ratio, dim=1) # (1, 16, seq_len, 256)
     
-    for pos in range(seq_len):
-        c = cos[pos]
-        s = sin[pos]
-        for h in range(num_heads):
-            q_val = Q_normed[pos, h]
-            q1 = q_val[:head_dim//2]
-            q2 = q_val[head_dim//2:]
-            Q_rope[pos, h, :head_dim//2] = q1 * c - q2 * s
-            Q_rope[pos, h, head_dim//2:] = q2 * c + q1 * s
-        for h in range(num_kv_heads):
-            k_val = K_normed[pos, h]
-            k1 = k_val[:head_dim//2]
-            k2 = k_val[head_dim//2:]
-            K_rope[pos, h, :head_dim//2] = k1 * c - k2 * s
-            K_rope[pos, h, head_dim//2:] = k2 * c + k1 * s
-
-    # 5. Attention scores
-    # Gemma-4 attention scale is 1.0 (no scaling by 1/sqrt(head_dim))
-    # We do Grouped-Query Attention
-    # num_heads = 16, num_kv_heads = 8 -> ratio = 2
-    ratio = num_heads // num_kv_heads
-    K_rope_rep = np.repeat(K_rope, ratio, axis=1) # (seq_len, 16, 256)
-    V_normed_rep = np.repeat(V_normed, ratio, axis=1) # (seq_len, 16, 256)
+    # Dot product attention scores
+    scores = torch.matmul(Q_rope_trans, K_rope_rep.transpose(-1, -2)) * scaling # (1, 16, seq_len, seq_len)
     
-    # Attention scores shape: (16, seq_len, seq_len)
-    attn_out = np.zeros((seq_len, num_heads, head_dim), dtype=np.float32)
-    for t in range(seq_len):
-        # Current token t queries all tokens up to t (causal)
-        q_t = Q_rope[t] # (16, 256)
-        k_past = K_rope_rep[:t+1] # (t+1, 16, 256)
-        v_past = V_normed_rep[:t+1] # (t+1, 16, 256)
-        
-        for h in range(num_heads):
-            # dot product of q_t[h] and k_past[:, h]
-            scores = np.dot(k_past[:, h, :], q_t[h, :]) # shape (t+1,)
-            # Softmax
-            max_score = np.max(scores)
-            exp_scores = np.exp(scores - max_score)
-            probs = exp_scores / np.sum(exp_scores)
-            
-            # Weighted sum of v_past
-            attn_out[t, h] = np.dot(probs, v_past[:, h, :])
-            
-    # Reshape back to (seq_len, hidden_size_proj) where hidden_size_proj = 16 * 256 = 4096
-    attn_out_flat = attn_out.reshape(seq_len, num_heads * head_dim)
+    # Apply causal mask
+    mask = torch.triu(torch.full((seq_len, seq_len), float("-inf"), device=device), diagonal=1)
+    scores = scores + mask
     
-    # 6. Output Projection
-    attn_proj = attn_out_flat @ w_o.T # (seq_len, hidden_size)
+    # Softmax
+    attn_probs = torch.softmax(scores.to(torch.float32), dim=-1).to(torch.bfloat16)
     
-    # 7. Post-Attention Norm & residual add
-    attn_proj_normed = gemma_rmsnorm(attn_proj, post_attn_norm, eps)
-    x_post_attn = x + attn_proj_normed
+    # Weighted sum
+    attn_out = torch.matmul(attn_probs, V_normed_rep) # (1, 16, seq_len, 256)
     
-    # 8. FFN pre-norm
-    x_norm2 = gemma_rmsnorm(x_post_attn, ffn_norm, eps)
+    # Reshape back to contiguous
+    attn_out_flat = attn_out.transpose(1, 2).contiguous().view(1, seq_len, num_heads * head_dim)
     
-    # MLP projections
-    gate = x_norm2 @ w_gate.T
-    up = x_norm2 @ w_up.T
+    # Step 6: Output projection
+    o_proj = layer.self_attn.o_proj.weight.detach()
+    attn_proj = torch.matmul(attn_out_flat, o_proj.T)
+    
+    # Step 7: Post attention norm & residual add
+    x_post_attn = x + gemma_rmsnorm(attn_proj, layer.post_attention_layernorm.weight, eps)
+    
+    # Step 8: Pre-FFN norm
+    x_norm2 = gemma_rmsnorm(x_post_attn, layer.pre_feedforward_layernorm.weight, eps)
+    
+    # Step 9: MLP projections
+    gate_proj = layer.mlp.gate_proj.weight.detach()
+    up_proj = layer.mlp.up_proj.weight.detach()
+    down_proj = layer.mlp.down_proj.weight.detach()
+    
+    gate = torch.matmul(x_norm2, gate_proj.T)
+    up = torch.matmul(x_norm2, up_proj.T)
     
     # GeGLU activation
-    geglu = gelu_pytorch_tanh(gate) * up
-    down = geglu @ w_down.T
+    def gelu_pytorch_tanh(val):
+        import math
+        precomputed_constant = math.sqrt(2 / math.pi)
+        return 0.5 * val * (1 + torch.tanh(precomputed_constant * (val + 0.044715 * torch.pow(val, 3))))
+        
+    geglu_out = gelu_pytorch_tanh(gate.to(torch.float32)).to(torch.bfloat16) * up
+    down = torch.matmul(geglu_out, down_proj.T)
     
-    # Post-FFN norm & second residual add
-    down_normed = gemma_rmsnorm(down, post_ffw_norm, eps)
+    # Step 10: Post-FFN norm & residual add
+    down_normed = gemma_rmsnorm(down, layer.post_feedforward_layernorm.weight, eps)
     y_layer = x_post_attn + down_normed
     
-    # 9. Layer Output Scale
-    y_final = y_layer * layer_output_scale
+    # Step 11: Layer Output Scale
+    y_final = y_layer * layer.layer_scalar.to(device)
     
-    print(f"Verify shapes: x_norm={x_norm.shape}, Q_rope={Q_rope.shape}, attn_out={attn_out.shape}, y_final={y_final.shape}")
+    # Verify vs model forward
+    # Prepare inputs for layer forward
+    position_embeddings = (cos_ref, sin_ref)
+    with torch.no_grad():
+        orig_out = layer(x, position_embeddings=position_embeddings)
+    
+    max_err = torch.max(torch.abs(orig_out - y_final)).item()
+    print(f"Verify step-by-step vs HuggingFace Layer: Max error = {max_err}")
+    assert max_err < 0.5, "Manual step-by-step computation diverges from layer forward!"
     
     # Save the 32nd token (decode step, t = 31)
     t = 31
-    np.save(out_dir / "input_hidden_states.npy", x[t])
-    np.save(out_dir / "x_norm.npy", x_norm[t])
+    out_dir = Path(__file__).resolve().parents[2] / "tools" / "ref" / "data_gemma4"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Helper to save tensor to npy
+    def save_npy(filename, tensor):
+        np.save(out_dir / filename, tensor.detach().cpu().to(torch.float32).numpy())
+        
+    # Inputs & Weights
+    save_npy("input_hidden_states.npy", x[0, t])
+    save_npy("input_norm_weights.npy", layer.input_layernorm.weight)
+    save_npy("x_norm.npy", x_norm[0, t])
     
     # QKV Projections
-    np.save(out_dir / "q_val.npy", Q[t])
-    np.save(out_dir / "k_val.npy", K[t])
-    np.save(out_dir / "v_val.npy", V[t])
-    np.save(out_dir / "q_normed.npy", Q_normed[t].reshape(-1))
-    np.save(out_dir / "k_normed.npy", K_normed[t].reshape(-1))
-    np.save(out_dir / "v_normed.npy", V_normed[t].reshape(-1))
+    save_npy("w_q.npy", q_proj)
+    save_npy("w_k.npy", k_proj)
+    save_npy("w_v.npy", v_proj)
+    save_npy("q_val.npy", Q[0, t])
+    save_npy("k_val.npy", K[0, t])
+    save_npy("v_val.npy", V[0, t])
+    
+    # QK-Norm
+    save_npy("q_norm_weights.npy", q_norm_weight)
+    save_npy("k_norm_weights.npy", k_norm_weight)
+    save_npy("q_normed.npy", Q_normed[0, t].view(-1))
+    save_npy("k_normed.npy", K_normed[0, t].view(-1))
+    save_npy("v_normed.npy", V_normed[0, t].view(-1))
     
     # RoPE
-    np.save(out_dir / "cos_val.npy", cos[t])
-    np.save(out_dir / "sin_val.npy", sin[t])
-    np.save(out_dir / "q_rope.npy", Q_rope[t].reshape(-1))
-    np.save(out_dir / "k_rope.npy", K_rope[t].reshape(-1))
+    save_npy("cos_val.npy", cos[t])
+    save_npy("sin_val.npy", sin[t])
+    save_npy("q_rope.npy", Q_rope[0, t].view(-1))
+    save_npy("k_rope.npy", K_rope[0, t].view(-1))
     
     # KV Cache state for sequence length 32
-    # Store K_rope and V_normed up to pos 31
-    np.save(out_dir / "k_cache.npy", K_rope[:32].transpose(1, 0, 2)) # (8, 32, 256)
-    np.save(out_dir / "v_cache.npy", V_normed[:32].transpose(1, 0, 2)) # (8, 32, 256)
+    # k_cache, v_cache shape: (num_kv_heads, seq_len, head_dim) -> (8, 32, 256)
+    save_npy("k_cache.npy", K_rope[0].transpose(0, 1)) # (8, 32, 256)
+    save_npy("v_cache.npy", V_normed[0].transpose(0, 1)) # (8, 32, 256)
     
     # Attention Output
-    np.save(out_dir / "attn_out.npy", attn_out[t].reshape(-1))
-    np.save(out_dir / "attn_proj.npy", attn_proj[t])
-    np.save(out_dir / "x_post_attn.npy", x_post_attn[t])
+    save_npy("attn_out.npy", attn_out[0, :, t, :].reshape(-1)) # (16 * 256)
+    save_npy("w_o.npy", o_proj)
+    save_npy("attn_proj.npy", attn_proj[0, t])
+    
+    # Post-Attn Norm & residual
+    save_npy("post_attn_norm_weights.npy", layer.post_attention_layernorm.weight)
+    save_npy("x_post_attn.npy", x_post_attn[0, t])
     
     # Pre-FFN Norm
-    np.save(out_dir / "x_norm2.npy", x_norm2[t])
+    save_npy("ffn_norm_weights.npy", layer.pre_feedforward_layernorm.weight)
+    save_npy("x_norm2.npy", x_norm2[0, t])
     
     # MLP projections
-    np.save(out_dir / "gate.npy", gate[t])
-    np.save(out_dir / "up.npy", up[t])
-    np.save(out_dir / "geglu_out.npy", geglu[t])
-    np.save(out_dir / "down.npy", down[t])
+    save_npy("w_gate.npy", gate_proj)
+    save_npy("w_up.npy", up_proj)
+    save_npy("gate.npy", gate[0, t])
+    save_npy("up.npy", up[0, t])
     
-    # Output scale & final residual
-    np.save(out_dir / "output_hidden_states.npy", y_final[t])
+    # GeGLU & Down proj
+    save_npy("geglu_out.npy", geglu_out[0, t])
+    save_npy("w_down.npy", down_proj)
+    save_npy("down.npy", down[0, t])
     
-    print("Gemma-4 reference data saved successfully!")
+    # Post-FFN Norm & final residual
+    save_npy("post_ffw_norm_weights.npy", layer.post_feedforward_layernorm.weight)
+    save_npy("output_hidden_states.npy", y_final[0, t])
+    
+    print("Gemma-4 reference data saved successfully from HuggingFace oracle!")
 
 if __name__ == "__main__":
     main()

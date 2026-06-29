@@ -311,7 +311,10 @@ class LlamaNPUModel:
     def run_rope_cpu_gemma(self, x_bf16, pos, base_freq):
         x_flat = x_bf16.reshape(-1)
         K = x_flat.shape[0]
-        dim = 256 if base_freq == 10000.0 else 512
+        if self.model_type == "gemma3":
+            dim = 256
+        else:
+            dim = 256 if base_freq == 10000.0 else 512
         num_heads = K // dim
         
         if base_freq == 10000.0:

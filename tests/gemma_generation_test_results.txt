@@ -9,5 +9,5 @@ Do you
 llama.cpp Output:
 The capital of France is
 
-NPU Latencies (ms) after first token: ['1142.0', '1221.0', '1171.3', '1140.1']
-Average latency after first token: 1168.6 ms
+NPU Latencies (ms) after first token: ['1143.4', '1139.3', '1123.8', '1212.8']
+Average latency after first token: 1154.8 ms
