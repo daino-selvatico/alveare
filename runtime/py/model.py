@@ -38,6 +38,14 @@ class LlamaNPUModel:
             self.head_dim = self.config.get("head_dim", 256)
             self.num_hidden_layers = self.config.get("num_hidden_layers", 26)
             self.vocab_size = self.config.get("vocab_size", 262144)
+        elif self.model_type == "gemma4":
+            self.hidden_size = self.config.get("hidden_size", 3840)
+            self.intermediate_size = self.config.get("intermediate_size", 15360)
+            self.num_attention_heads = self.config.get("num_attention_heads", 16)
+            self.num_key_value_heads = self.config.get("num_key_value_heads", 8)
+            self.head_dim = self.config.get("head_dim", 256)
+            self.num_hidden_layers = self.config.get("num_hidden_layers", 48)
+            self.vocab_size = self.config.get("vocab_size", 262144)
         else:
             # Llama-3.2 defaults
             self.hidden_size = 2048
@@ -56,11 +64,14 @@ class LlamaNPUModel:
         self.layer_attn_norms = [np.load(self.weights_dir / f"blk.{l}.attn_norm.weight.npy") for l in range(self.num_hidden_layers)]
         self.layer_ffn_norms = [np.load(self.weights_dir / f"blk.{l}.ffn_norm.weight.npy") for l in range(self.num_hidden_layers)]
         
-        if self.model_type == "gemma3":
+        if self.model_type in ["gemma3", "gemma4"]:
             self.layer_post_attn_norms = [np.load(self.weights_dir / f"blk.{l}.post_attention_norm.weight.npy") for l in range(self.num_hidden_layers)]
             self.layer_post_ffw_norms = [np.load(self.weights_dir / f"blk.{l}.post_ffw_norm.weight.npy") for l in range(self.num_hidden_layers)]
             self.layer_q_norms = [np.load(self.weights_dir / f"blk.{l}.attn_q_norm.weight.npy") for l in range(self.num_hidden_layers)]
             self.layer_k_norms = [np.load(self.weights_dir / f"blk.{l}.attn_k_norm.weight.npy") for l in range(self.num_hidden_layers)]
+            
+        if self.model_type == "gemma4":
+            self.layer_output_scales = [np.load(self.weights_dir / f"blk.{l}.layer_output_scale.weight.npy")[0] for l in range(self.num_hidden_layers)]
             
         print("Mmap-mapping layer matmul weights...")
         self.layer_weights = []
@@ -90,13 +101,27 @@ class LlamaNPUModel:
             print("Precomputing Gemma RoPE tables...")
             self.cos_sin_table_sliding = self.precompute_cos_sin_table_gemma(base=10000.0)
             self.cos_sin_table_full = self.precompute_cos_sin_table_gemma(base=1000000.0)
+        elif self.model_type == "gemma4":
+            print("Precomputing Gemma-4 RoPE tables...")
+            self.cos_sin_table_sliding = self.precompute_cos_sin_table_gemma(base=10000.0, dim=256)
+            self.cos_sin_table_full = self.precompute_cos_sin_table_gemma(base=1000000.0, dim=512)
         else:
             print("Precomputing Llama RoPE cos/sin tables...")
             self.cos_sin_table = self.precompute_cos_sin_table()
             
         print("Initializing KV caches...")
-        self.k_caches = [np.zeros((self.num_key_value_heads, self.max_seq_len, self.head_dim), dtype=bfloat16) for _ in range(self.num_hidden_layers)]
-        self.v_caches = [np.zeros((self.num_key_value_heads, self.max_seq_len, self.head_dim), dtype=bfloat16) for _ in range(self.num_hidden_layers)]
+        if self.model_type == "gemma4":
+            self.k_caches = []
+            self.v_caches = []
+            for l in range(self.num_hidden_layers):
+                is_sliding = (l + 1) % 6 != 0
+                kv_heads = 8 if is_sliding else 1
+                h_dim = 256 if is_sliding else 512
+                self.k_caches.append(np.zeros((kv_heads, self.max_seq_len, h_dim), dtype=bfloat16))
+                self.v_caches.append(np.zeros((kv_heads, self.max_seq_len, h_dim), dtype=bfloat16))
+        else:
+            self.k_caches = [np.zeros((self.num_key_value_heads, self.max_seq_len, self.head_dim), dtype=bfloat16) for _ in range(self.num_hidden_layers)]
+            self.v_caches = [np.zeros((self.num_key_value_heads, self.max_seq_len, self.head_dim), dtype=bfloat16) for _ in range(self.num_hidden_layers)]
         
         print("Allocating resident NPU tensors for zero-copy execution...")
         # GEMV tensors
@@ -158,8 +183,9 @@ class LlamaNPUModel:
             
         return cos_sin_table.astype(bfloat16)
 
-    def precompute_cos_sin_table_gemma(self, base):
-        dim = self.head_dim # 256
+    def precompute_cos_sin_table_gemma(self, base, dim=None):
+        if dim is None:
+            dim = self.head_dim # 256
         inv_freq = 1.0 / (base ** (np.arange(0, dim, 2, dtype=np.float32) / dim))
         cos_sin_table = np.zeros((self.max_seq_len, dim), dtype=np.float32)
         for pos in range(self.max_seq_len):
@@ -253,9 +279,13 @@ class LlamaNPUModel:
         return res[:K].astype(bfloat16)
 
     def run_rmsnorm_cpu(self, x_bf16, w_fp32):
-        if self.model_type == "gemma3":
+        if self.model_type in ["gemma3", "gemma4"]:
+            eps = 1e-6
             variance = np.mean(x_bf16.astype(np.float32) ** 2)
-            return (x_bf16.astype(np.float32) * (1.0 / np.sqrt(variance + 1e-6)) * w_fp32).astype(bfloat16)
+            normed = x_bf16.astype(np.float32) * (1.0 / np.sqrt(variance + eps))
+            if w_fp32 is not None:
+                normed = normed * w_fp32
+            return normed.astype(bfloat16)
         else:
             variance = np.mean(x_bf16.astype(np.float32) ** 2)
             return (x_bf16.astype(np.float32) * (1.0 / np.sqrt(variance + 1e-5)) * w_fp32).astype(bfloat16)
@@ -281,7 +311,7 @@ class LlamaNPUModel:
     def run_rope_cpu_gemma(self, x_bf16, pos, base_freq):
         x_flat = x_bf16.reshape(-1)
         K = x_flat.shape[0]
-        dim = self.head_dim # 256
+        dim = 256 if base_freq == 10000.0 else 512
         num_heads = K // dim
         
         if base_freq == 10000.0:
@@ -304,16 +334,27 @@ class LlamaNPUModel:
         return y_fp32.reshape(-1).astype(bfloat16)
 
     def run_attention_host(self, q_rope, pos, l):
-        num_heads = self.num_attention_heads
-        num_kv_heads = self.num_key_value_heads
-        dim = self.head_dim
-        
+        if self.model_type == "gemma4":
+            is_sliding = (l + 1) % 6 != 0
+            num_heads = 16
+            num_kv_heads = 8 if is_sliding else 1
+            dim = 256 if is_sliding else 512
+            scale = 1.0
+            window_size = 1024
+        else:
+            num_heads = self.num_attention_heads
+            num_kv_heads = self.num_key_value_heads
+            dim = self.head_dim
+            scale = 1.0 / np.sqrt(dim)
+            window_size = 512
+            
         q = q_rope.astype(np.float32).reshape(num_heads, dim)
         seq_len = pos + 1
         
         # Sliding-window slicing for sliding layers
-        if self.model_type == "gemma3" and (l + 1) % 6 != 0:
-            W = min(seq_len, 512)
+        is_sliding_layer = (self.model_type == "gemma3" and (l + 1) % 6 != 0) or (self.model_type == "gemma4" and (l + 1) % 6 != 0)
+        if is_sliding_layer:
+            W = min(seq_len, window_size)
             k = self.k_caches[l][:, pos + 1 - W : pos + 1, :].astype(np.float32)
             v = self.v_caches[l][:, pos + 1 - W : pos + 1, :].astype(np.float32)
         else:
@@ -328,19 +369,9 @@ class LlamaNPUModel:
             v = np.repeat(v, group_ratio, axis=0)
             
         # Compute attention scores
-        scale = 1.0 / np.sqrt(dim)
         scores = np.zeros((num_heads, W), dtype=np.float32)
         for h in range(num_heads):
             scores[h] = np.dot(k[h], q[h]) * scale
-            
-        # Causal mask (only needed if seq_len > 1, but batch=1 decode seq_len is W here)
-        # Note: at decode time, we only query for a single token, but we dot product with past keys
-        # The prompt prefill path is run on CPU and doesn't call run_attention_host for batch decode.
-        # But for correctness during layer tests:
-        if W > 1 and q.shape[0] == num_heads:
-            # We are querying the current token (index -1) against all tokens in the window.
-            # No masking is needed since the current token can see all past tokens!
-            pass
             
         # Softmax along last dimension
         max_scores = np.max(scores, axis=-1, keepdims=True)
@@ -435,6 +466,106 @@ class LlamaNPUModel:
             y_final = (x_post_attn.astype(np.float32) + down_normed.astype(np.float32)).astype(bfloat16)
             
             return y_final
+        elif self.model_type == "gemma4":
+            # 1. Input RMSNorm
+            x_norm = self.run_rmsnorm_cpu(x_bf16, self.layer_attn_norms[l])
+            
+            # 2. QKV Projections (quantized weight GEMVs)
+            is_sliding = (l + 1) % 6 != 0
+            q_size = 4096 if is_sliding else 8192
+            k_size = 2048 if is_sliding else 512
+            v_size = 2048 if is_sliding else 512
+            h_dim = 256 if is_sliding else 512
+            n_heads = 16
+            n_kv_heads = 8 if is_sliding else 1
+            
+            if use_npu:
+                q = self.run_gemv_npu(self.layer_weights[l]["attn_q"], x_norm)[:q_size]
+                k = self.run_gemv_npu(self.layer_weights[l]["attn_k"], x_norm)[:k_size]
+                v = self.run_gemv_npu(self.layer_weights[l]["attn_v"], x_norm)[:v_size]
+            else:
+                x_norm_pad = np.zeros(4096, dtype=np.float32)
+                x_norm_pad[:3840] = x_norm.astype(np.float32)
+                q = (self.layer_weights_dequant[l]["attn_q"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:q_size]
+                k = (self.layer_weights_dequant[l]["attn_k"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:k_size]
+                v = (self.layer_weights_dequant[l]["attn_v"].astype(np.float32) @ x_norm_pad).astype(bfloat16)[:v_size]
+                
+            # 3. QK-Norm & V-Norm
+            q_normed = np.zeros_like(q)
+            for h in range(n_heads):
+                q_h = q[h * h_dim : (h + 1) * h_dim]
+                q_normed[h * h_dim : (h + 1) * h_dim] = self.run_rmsnorm_cpu(q_h, self.layer_q_norms[l])
+                
+            k_normed = np.zeros_like(k)
+            for h in range(n_kv_heads):
+                k_h = k[h * h_dim : (h + 1) * h_dim]
+                k_normed[h * h_dim : (h + 1) * h_dim] = self.run_rmsnorm_cpu(k_h, self.layer_k_norms[l])
+                
+            v_normed = np.zeros_like(v)
+            for h in range(n_kv_heads):
+                v_h = v[h * h_dim : (h + 1) * h_dim]
+                v_normed[h * h_dim : (h + 1) * h_dim] = self.run_rmsnorm_cpu(v_h, None)
+                
+            # 4. RoPE
+            base_freq = 10000.0 if is_sliding else 1000000.0
+            q_rope = self.run_rope_cpu_gemma(q_normed, pos, base_freq)
+            k_rope = self.run_rope_cpu_gemma(k_normed, pos, base_freq)
+            
+            # 5. Insert K and V into KV Cache
+            self.k_caches[l][:, pos, :] = k_rope.reshape(n_kv_heads, h_dim)
+            self.v_caches[l][:, pos, :] = v_normed.reshape(n_kv_heads, h_dim)
+            
+            # 6. Attention
+            attn_out = self.run_attention_host(q_rope, pos, l)
+            
+            # 7. Attention Output Projection
+            attn_out_size = 4096 if is_sliding else 8192
+            if use_npu:
+                attn_proj = self.run_gemv_npu(self.layer_weights[l]["attn_output"], attn_out)[:3840]
+            else:
+                attn_out_pad = np.zeros(attn_out_size, dtype=np.float32)
+                attn_out_pad[:len(attn_out)] = attn_out.astype(np.float32)
+                attn_proj = (self.layer_weights_dequant[l]["attn_output"].astype(np.float32) @ attn_out_pad).astype(bfloat16)[:3840]
+                
+            # 8. Post-attention norm & residual add
+            attn_proj_normed = self.run_rmsnorm_cpu(attn_proj, self.layer_post_attn_norms[l])
+            x_post_attn = (x_bf16.astype(np.float32) + attn_proj_normed.astype(np.float32)).astype(bfloat16)
+            
+            # 9. Pre-FFN norm
+            x_norm2 = self.run_rmsnorm_cpu(x_post_attn, self.layer_ffn_norms[l])
+            
+            # 10. MLP Gate & Up
+            if use_npu:
+                gate = self.run_gemv_npu(self.layer_weights[l]["ffn_gate"], x_norm2)[:15360]
+                up = self.run_gemv_npu(self.layer_weights[l]["ffn_up"], x_norm2)[:15360]
+            else:
+                x_norm2_pad = np.zeros(4096, dtype=np.float32)
+                x_norm2_pad[:3840] = x_norm2.astype(np.float32)
+                gate = (self.layer_weights_dequant[l]["ffn_gate"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
+                up = (self.layer_weights_dequant[l]["ffn_up"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
+                
+            # 11. GeGLU activation (gelu_pytorch_tanh)
+            gate_fp32 = gate.astype(np.float32)
+            up_fp32 = up.astype(np.float32)
+            gelu_out = 0.5 * gate_fp32 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (gate_fp32 + 0.044715 * (gate_fp32 ** 3))))
+            geglu_out = (gelu_out * up_fp32).astype(bfloat16)
+            
+            # 12. MLP Down Projection
+            if use_npu:
+                down = self.run_gemv_npu(self.layer_weights[l]["ffn_down"], geglu_out)[:3840]
+            else:
+                geglu_out_pad = np.zeros(16384, dtype=np.float32)
+                geglu_out_pad[:15360] = geglu_out.astype(np.float32)
+                down = (self.layer_weights_dequant[l]["ffn_down"].astype(np.float32) @ geglu_out_pad).astype(bfloat16)[:3840]
+                
+            # 13. Post-FFN norm & second residual add
+            down_normed = self.run_rmsnorm_cpu(down, self.layer_post_ffw_norms[l])
+            y_final = (x_post_attn.astype(np.float32) + down_normed.astype(np.float32)).astype(bfloat16)
+            
+            # 14. Layer Output Scale
+            y_final = (y_final.astype(np.float32) * self.layer_output_scales[l]).astype(bfloat16)
+            
+            return y_final
         else:
             # Llama-3.2 layer execution
             x_norm = self.run_rmsnorm_cpu(x_bf16, self.layer_attn_norms[l])
@@ -511,6 +642,31 @@ class LlamaNPUModel:
                 logits = (self.lm_head_dequant.astype(np.float32) @ x_norm_pad).astype(bfloat16)
                 
             return logits[:self.vocab_size].astype(np.float32)
+        elif self.model_type == "gemma4":
+            # 1. Embedding lookup scaled by sqrt(hidden_size)
+            x_bf16 = (self.token_embd[token_id].astype(np.float32) * np.sqrt(self.hidden_size)).astype(bfloat16)
+            
+            # 2. Run layers
+            for l in range(self.num_hidden_layers):
+                x_bf16 = self.run_layer(x_bf16, pos, l, use_npu=use_npu)
+                
+            if not return_logits:
+                return None
+                
+            # 3. Final norm
+            x_norm = self.run_rmsnorm_cpu(x_bf16, self.output_norm)
+            
+            # 4. LM Head (tied embedding quantized GEMV)
+            if use_npu:
+                logits = self.run_gemv_npu(self.lm_head, x_norm)
+            else:
+                x_norm_pad = np.zeros(4096, dtype=np.float32)
+                x_norm_pad[:3840] = x_norm.astype(np.float32)
+                logits = (self.lm_head_dequant.astype(np.float32) @ x_norm_pad).astype(bfloat16)
+                
+            logits_unmasked = logits[:self.vocab_size].astype(np.float32)
+            logits_softcapped = 30.0 * np.tanh(logits_unmasked / 30.0)
+            return logits_softcapped
         else:
             # Llama-3.2
             x_bf16 = self.token_embd[token_id].astype(bfloat16)

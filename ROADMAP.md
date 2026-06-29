@@ -53,6 +53,18 @@ Spec: [`docs/milestones/M5-gemma-bringup.md`](docs/milestones/M5-gemma-bringup.m
 
 ---
 
+## M6 — Gemma-4 Layer Bringup
+
+**Status**: **Completed**.
+
+**Goal**: Implement the dense Gemma-4 architecture and validate one decoder layer (Layer 0) of Gemma-4-12B against a reference, reusing the vectorized multi-core `gemv_q` kernel.
+
+**Done when**: A unit test runs Layer 0 forward on the NPU and matches a CPU-dequantized reference layer output within a 25% relative error tolerance (expected quantization loss).
+
+Spec: [`docs/milestones/M6-gemma4-layer.md`](docs/milestones/M6-gemma4-layer.md)
+
+---
+
 ## Strategic shortcuts (evaluate before greenfielding)
 
 We do **not** want to hand-write every kernel from zero if there's leverage:
