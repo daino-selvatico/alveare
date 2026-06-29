@@ -7,7 +7,7 @@ from runtime.py.model import LlamaNPUModel
 from runtime.py.tokenizer_glue import TokenizerGlue
 
 def main():
-    weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights"
+    weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights_llama"
     model = LlamaNPUModel(weights_dir)
     tokenizer = TokenizerGlue()
     

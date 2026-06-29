@@ -66,3 +66,18 @@ Greedy Continuation (5 tokens):
 3. **Padded Weights Shape Mismatch in CPU Fallback**:
    - *Issue*: During prompt prefill or CPU validation, the dequantized weights are stored in the padded shape `(2048, 2048)`. Doing a direct matrix-vector multiplication with the unpadded activation (e.g. size 1152) raised shape mismatch exceptions on CPU.
    - *Resolution*: Explicitly padded the input activation vectors to the target column dimension (2048 or 8192) in the `use_npu=False` fallback path of `run_layer` and `forward`.
+
+## Weights directory convention
+
+Each model has its own dedicated, git-ignored quantized-weights directory:
+
+- `quantized_weights_llama/` — Llama-3.2-1B (no `config.json`; `model.py` defaults to `model_type=llama`).
+- `quantized_weights_gemma/` — Gemma-3-1B (`config.json` with `model_type=gemma3`).
+
+Tests point at their model's dedicated directory (Llama tests → `..._llama`, Gemma tests → `..._gemma`),
+so they pass regardless of what the shared default `quantized_weights/` happens to hold.
+
+Known limitation (future work): `runtime/py/server.py` still loads the single shared `quantized_weights/`
+directory and auto-detects the architecture from its `config.json`, so the server serves whichever
+model that directory currently points at (one model at a time). Multi-model serving / explicit model
+selection is deferred.

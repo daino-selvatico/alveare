@@ -18,7 +18,7 @@ class TestNPUGeneration(unittest.TestCase):
     
     def test_greedy_generation(self):
         print("\n=== Testing Greedy Generation on NPU ===")
-        weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights"
+        weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights_llama"
         self.assertTrue(weights_dir.exists(), f"Weights dir {weights_dir} does not exist. Run quantize_model.py first!")
         
         # Source the AIE environment so we have correct PYTHONPATH and LD_LIBRARY_PATH
