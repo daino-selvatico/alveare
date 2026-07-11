@@ -1,6 +1,8 @@
 # M7 — Gemma-4-12B End-to-End on NPU
 
-**Status**: **Completed**.
+**Status**: **Runs end-to-end (produces the correct answer). Fidelity vs `llama.cpp` NOT yet matched — deferred to M8.**
+
+The headline achievement is real: the full 48-layer Gemma-4-12B executes on the NPU with weight streaming and returns the correct answer. But greedy generation does **not** cleanly match `llama.cpp` (see "Side-by-Side" below) — this is an open fidelity gap, not a validated match. Verified independently by the orchestrator (regen + re-run), 2026-07-11.
 
 ## Goal
 
@@ -20,7 +22,12 @@ Run the full **Gemma-4-12B** model end-to-end on the AMD Ryzen AI XDNA2 NPU unde
   - **NPU (Alveare)**: `Paris`
   - **llama.cpp (Reference)**: `The user` (reasoning block: `The user is asking for the capital of France.\nThe capital of France is Paris.\nProvide the answer clearly.`, which resolves to `Paris` final answer).
 
-Both implementations yield identical final content outputs (`Paris`). Note that quantization noise on the NPU causes the model to jump directly to the answer, skipping the reasoning tokens.
+**Honest reading of this divergence (do not gloss over it):** llama.cpp runs the *same* Q4 GGUF, so this is **not** weight-quantization noise. Both prompts prime a `thought` channel (the Gemma-4 chat template ends in `<|channel>thought`), yet llama.cpp reasons while the NPU jumps straight to the answer — i.e. they diverge at **token 1**. The NPU reaches the correct answer here, but "same final word" is not "matches llama.cpp". Two candidate causes, not yet distinguished:
+
+1. **Compounded numerical error** across 48 layers (host-side ops in bf16, ~12% per-layer error at M6 layer-level) shifting the token-1 argmax from "reason" to "answer".
+2. **A bug in the global / full-attention layers** (`head_dim = 512`, `num_kv_heads = 1`, `V = K`), which were **never individually validated** — M6 only validated Layer 0, a *sliding* layer. Such a bug would only surface end-to-end, which is exactly this symptom. A trivial factual prompt could pass by luck.
+
+**M8 resolves this**: validate a global/full-attention layer against the HF oracle (as M6 did for a sliding layer) and align the chat template exactly with llama.cpp, before claiming a validated match.
 
 ## Performance & Latency
 

@@ -67,13 +67,23 @@ Spec: [`docs/milestones/M6-gemma4-layer.md`](docs/milestones/M6-gemma4-layer.md)
 
 ## M7 — Gemma-4-12B End-to-End on NPU
 
-**Status**: **Completed**.
+**Status**: **Runs end-to-end (correct answer); fidelity vs `llama.cpp` not yet matched → M8.**
 
 **Goal**: Run the full Gemma-4-12B model end-to-end on the Ryzen AI NPU and generate coherent text.
 
-**Done when**: The model runs end-to-end on the NPU and generates coherent text whose greedy continuation matches `llama.cpp` side-by-side.
+**Achieved**: full 48-layer forward on the NPU with per-layer weight streaming (~5.5 GB peak RAM), correct answer ("Paris"), ~8 s/token. **Open gap**: greedy output diverges from `llama.cpp` (same Q4 GGUF) at token 1 — the NPU skips the reasoning the model is primed to produce. Cause not yet distinguished (compounded numerical error vs an unvalidated global-layer bug). See the milestone doc; resolved in M8.
 
 Spec: [`docs/milestones/M7-gemma4-12b.md`](docs/milestones/M7-gemma4-12b.md)
+
+---
+
+## M8 — Close the Gemma-4-12B fidelity gap
+
+**Status**: **Planned.**
+
+**Goal**: Make the NPU Gemma-4-12B match `llama.cpp` greedy, or explain the residual difference.
+
+**Done when**: a *global*/full-attention layer is validated against the HF oracle (as M6 did for a sliding layer), the chat template is aligned exactly with `llama.cpp`, and the greedy trajectories match (or the remaining gap is attributed to quantified, benign numerical error).
 
 ---
 
