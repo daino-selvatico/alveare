@@ -4,7 +4,7 @@
 
 Alveare runs large language models on the AMD Ryzen AI NPU with a **fully open** stack — including the AIE kernels. It is a from-scratch alternative to the only other practical NPU runtime on Linux today, built so that anyone can bring their own model instead of waiting for closed, per-model kernel binaries.
 
-> **Status: working, correct, and slow.** Alveare runs **Gemma-4-12B end-to-end on the NPU**, and its greedy output matches `llama.cpp` (same Q4 GGUF) **token-for-token**. It also runs Llama-3.2-1B and Gemma-3-1B. Decode is ~5.2 s/token on the 12B — correctness came first, speed is the ongoing work. See [`ROADMAP.md`](ROADMAP.md).
+> **Status: working, correct, and slow.** Alveare runs **Gemma-4-12B end-to-end on the NPU**, and its greedy output matches `llama.cpp` (same Q4 GGUF) **token-for-token**. It also runs Llama-3.2-1B and Gemma-3-1B. Decode is ~4.6 s/token on the 12B — correctness came first, speed is the ongoing work. See [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
@@ -21,7 +21,7 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 
 ## What works today
 
-- **Gemma-4-12B-it** — full 48-layer forward on the NPU with per-layer weight streaming (~5.5 GB peak RAM). Greedy output matches `llama.cpp` token-for-token. ~5.2 s/token decode.
+- **Gemma-4-12B-it** — full 48-layer forward on the NPU with per-layer weight streaming (~5.5 GB peak RAM). Greedy output matches `llama.cpp` token-for-token. ~4.6 s/token decode.
 - **Gemma-3-1B-it** — end-to-end on the NPU, greedy continuation matches `llama.cpp`.
 - **Llama-3.2-1B-Instruct** — end-to-end on the NPU.
 - **OpenAI-compatible HTTP server** (`/v1/models`, `/v1/chat/completions`, streaming SSE).

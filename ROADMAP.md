@@ -87,6 +87,28 @@ Spec: [`docs/milestones/M7-gemma4-12b.md`](docs/milestones/M7-gemma4-12b.md)
 
 ---
 
+## M9 — Gemma-4-12B decode speed (multi-core)
+
+**Status**: **Completed.**
+
+**Goal**: Make the 12B decode meaningfully faster without changing outputs.
+
+**Achieved**: profiled the 12B (raw NPU GEMV compute dominant); scaled the `gemv_q` kernel from 4 to 8 AIE cores. Decode ~8 → ~5.5 s/token; prefill ~162 → ~102 s. Same-input greedy tokens still match `llama.cpp` exactly.
+
+---
+
+## M10 — Gemma-4-12B speed cycle 2 (streaming + sync)
+
+**Status**: **Completed.**
+
+**Goal**: One more profile-then-optimize pass, outputs unchanged.
+
+**Achieved**: reduced weight-streaming allocation via `mmap` and hoisted the activation sync out of the inner chunk loop (fewer `_sync_to_device` calls). Decode ~5.5 → ~4.6 s/token (measured); prefill ~146 → ~99 s. Same-input greedy tokens still match `llama.cpp` exactly; all 5 correctness gates green.
+
+**Note**: diminishing returns on incremental host-side tuning. Further large wins need kernel/dataflow work (padding-waste elimination, DMA/compute overlap) — deferred.
+
+---
+
 ## Strategic shortcuts (evaluate before greenfielding)
 
 We do **not** want to hand-write every kernel from zero if there's leverage:

@@ -181,7 +181,7 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-Add `"stream": true` for Server-Sent Events. Requests are serialized (one NPU), and the 12B model runs at ~5.2 s/token — this runtime is **correct-but-slow** by design.
+Add `"stream": true` for Server-Sent Events. Requests are serialized (one NPU), and the 12B model runs at ~4.6 s/token — this runtime is **correct-but-slow** by design.
 
 ---
 

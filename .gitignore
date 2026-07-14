@@ -36,3 +36,6 @@ tests/bench/*.raw
 .idea/
 .DS_Store
 *.swp
+
+# Claude Code / agent worktrees & scratch
+.claude/
