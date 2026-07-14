@@ -22,10 +22,14 @@ class TokenizerGlue:
         return self.tokenizer.decode(token_ids)
         
     def apply_chat_template(self, messages: list[dict[str, str]], add_generation_prompt: bool = True) -> list[int]:
+        kwargs = {}
+        if "enable_thinking" in getattr(self.tokenizer, "chat_template", ""):
+            kwargs["enable_thinking"] = True
         res = self.tokenizer.apply_chat_template(
             messages,
             tokenize=True,
-            add_generation_prompt=add_generation_prompt
+            add_generation_prompt=add_generation_prompt,
+            **kwargs
         )
         if isinstance(res, dict) or hasattr(res, "input_ids"):
             return res["input_ids"]

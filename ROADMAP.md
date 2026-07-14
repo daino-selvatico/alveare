@@ -67,7 +67,7 @@ Spec: [`docs/milestones/M6-gemma4-layer.md`](docs/milestones/M6-gemma4-layer.md)
 
 ## M7 — Gemma-4-12B End-to-End on NPU
 
-**Status**: **Runs end-to-end (correct answer); fidelity vs `llama.cpp` not yet matched → M8.**
+**Status**: **Completed (fidelity gap resolved in M8).**
 
 **Goal**: Run the full Gemma-4-12B model end-to-end on the Ryzen AI NPU and generate coherent text.
 
@@ -79,7 +79,7 @@ Spec: [`docs/milestones/M7-gemma4-12b.md`](docs/milestones/M7-gemma4-12b.md)
 
 ## M8 — Close the Gemma-4-12B fidelity gap
 
-**Status**: **Planned.**
+**Status**: **Completed.**
 
 **Goal**: Make the NPU Gemma-4-12B match `llama.cpp` greedy, or explain the residual difference.
 

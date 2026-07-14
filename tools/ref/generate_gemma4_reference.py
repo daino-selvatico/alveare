@@ -2,6 +2,7 @@ import os
 import sys
 import numpy as np
 import torch
+import argparse
 from pathlib import Path
 from transformers import AutoConfig
 
@@ -10,6 +11,11 @@ sys.path.append("/home/daino/miniconda3/envs/gemma4-ref/lib/python3.12/site-pack
 from transformers.models.gemma4_unified.modeling_gemma4_unified import Gemma4UnifiedForConditionalGeneration, apply_rotary_pos_emb
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--layer_idx", type=int, default=0, help="Layer index to dump (e.g. 0 for sliding, 5 for global)")
+    args = parser.parse_args()
+    layer_idx = args.layer_idx
+
     # Set random seed for reproducibility
     torch.manual_seed(42)
     np.random.seed(42)
@@ -29,8 +35,10 @@ def main():
     model.eval()
     
     # Text model layers are under model.model.language_model.layers
-    layer = model.model.language_model.layers[0]
     config = model.config.text_config
+    layer_type = config.layer_types[layer_idx]
+    print(f"Targeting layer {layer_idx} (type: {layer_type})")
+    layer = model.model.language_model.layers[layer_idx]
     
     seq_len = 32
     hidden_size = config.hidden_size # 3840
@@ -53,17 +61,26 @@ def main():
     # Step 2: Projections
     q_proj = layer.self_attn.q_proj.weight.detach()
     k_proj = layer.self_attn.k_proj.weight.detach()
-    v_proj = layer.self_attn.v_proj.weight.detach()
     
     Q = torch.matmul(x_norm, q_proj.T)
     K = torch.matmul(x_norm, k_proj.T)
-    V = torch.matmul(x_norm, v_proj.T)
     
+    if hasattr(layer.self_attn, "v_proj") and layer.self_attn.v_proj is not None:
+        v_proj = layer.self_attn.v_proj.weight.detach()
+        V = torch.matmul(x_norm, v_proj.T)
+    else:
+        v_proj = None
+        V = K
+        
     # Dimensions
     num_heads = config.num_attention_heads # 16
-    num_kv_heads = config.num_key_value_heads # 8
-    head_dim = config.head_dim # 256
-    
+    if layer_type == "full_attention":
+        num_kv_heads = config.num_global_key_value_heads # 1
+        head_dim = config.global_head_dim # 512
+    else:
+        num_kv_heads = config.num_key_value_heads # 8
+        head_dim = config.head_dim # 256
+        
     # Reshape
     Q_reshaped = Q.view(1, seq_len, num_heads, head_dim)
     K_reshaped = K.view(1, seq_len, num_kv_heads, head_dim)
@@ -79,7 +96,7 @@ def main():
     # Step 4: RoPE
     position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0)
     rotary_emb = model.model.language_model.rotary_emb
-    cos_ref, sin_ref = rotary_emb(V_normed, position_ids, layer_type="sliding_attention")
+    cos_ref, sin_ref = rotary_emb(V_normed, position_ids, layer_type=layer_type)
     cos = cos_ref.squeeze(0) # shape (seq_len, head_dim)
     sin = sin_ref.squeeze(0)
     
@@ -90,13 +107,13 @@ def main():
     # Step 5: Attention GQA
     scaling = layer.self_attn.scaling # 1.0
     
-    Q_rope_trans = Q_rope.transpose(1, 2) # (1, 16, seq_len, 256)
-    K_rope_trans = K_rope.transpose(1, 2) # (1, 8, seq_len, 256)
-    V_normed_trans = V_normed.transpose(1, 2) # (1, 8, seq_len, 256)
+    Q_rope_trans = Q_rope.transpose(1, 2) # (1, 16, seq_len, head_dim)
+    K_rope_trans = K_rope.transpose(1, 2) # (1, num_kv_heads, seq_len, head_dim)
+    V_normed_trans = V_normed.transpose(1, 2) # (1, num_kv_heads, seq_len, head_dim)
     
-    ratio = num_heads // num_kv_heads # 2
-    K_rope_rep = torch.repeat_interleave(K_rope_trans, ratio, dim=1) # (1, 16, seq_len, 256)
-    V_normed_rep = torch.repeat_interleave(V_normed_trans, ratio, dim=1) # (1, 16, seq_len, 256)
+    ratio = num_heads // num_kv_heads
+    K_rope_rep = torch.repeat_interleave(K_rope_trans, ratio, dim=1)
+    V_normed_rep = torch.repeat_interleave(V_normed_trans, ratio, dim=1)
     
     # Dot product attention scores
     scores = torch.matmul(Q_rope_trans, K_rope_rep.transpose(-1, -2)) * scaling # (1, 16, seq_len, seq_len)
@@ -109,7 +126,7 @@ def main():
     attn_probs = torch.softmax(scores.to(torch.float32), dim=-1).to(torch.bfloat16)
     
     # Weighted sum
-    attn_out = torch.matmul(attn_probs, V_normed_rep) # (1, 16, seq_len, 256)
+    attn_out = torch.matmul(attn_probs, V_normed_rep)
     
     # Reshape back to contiguous
     attn_out_flat = attn_out.transpose(1, 2).contiguous().view(1, seq_len, num_heads * head_dim)
@@ -160,7 +177,8 @@ def main():
     
     # Save the 32nd token (decode step, t = 31)
     t = 31
-    out_dir = Path(__file__).resolve().parents[2] / "tools" / "ref" / "data_gemma4"
+    dir_name = "data_gemma4" if layer_idx == 0 else f"data_gemma4_layer_{layer_idx}"
+    out_dir = Path(__file__).resolve().parents[2] / "tools" / "ref" / dir_name
     out_dir.mkdir(parents=True, exist_ok=True)
     
     # Helper to save tensor to npy
@@ -175,7 +193,8 @@ def main():
     # QKV Projections
     save_npy("w_q.npy", q_proj)
     save_npy("w_k.npy", k_proj)
-    save_npy("w_v.npy", v_proj)
+    if v_proj is not None:
+        save_npy("w_v.npy", v_proj)
     save_npy("q_val.npy", Q[0, t])
     save_npy("k_val.npy", K[0, t])
     save_npy("v_val.npy", V[0, t])
@@ -194,12 +213,12 @@ def main():
     save_npy("k_rope.npy", K_rope[0, t].view(-1))
     
     # KV Cache state for sequence length 32
-    # k_cache, v_cache shape: (num_kv_heads, seq_len, head_dim) -> (8, 32, 256)
-    save_npy("k_cache.npy", K_rope[0].transpose(0, 1)) # (8, 32, 256)
-    save_npy("v_cache.npy", V_normed[0].transpose(0, 1)) # (8, 32, 256)
+    # k_cache, v_cache shape: (num_kv_heads, seq_len, head_dim)
+    save_npy("k_cache.npy", K_rope[0].transpose(0, 1))
+    save_npy("v_cache.npy", V_normed[0].transpose(0, 1))
     
     # Attention Output
-    save_npy("attn_out.npy", attn_out[0, :, t, :].reshape(-1)) # (16 * 256)
+    save_npy("attn_out.npy", attn_out[0, :, t, :].reshape(-1))
     save_npy("w_o.npy", o_proj)
     save_npy("attn_proj.npy", attn_proj[0, t])
     
@@ -226,7 +245,7 @@ def main():
     save_npy("post_ffw_norm_weights.npy", layer.post_feedforward_layernorm.weight)
     save_npy("output_hidden_states.npy", y_final[0, t])
     
-    print("Gemma-4 reference data saved successfully from HuggingFace oracle!")
+    print(f"Gemma-4 reference data saved successfully under {dir_name} from HuggingFace oracle!")
 
 if __name__ == "__main__":
     main()

@@ -209,7 +209,15 @@ class LlamaNPUModel:
     def precompute_cos_sin_table_gemma(self, base, dim=None):
         if dim is None:
             dim = self.head_dim # 256
-        inv_freq = 1.0 / (base ** (np.arange(0, dim, 2, dtype=np.float32) / dim))
+        if self.model_type == "gemma4" and dim == 512:
+            # Proportional RoPE for global layers (partial_rotary_factor = 0.25)
+            rope_angles = int(0.25 * dim // 2) # 64
+            inv_freq_rotated = 1.0 / (base ** (np.arange(0, 2 * rope_angles, 2, dtype=np.float32) / dim))
+            inv_freq = np.zeros(dim // 2, dtype=np.float32)
+            inv_freq[:rope_angles] = inv_freq_rotated
+        else:
+            inv_freq = 1.0 / (base ** (np.arange(0, dim, 2, dtype=np.float32) / dim))
+            
         cos_sin_table = np.zeros((self.max_seq_len, dim), dtype=np.float32)
         for pos in range(self.max_seq_len):
             freqs = pos * inv_freq

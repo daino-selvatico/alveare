@@ -2,10 +2,11 @@
 Prompt: The capital of France is
 
 NPU Output:
-Paris
+<|channel>thought
+The user
 
 llama.cpp Output:
 The user
 
-NPU Latencies (s) after first token: ['8.017']
-Average latency after first token: 8.017 s
+NPU Latencies (s) after first token: ['8.968', '9.134', '8.831', '9.180']
+Average latency after first token: 9.028 s

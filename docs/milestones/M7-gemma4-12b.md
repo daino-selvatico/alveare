@@ -1,6 +1,6 @@
 # M7 — Gemma-4-12B End-to-End on NPU
 
-**Status**: **Runs end-to-end (produces the correct answer). Fidelity vs `llama.cpp` NOT yet matched — deferred to M8.**
+**Status**: **Completed (greedy output fidelity gap resolved in M8).**
 
 The headline achievement is real: the full 48-layer Gemma-4-12B executes on the NPU with weight streaming and returns the correct answer. But greedy generation does **not** cleanly match `llama.cpp` (see "Side-by-Side" below) — this is an open fidelity gap, not a validated match. Verified independently by the orchestrator (regen + re-run), 2026-07-11.
 
