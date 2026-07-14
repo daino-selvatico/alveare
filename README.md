@@ -76,7 +76,13 @@ alveare help             Show usage.
 
 ## Models — where they go and in what format
 
-**Alveare does not load GGUF or safetensors at serve time.** You take a source **GGUF** and run the matching quantizer in `tools/`, which converts it into Alveare's own weight layout — **Q4_0 block-quantized** tensors (blocks of 32, per-block scale) written as `.npy` files (weight matrices pre-packed/tiled for the `gemv_q` NPU kernel), plus a `config.json`. The server then loads that directory and streams the weights to the NPU per layer.
+**You download a single GGUF, exactly as usual. You do NOT download the many-file `.npy` directory — you generate it locally.**
+
+Alveare cannot load a GGUF (or safetensors) directly at serve time: the NPU kernel needs weights pre-tiled into Alveare's own layout. So the workflow is always **one GGUF file → run the quantizer → a directory of `.npy` files → serve that directory**:
+
+- **What you download:** a normal single-file **GGUF** of the model (from Hugging Face — e.g. `bartowski`/`unsloth`/`ggml-org` repos), the same file you'd use with `llama.cpp`.
+- **What Alveare produces (locally, once):** running `tools/quantize_<model>.py` on that GGUF writes a directory of **Q4_0 block-quantized** tensors (blocks of 32, per-block scale) as `.npy` files pre-packed for the `gemv_q` NPU kernel, plus a `config.json`. This directory is **generated, never downloaded**, and is git-ignored (it's large model data).
+- **What you serve:** that directory. `alveare serve gemma4` is just a shorthand for `alveare serve ./quantized_weights_gemma4` (the shorthands map names → the default output directories in the table below). You can always pass a directory path directly instead of a shorthand.
 
 Each model has a quantizer and a fixed output directory:
 
@@ -90,14 +96,23 @@ The server **auto-detects the architecture** from `config.json` in the served di
 
 ### From "I have a model" to "it's served"
 
-1. **Get a source GGUF.** Download the model's GGUF (e.g. from Hugging Face / your `llama.cpp` models dir). The quantize scripts currently read a **hardcoded `gguf_path` at the top of the script** — edit it to point at your GGUF (and optionally `out_dir`). Example expected path in `tools/quantize_gemma4.py`: a local `gemma-4-12b-it-…-Q4_K_XL.gguf`.
-2. **Quantize** into Alveare's layout:
+Everything below runs **inside the `alveare-aie` conda env with the NPU toolchain sourced** (see [`docs/SETUP.md`](docs/SETUP.md)). Running from another env (e.g. conda `base`) is the #1 gotcha — the server deps and the NPU stack won't be there:
+
+```bash
+conda activate alveare-aie
+pip install -r requirements.txt              # fastapi/uvicorn/... (one-time)
+cd mlir-aie && source utils/env_setup.sh && cd ..   # NPU stack (pyxrt/aie)
+```
+
+1. **Download a source GGUF** — a single file, as usual. E.g. for Gemma-4-12B grab a GGUF from Hugging Face (`bartowski/…gemma-4-12b-it-GGUF`, `unsloth/…`, etc.), the same file you'd give `llama.cpp`.
+2. **Point the quantizer at it.** The quantize scripts read a **hardcoded `gguf_path` at the top of the script** — edit that line to your GGUF's path (and optionally `out_dir`). *(A follow-up will make this a CLI argument.)*
+3. **Quantize** — this generates the `.npy` directory (a few minutes; the 12B output is ~9.7 GB):
    ```bash
    python tools/quantize_gemma4.py     # writes ./quantized_weights_gemma4/ (config.json + *.npy)
    ```
-3. **Serve** it:
+4. **Serve** it:
    ```bash
-   ./alveare serve gemma4              # or the explicit dir: ./alveare serve ./quantized_weights_gemma4
+   ./alveare serve gemma4              # shorthand for: ./alveare serve ./quantized_weights_gemma4
    ```
 
 That's the whole path. Supported models today: **Llama-3.2-1B, Gemma-3-1B, Gemma-4-12B** (NPU-only, Linux-only).

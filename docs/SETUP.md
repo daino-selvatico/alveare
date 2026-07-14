@@ -80,13 +80,15 @@ git checkout 8ed2e6b817
 
 ## 5. Runtime + tooling Python dependencies
 
-The host runtime and tools need these in the `alveare-aie` env (in addition to the wheels above):
+The host runtime and tools need these in the `alveare-aie` env (in addition to the wheels above). Use the pinned list:
 
 ```bash
-pip install fastapi uvicorn pydantic numpy ml_dtypes torch transformers gguf requests
+pip install -r requirements.txt
 ```
 
-(`torch`/`transformers` are used for the tokenizer and the CPU reference oracles; `gguf` for reading source GGUF files during quantization.)
+That covers `fastapi`/`uvicorn`/`pydantic` (the OpenAI-compatible server), `numpy`/`ml_dtypes`/`gguf` (weights), `transformers` (tokenizer/chat template), and `requests` (the llama.cpp verification tools). Add `torch` separately if you want to regenerate the HF reference oracles (`tools/ref/`), which is only needed for development, not for serving.
+
+> **Serving fails with `ModuleNotFoundError: No module named 'fastapi'`?** You're running from the wrong environment (usually conda `base`). `conda activate alveare-aie` and install the requirements above. `alveare serve` now preflights this and prints exactly what's missing.
 
 ---
 

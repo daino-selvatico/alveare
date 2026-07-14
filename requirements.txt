@@ -1,0 +1,22 @@
+# Alveare runtime + tooling Python dependencies.
+#
+# Install INSIDE the `alveare-aie` conda env (Python 3.14), AFTER the AIE
+# toolchain (mlir_aie + llvm-aie wheels) and XRT — see docs/SETUP.md.
+# The NPU stack itself (pyxrt, aie) comes from the system XRT packages and the
+# mlir_aie/llvm-aie wheels, NOT from this file.
+
+# HTTP server (OpenAI-compatible API)
+fastapi
+uvicorn
+pydantic
+
+# Numerics / weights
+numpy
+ml_dtypes
+gguf
+
+# Tokenizers / chat templates (transformers is used for tokenization only)
+transformers
+
+# Used by the llama.cpp side-by-side / same-input verification tools
+requests

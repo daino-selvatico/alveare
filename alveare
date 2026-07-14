@@ -127,6 +127,12 @@ cmd_setup() {
     echo "  [warn] cannot import 'aie' (install mlir_aie wheel; see docs/SETUP.md)"
   fi
 
+  if "$PY" -c 'import fastapi, uvicorn, pydantic' >/dev/null 2>&1; then
+    echo "  [ok]   server deps (fastapi/uvicorn/pydantic) present"
+  else
+    echo "  [warn] server deps missing (pip install -r requirements.txt)"
+  fi
+
   echo
   if [ "$ok" -eq 1 ]; then
     echo "Core prerequisites look present. Run 'alveare check' for a full NPU smoke test."
@@ -163,6 +169,24 @@ cmd_serve() {
   fi
   if [ ! -f "$weights_dir/config.json" ]; then
     echo "warning: $weights_dir has no config.json; the server may fail to detect the model." >&2
+  fi
+
+  # Preflight: the server needs its runtime deps AND the NPU stack. The #1
+  # gotcha is running from the wrong env (e.g. conda 'base'), where these are
+  # missing. Fail early with an actionable message instead of a raw traceback.
+  local missing=""
+  "$PY" -c 'import fastapi, uvicorn, pydantic' >/dev/null 2>&1 || missing="$missing fastapi/uvicorn/pydantic"
+  "$PY" -c 'import pyxrt' >/dev/null 2>&1 || missing="$missing pyxrt(NPU)"
+  if [ -n "$missing" ]; then
+    echo "error: missing Python dependencies for '$PY':$missing" >&2
+    echo >&2
+    echo "You are probably not in the 'alveare-aie' conda environment." >&2
+    echo "Activate it and install the runtime deps, then retry:" >&2
+    echo "    conda activate alveare-aie" >&2
+    echo "    pip install -r requirements.txt          # fastapi, uvicorn, ..." >&2
+    echo "    cd mlir-aie && source utils/env_setup.sh  # NPU stack (pyxrt/aie)" >&2
+    echo "See docs/SETUP.md for the full, version-pinned setup." >&2
+    exit 1
   fi
 
   echo "Serving model from: $weights_dir"
