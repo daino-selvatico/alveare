@@ -57,32 +57,37 @@ cd mlir-aie && source utils/env_setup.sh && cd ..
 # 3. Verify the NPU end-to-end:
 ./alveare check
 
-# 4. Quantize a source GGUF into Alveare's Q4 layout (a single GGUF you downloaded):
-./alveare quantize gemma4 /path/to/gemma-4-12b-it.gguf      # -> quantized_weights_gemma-4-12b-it
-#   ...or give it a short name:
-./alveare quantize gemma4 /path/to/gemma-4-12b-it.gguf gemma4   # -> quantized_weights_gemma4
+# 4. Quantize a source GGUF into Alveare's Q4 layout (a single GGUF you downloaded).
+#    The architecture is auto-detected from the GGUF; give it a short alias:
+./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf     # -> quantized_weights_g4-12b
+#    (omit the alias to name it after the GGUF file)
 
-# 5. Serve it (OpenAI-compatible HTTP server):
-./alveare serve gemma4
+# 5. See what's installed:
+./alveare list
 
-# 6. Talk to it from another terminal:
+# 6. Serve it (OpenAI-compatible HTTP server):
+./alveare serve g4-12b
+
+# 7. Talk to it from another terminal:
 ./alveare chat
 ```
 
 ### The `alveare` command
 
 ```
-alveare install                    One-command full install (env + toolchain + deps).
-alveare setup                      Setup guidance + lightweight preflight checks.
-alveare check                      NPU smoke test (wraps tools/check_npu.sh).
-alveare quantize <arch> <gguf> [name]   GGUF -> Alveare Q4 weights dir.
-alveare serve <model> [--host --port]   Start the OpenAI-compatible server.
-alveare chat [--host --port --model]    Minimal terminal chat vs a running server.
-alveare help                       Show usage.
+alveare install                        One-command full install (env + toolchain + deps).
+alveare setup                          Setup guidance + lightweight preflight checks.
+alveare check                          NPU smoke test (wraps tools/check_npu.sh).
+alveare quantize [alias] <gguf> [--arch A]   GGUF -> Alveare Q4 weights dir.
+alveare list  (or: models)             List installed models.
+alveare serve <model> [--host --port]  Start the OpenAI-compatible server.
+alveare chat [--host --port --model]   Minimal terminal chat vs a running server.
+alveare help                           Show usage.
 ```
 
-- **`quantize`** — `<arch>` is `llama`, `gemma3`, or `gemma4` (picks the quantizer). `[name]` names the output dir `quantized_weights_<name>` (defaults to the GGUF's filename). You then `serve <name>`.
-- **`serve`** — `<model>` resolves as: built-in shorthand (`llama`/`gemma3`/`gemma4`) → an existing directory path → a generated name (`quantized_weights_<model>`).
+- **`quantize`** — architecture is **auto-detected** from the GGUF (`general.architecture`); override with `--arch llama|gemma3|gemma4` if needed. `[alias]` names the output dir `quantized_weights_<alias>` (defaults to the GGUF's filename). Any number of models coexist, each in its own directory — keep a 12B and a smaller one side by side. You then `serve <alias>`.
+- **`list`** — shows every installed model (the `quantized_weights_*` directories), its architecture, and size.
+- **`serve`** — `<model>` resolves as: built-in shorthand (`llama`/`gemma3`/`gemma4`) → an existing directory path → a generated alias (`quantized_weights_<model>`).
 - **`chat`** — a tiny REPL over the OpenAI endpoint. Start a server first, then chat from another terminal.
 
 ---
@@ -95,17 +100,19 @@ Alveare cannot load a GGUF (or safetensors) directly at serve time: the NPU kern
 
 - **What you download:** a normal single-file **GGUF** of the model (from Hugging Face — e.g. `bartowski`/`unsloth`/`ggml-org` repos), the same file you'd use with `llama.cpp`.
 - **What Alveare produces (locally, once):** running `tools/quantize_<model>.py` on that GGUF writes a directory of **Q4_0 block-quantized** tensors (blocks of 32, per-block scale) as `.npy` files pre-packed for the `gemv_q` NPU kernel, plus a `config.json`. This directory is **generated, never downloaded**, and is git-ignored (it's large model data).
-- **What you serve:** that directory. `alveare serve gemma4` is just a shorthand for `alveare serve ./quantized_weights_gemma4` (the shorthands map names → the default output directories in the table below). You can always pass a directory path directly instead of a shorthand.
+- **What you serve:** that directory, by its alias. `alveare quantize g4-12b model.gguf` writes `./quantized_weights_g4-12b/`, and `alveare serve g4-12b` serves it. You can also pass a directory path directly.
 
-Each model has a quantizer and a fixed output directory:
+**Naming and multiple models.** The output alias is yours to choose (`quantize <alias> <gguf>`) and defaults to the GGUF's filename. Every model lives in its own `quantized_weights_<alias>/` directory, so any number coexist — e.g. a Gemma-4 12B and a smaller one at the same time. `alveare list` shows them all.
 
-| Model | `quantize <arch>` | Default weights directory | Serve shorthand | Approx. size |
-|---|---|---|---|---|
-| Llama-3.2-1B-Instruct | `llama` | `quantized_weights_llama/` | `llama` | ~0.8 GB |
-| Gemma-3-1B-it | `gemma3` | `quantized_weights_gemma/` | `gemma3` | ~0.8 GB |
-| Gemma-4-12B-it | `gemma4` | `quantized_weights_gemma4/` | `gemma4` | ~9.7 GB |
+**Architecture is auto-detected** from the GGUF's `general.architecture` metadata and mapped to the right quantizer:
 
-(To land in a shorthand's default directory, pass the name explicitly, e.g. `alveare quantize gemma4 model.gguf gemma4`. Otherwise the output dir is named after the GGUF file.)
+| GGUF architecture | Quantizer used | Example |
+|---|---|---|
+| `llama` | `tools/quantize_model.py` | Llama-3.2-1B-Instruct |
+| `gemma3` | `tools/quantize_gemma.py` | Gemma-3-1B-it |
+| `gemma4` | `tools/quantize_gemma4.py` | Gemma-4-12B-it |
+
+If auto-detection is wrong, force it with `--arch llama|gemma3|gemma4`. A GGUF of any other architecture isn't supported yet (it would need a new quantizer + runtime support). The quantized `quantized_weights_*` directories are **git-ignored and never committed** (large model data; the 12B is ~9.7 GB).
 
 The server **auto-detects the architecture** from `config.json` in the served directory. These `quantized_weights*` directories are **git-ignored and must never be committed** — they are large model data, not source.
 
@@ -120,17 +127,21 @@ cd mlir-aie && source utils/env_setup.sh && cd ..   # NPU stack (pyxrt/aie)
 ```
 
 1. **Download a source GGUF** — a single file, as usual. E.g. for Gemma-4-12B grab a GGUF from Hugging Face (`bartowski/…gemma-4-12b-it-GGUF`, `unsloth/…`, etc.), the same file you'd give `llama.cpp`.
-2. **Point the quantizer at it.** The quantize scripts read a **hardcoded `gguf_path` at the top of the script** — edit that line to your GGUF's path (and optionally `out_dir`). *(A follow-up will make this a CLI argument.)*
-3. **Quantize** — this generates the `.npy` directory (a few minutes; the 12B output is ~9.7 GB):
+2. **Quantize** it into Alveare's `.npy` layout (a few minutes; the 12B output is ~9.7 GB). The architecture is auto-detected; pick an alias:
    ```bash
-   python tools/quantize_gemma4.py     # writes ./quantized_weights_gemma4/ (config.json + *.npy)
+   ./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf
+   #   -> ./quantized_weights_g4-12b/   (config.json + *.npy)
    ```
-4. **Serve** it:
+3. **Serve** it by that alias:
    ```bash
-   ./alveare serve gemma4              # shorthand for: ./alveare serve ./quantized_weights_gemma4
+   ./alveare serve g4-12b
+   ```
+4. **Chat** from another terminal:
+   ```bash
+   ./alveare chat
    ```
 
-That's the whole path. Supported models today: **Llama-3.2-1B, Gemma-3-1B, Gemma-4-12B** (NPU-only, Linux-only).
+That's the whole path. Supported architectures today: **Llama, Gemma-3, Gemma-4** (validated on Llama-3.2-1B, Gemma-3-1B, Gemma-4-12B; NPU-only, Linux-only).
 
 ---
 

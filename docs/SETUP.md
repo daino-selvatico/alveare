@@ -119,33 +119,41 @@ It should end with `PASS!` and `✓ NPU smoke test completed successfully!`. A l
 
 ## 8. Quantize a model
 
-**Alveare does not load GGUF or safetensors at serve time.** You take a source **GGUF** and run the matching quantizer, which converts it into Alveare's own weight layout: **Q4_0 block-quantized** tensors (blocks of 32, one scale per block), pre-packed/tiled for the `gemv_q` NPU kernel and written as `.npy` files, alongside a `config.json`.
-
-Pick the script for your model and point it at your GGUF by editing the hardcoded `gguf_path` (and optionally `out_dir`) at the top of the script:
-
-| Model | Script | Source GGUF (edit `gguf_path`) | Output directory | Approx. size | Serve shorthand |
-|---|---|---|---|---|---|
-| Llama-3.2-1B-Instruct | `tools/quantize_model.py` | an f16 Llama-3.2-1B GGUF | `quantized_weights/` | ~0.8 GB | `llama` |
-| Gemma-3-1B-it | `tools/quantize_gemma.py` | a bf16 Gemma-3-1B GGUF | `quantized_weights_gemma/` | ~0.8 GB | `gemma3` |
-| Gemma-4-12B-it | `tools/quantize_gemma4.py` | a Q4_K Gemma-4-12B GGUF | `quantized_weights_gemma4/` | ~9.7 GB | `gemma4` |
+**Alveare does not load GGUF or safetensors at serve time.** You download a single **GGUF** (as usual — from Hugging Face, the same file you'd give `llama.cpp`) and quantize it into Alveare's own layout: **Q4_0 block-quantized** tensors (blocks of 32, one scale per block), pre-packed/tiled for the `gemv_q` NPU kernel and written as `.npy` files, plus a `config.json`. The `.npy` directory is **generated locally, never downloaded**.
 
 ```bash
-python tools/quantize_gemma4.py     # writes ./quantized_weights_gemma4/  (config.json + *.npy)
+./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf
+#   -> ./quantized_weights_g4-12b/   (config.json + *.npy)
 ```
 
-The output directory contains the packed `.npy` weight tensors plus a `config.json` the server uses to **auto-detect the architecture**. These `quantized_weights*` directories are large and **git-ignored — never commit them**.
+- The **architecture is auto-detected** from the GGUF's `general.architecture` metadata and mapped to the right quantizer (same Q4_0 algorithm for all; only the per-model tensor wiring differs). Override with `--arch llama|gemma3|gemma4` if detection is wrong.
+- The **alias** (`g4-12b` above) names the output dir `quantized_weights_<alias>` and is what you later `serve`. Omit it to default to the GGUF's filename.
+- **Any number of models coexist**, each in its own directory. `./alveare list` shows them.
+
+| GGUF architecture | Quantizer | Validated on | Approx. output |
+|---|---|---|---|
+| `llama` | `tools/quantize_model.py` | Llama-3.2-1B-Instruct | ~0.8 GB |
+| `gemma3` | `tools/quantize_gemma.py` | Gemma-3-1B-it | ~0.8 GB |
+| `gemma4` | `tools/quantize_gemma4.py` | Gemma-4-12B-it | ~9.7 GB |
+
+A GGUF of any other architecture isn't supported yet (it needs a new quantizer + runtime work). The `quantized_weights*` directories are large and **git-ignored — never commit them**.
+
+List what you've installed:
+
+```bash
+./alveare list
+```
 
 ---
 
 ## 9. Serve a model
 
 ```bash
-./alveare serve gemma4                    # shorthand -> ./quantized_weights_gemma4
-./alveare serve ./quantized_weights_gemma4 --port 9000   # explicit path + port
+./alveare serve g4-12b                    # -> ./quantized_weights_g4-12b
+./alveare serve ./quantized_weights_g4-12b --port 9000   # explicit path + port
 ```
 
-Shorthands: `llama`, `gemma3`, `gemma4`. Defaults: host `127.0.0.1`, port `8000`
-(override with `--host` / `--port` or the `ALVEARE_HOST` / `ALVEARE_PORT` env vars).
+`<model>` resolves as: built-in shorthand (`llama`/`gemma3`/`gemma4`) → an existing directory path → a generated alias (`quantized_weights_<model>`). Defaults: host `127.0.0.1`, port `8000` (override with `--host` / `--port` or the `ALVEARE_HOST` / `ALVEARE_PORT` env vars).
 
 Under the hood this sets `ALVEARE_WEIGHTS_DIR` and launches `runtime/py/server.py`.
 
@@ -181,6 +189,12 @@ resp = client.chat.completions.create(
     temperature=0.0,
 )
 print(resp.choices[0].message.content)
+```
+
+Or just use the built-in terminal client (start the server first, then from another terminal):
+
+```bash
+./alveare chat                 # REPL over the OpenAI endpoint; streams tokens
 ```
 
 Add `"stream": true` for Server-Sent Events. Requests are serialized (one NPU), and the 12B model runs at ~4.6 s/token — this runtime is **correct-but-slow** by design.
