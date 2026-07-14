@@ -16,6 +16,8 @@ venv/
 *.gguf
 *.safetensors
 *.q4nx
+*.npy
+*.npz
 weights/
 models/
 quantized_weights*

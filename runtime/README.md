@@ -1,15 +1,15 @@
 # runtime/
 
-Host-side C++ runtime — the "easy 70%". Owns the inference loop and talks to the NPU via XRT.
+Host-side runtime — the "easy 70%". Owns the inference loop and talks to the NPU via XRT.
+Implemented in Python (`pyxrt` + MLIR-AIE/IRON); see [`../docs/decisions/0004-python-first-runtime.md`](../docs/decisions/0004-python-first-runtime.md).
 
-Planned components (see `../docs/architecture.md`):
+## `py/` components
 
-- `xrt/` — device, xclbin loading, buffer objects, submit/sync
-- `streamer/` — weight streaming DRAM → NPU buffers (sync first, prefetch later)
-- `kvcache/` — per-layer K/V storage
-- `model/` — per-architecture model definitions (graph of kernel calls)
-- `sampler/` — greedy / temperature / top-k/p
-- `tokenizer/` — reuse existing tokenizer.json
-- `server/` — OpenAI-compatible HTTP (`/v1/models`, `/v1/chat/completions`, SSE)
+- `model.py` — per-architecture model definitions (Llama / Gemma-3 / Gemma-4), the
+  forward graph of kernel calls, weight streaming, and KV cache.
+- `layer.py` — decoder-layer building blocks.
+- `sampler.py` — greedy / temperature / top-k / top-p sampling.
+- `tokenizer_glue.py` — thin wrapper over the HF tokenizer + chat template.
+- `server.py` — OpenAI-compatible HTTP server (`/v1/models`, `/v1/chat/completions`, SSE).
 
-Empty until M2–M3.
+Launch the server via the top-level `alveare serve <model>` command (see [`../docs/SETUP.md`](../docs/SETUP.md)).
