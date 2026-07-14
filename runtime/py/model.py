@@ -147,11 +147,20 @@ class LlamaNPUModel:
             self.v_caches = [np.zeros((self.num_key_value_heads, self.max_seq_len, self.head_dim), dtype=bfloat16) for _ in range(self.num_hidden_layers)]
         
         print("Allocating resident NPU tensors for zero-copy execution...")
-        # GEMV tensors
-        # Unified shape (2048, 2048) in Q4_0 packed format is (2048, 1280) bytes
-        self.w_gemv_t = iron.tensor(np.zeros((2048, 1280), dtype=np.uint8).reshape(-1), dtype=np.uint8, device="npu")
-        self.x_gemv_t = iron.tensor(np.zeros(2048, dtype=bfloat16), dtype=bfloat16, device="npu")
-        self.y_gemv_t = iron.zeros(2048, dtype=bfloat16, device="npu")
+        # Preallocate for K=4096
+        self.w_gemv_t_k4096 = iron.tensor(np.zeros((2048, 4096 // 32 * 20), dtype=np.uint8).reshape(-1), dtype=np.uint8, device="npu")
+        self.x_gemv_t_k4096 = iron.tensor(np.zeros(4096, dtype=bfloat16), dtype=bfloat16, device="npu")
+        
+        # Preallocate for K=8192
+        self.w_gemv_t_k8192 = iron.tensor(np.zeros((2048, 8192 // 32 * 20), dtype=np.uint8).reshape(-1), dtype=np.uint8, device="npu")
+        self.x_gemv_t_k8192 = iron.tensor(np.zeros(8192, dtype=bfloat16), dtype=bfloat16, device="npu")
+        
+        # Preallocate for K=16384
+        self.w_gemv_t_k16384 = iron.tensor(np.zeros((2048, 16384 // 32 * 20), dtype=np.uint8).reshape(-1), dtype=np.uint8, device="npu")
+        self.x_gemv_t_k16384 = iron.tensor(np.zeros(16384, dtype=bfloat16), dtype=bfloat16, device="npu")
+        
+        # Y is always size 2048
+        self.y_gemv_t = iron.tensor(np.zeros(2048, dtype=bfloat16), dtype=bfloat16, device="npu")
         
         # RMSNorm tensors (reused only for Llama path or direct testing)
         self.x_rmsnorm_t = iron.tensor(np.zeros(2048, dtype=bfloat16), dtype=bfloat16, device="npu")
@@ -232,45 +241,50 @@ class LlamaNPUModel:
         K = K_blocks * 32
         
         target_N = 2048
-        target_K = 2048
+        target_K = K  # NO K-CHUNKING
+        
+        if K == 4096:
+            w_t = self.w_gemv_t_k4096
+            x_t = self.x_gemv_t_k4096
+        elif K == 8192:
+            w_t = self.w_gemv_t_k8192
+            x_t = self.x_gemv_t_k8192
+        elif K == 16384:
+            w_t = self.w_gemv_t_k16384
+            x_t = self.x_gemv_t_k16384
+        else:
+            raise ValueError(f"Unsupported K dimension {K}")
         
         y_sum = np.zeros(N, dtype=np.float32)
         
-        # Loop over column chunks
-        for start_col in range(0, K, target_K):
-            end_col = min(start_col + target_K, K)
-            x_chunk = x_bf16[start_col:end_col]
+        # Single iteration for K since target_K == K
+        if x_bf16.shape[0] < K:
+            x_input = np.zeros(K, dtype=bfloat16)
+            x_input[:x_bf16.shape[0]] = x_bf16
+        else:
+            x_input = x_bf16
+        
+        # Copy activation to resident tensor once per matrix
+        x_t.numpy()[:] = x_input
+        x_t._sync_to_device()
+        
+        # Loop over row chunks
+        for start_row in range(0, N, target_N):
+            end_row = min(start_row + target_N, N)
             
-            # Pad activation chunk if it's smaller than 2048
-            if x_chunk.shape[0] < target_K:
-                x_input = np.zeros(target_K, dtype=bfloat16)
-                x_input[:x_chunk.shape[0]] = x_chunk
-            else:
-                x_input = x_chunk
-                
-            # Column slice of combined weights
-            b_start = start_col // 32
-            b_end = end_col // 32
-            W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
+            # This is a contiguous row slice now!
+            W_chunk = W_combined[start_row:end_row]
             
-            # Loop over row chunks
-            for start_row in range(0, N, target_N):
-                end_row = min(start_row + target_N, N)
-                W_chunk = W_col_slice[start_row:end_row]
-                
-                # Copy to resident NPU tensors
-                self.w_gemv_t.numpy()[:] = W_chunk.reshape(-1)
-                self.w_gemv_t._sync_to_device()
-                
-                self.x_gemv_t.numpy()[:] = x_input
-                self.x_gemv_t._sync_to_device()
-                
-                # Execute JIT NPU kernel
-                gemv_q_npu(self.w_gemv_t, self.x_gemv_t, self.y_gemv_t, N=2048, K=2048, m=32, k_tile=256)
-                
-                # Fetch result safely
-                res = np.array(self.y_gemv_t.numpy()).astype(np.float32)
-                y_sum[start_row:end_row] += res[:(end_row - start_row)]
+            # Copy weight chunk to resident tensor (fast memcpy)
+            w_t.numpy()[:] = W_chunk.reshape(-1)
+            w_t._sync_to_device()
+            
+            # Execute JIT NPU kernel
+            gemv_q_npu(w_t, x_t, self.y_gemv_t, N=2048, K=K, m=32, k_tile=256)
+            
+            # Fetch result safely
+            res = np.array(self.y_gemv_t.numpy()).astype(np.float32)
+            y_sum[start_row:end_row] += res[:(end_row - start_row)]
                 
         return y_sum.astype(bfloat16)
 
