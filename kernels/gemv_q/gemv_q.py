@@ -39,7 +39,9 @@ def gemv_q_npu(
     k_tile: CompileTime[int],
 ):
     # Dynamically select n_cores based on shape N and m
-    if N % (4 * m) == 0:
+    if N % (8 * m) == 0:
+        n_cores = 8
+    elif N % (4 * m) == 0:
         n_cores = 4
     elif N % (2 * m) == 0:
         n_cores = 2
