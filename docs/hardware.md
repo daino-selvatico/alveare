@@ -1,11 +1,34 @@
 # Target hardware
 
-The development and first-target machine. Captured from the live system on 2026-06-19.
+The development and first-target machine. **The entire Alveare project was developed, run, and validated on this one machine** — treat it as the known-good reference configuration. Originally captured 2026-06-19; hardware/OS/firmware re-verified live on 2026-07-14 (unchanged).
+
+> **Silicon:** this is a **Gorgon Point** part — the newer **2026 AMD Ryzen AI refresh** (Ryzen AI 9 HX 470), **not** Strix Point. `/proc/cpuinfo` only reports the SKU string (`AMD Ryzen AI 9 HX 470 w/ Radeon 890M`), so any "Strix Point" label is an inference and is wrong for this machine. Gorgon Point uses the **same XDNA2 NPU generation** as Strix Point, so nothing technical changes: the NPU device, driver, firmware, and the entire MLIR-AIE / Peano / XRT toolchain targeting are identical.
+
+## Tested on / reference environment
+
+| Component | Value |
+|---|---|
+| APU / SoC | AMD Ryzen AI 9 HX 470 w/ Radeon 890M — **Gorgon Point** (2026 Ryzen AI refresh) |
+| NPU | XDNA2, device node `/dev/accel/accel0` (`crw-rw----+ root render`) |
+| NPU driver | `amdxdna` (upstream, in-tree; deps `amd_pmf`, `gpu_sched`) |
+| NPU firmware | `/lib/firmware/amdnpu/` → `1502_00`, `17f0_10`, `17f0_11` |
+| iGPU present | Radeon 880M / 890M (RDNA 3.5) — *not used; Alveare targets the NPU only* |
+| RAM | 64 GB system (shared; NPU streams weights from here) |
+| OS | Ubuntu 26.04 LTS ("resolute") |
+| Kernel | Linux `7.0.0-22-generic` (x86_64) |
+| Python | 3.14 (conda env `alveare-aie`) |
+| XRT | `2.21.75` |
+| mlir_aie | `1.3.3.dev9+g8ed2e6b` (git `8ed2e6b`) |
+| llvm-aie / Peano | `21.0.0.2026061901+a76244b4` (git `a76244b4`) |
+| LLVM (host) | `21.1.8` |
+
+Toolchain provenance and install steps: [`toolchain-setup.md`](toolchain-setup.md) and [`SETUP.md`](SETUP.md).
 
 ## SoC
 
-- **AMD Ryzen AI 9 HX** (`/proc/cpuinfo` model name: `AMD Ryzen AI 9 HX 470 w/ Radeon 890M`)
-- Architecture: Strix Point class, **XDNA2 NPU** + RDNA 3.5 iGPU (Radeon 890M)
+- **AMD Ryzen AI 9 HX 470** (`/proc/cpuinfo` model name: `AMD Ryzen AI 9 HX 470 w/ Radeon 890M`)
+- Codename: **Gorgon Point** (2026 Ryzen AI refresh) — *not* Strix Point, though it shares the same **XDNA2 NPU** generation
+- iGPU: RDNA 3.5 Radeon 890M
 - 64 GB system RAM (shared; the NPU streams weights from here)
 
 ## NPU access (verified present)
@@ -24,11 +47,13 @@ Membership note: the device is group `render` — the dev user must be in `rende
 - **Lemonade** `/usr/bin/lemonade` v10.2.0 — Linux build exposes only `llamacpp` + `sd-cpp` backends (no NPU/OGA on Linux). Not a path to the NPU here; useful as a model/GGUF source and as the router host.
 - Custom **`~/lemonade_router/`** (router.py + rules.yaml): routes default/fast chat to the NPU (FLM E2B) and heavy tasks to GPU llama.cpp models. Alveare's eventual server is meant to slot in here as another NPU backend.
 
-## What's NOT yet installed (M0 will add)
+## Build toolchain (installed in M0, now the reference config)
 
-- MLIR-AIE / IRON
-- Peano (`llvm-aie`)
-- A standalone XRT + AIE runtime headers for building the host side
+- **MLIR-AIE / IRON** — `mlir_aie 1.3.3.dev9+g8ed2e6b`
+- **Peano (`llvm-aie`)** — `21.0.0.2026061901+a76244b4`
+- **XRT + AIE runtime headers** — `2.21.75` (`libxrt2`, `libxrt-npu2`, `libxrt-dev`, `libxrt-utils-npu`)
+
+Install steps are pinned in [`SETUP.md`](SETUP.md) / [`toolchain-setup.md`](toolchain-setup.md).
 
 ## GPU note (out of scope for the NPU project, but relevant context)
 

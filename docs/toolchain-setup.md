@@ -1,9 +1,9 @@
-# AIE Toolchain Setup Guide (XDNA2 / Strix Point)
+# AIE Toolchain Setup Guide (XDNA2)
 
-This guide documents the version-pinned setup required to compile and execute AIE kernels on the AMD Ryzen AI 9 HX NPU (XDNA2) on Linux.
+This guide documents the version-pinned setup required to compile and execute AIE kernels on the AMD Ryzen AI 9 HX 470 NPU (XDNA2) on Linux.
 
 ## System Specifications
-- **SoC**: AMD Ryzen AI 9 HX (Strix Point)
+- **SoC**: AMD Ryzen AI 9 HX 470 — codename **Gorgon Point** (2026 Ryzen AI refresh; *not* Strix Point, but the same XDNA2 NPU generation)
 - **NPU Device Node**: `/dev/accel/accel0`
 - **NPU Driver**: `amdxdna`
 - **Firmware**: `/lib/firmware/amdnpu/` (directories `1502_00`, `17f0_10`, `17f0_11` present)
@@ -91,7 +91,7 @@ Before building or running any AIE kernel, you must source the environment setup
 source utils/env_setup.sh
 ```
 
-Ensure the terminal output prints `NPU2=1` (since Strix Point is a Gen 2 NPU).
+Ensure the terminal output prints `NPU2=1` (XDNA2 is a Gen 2 NPU).
 
 ### Step 2: Run Memcpy / Vector Passthrough
 

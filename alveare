@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+#
+# alveare — top-level command-line entry point for the Alveare NPU LLM runtime.
+#
+# An open-source LLM inference runtime for the AMD Ryzen AI (XDNA2) NPU on Linux.
+#
+# Subcommands:
+#   setup            Print environment guidance and run lightweight preflight checks.
+#   check            Run the NPU smoke test (wraps tools/check_npu.sh).
+#   serve <model>    Start the OpenAI-compatible server for a model / weights dir.
+#   help             Show this message.
+#
+# This is a thin launcher: it wires the already-validated runtime
+# (runtime/py/server.py) and tooling (tools/check_npu.sh) together. It does not
+# reimplement any inference logic.
+#
+# (c) Copyright 2026 Alveare Authors — MIT License.
+
+set -euo pipefail
+
+# Resolve the directory this script lives in (the repo root), following symlinks.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+
+PY="${ALVEARE_PYTHON:-python}"
+
+usage() {
+  cat <<'EOF'
+alveare — open NPU LLM runtime for the AMD Ryzen AI (XDNA2) NPU on Linux
+
+USAGE:
+    alveare <command> [options]
+
+COMMANDS:
+    setup                 Print setup guidance and run lightweight preflight checks.
+    check                 Run the NPU smoke test (device node, XRT, conda env,
+                          memcpy kernel). Wraps tools/check_npu.sh.
+    serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
+    help                  Show this help.
+
+SERVE:
+    <model> is either a known model shorthand or a path to a quantized-weights
+    directory (one containing config.json):
+
+        llama    ->  ./quantized_weights          (Llama-3.2-1B-Instruct)
+        gemma3   ->  ./quantized_weights_gemma     (Gemma-3-1B-it)
+        gemma4   ->  ./quantized_weights_gemma4    (Gemma-4-12B-it)
+        <dir>    ->  any directory with a config.json
+
+    Options:
+        --host <addr>   Bind address (default 127.0.0.1, or $ALVEARE_HOST).
+        --port <port>   Port (default 8000, or $ALVEARE_PORT).
+
+    Examples:
+        alveare serve gemma4
+        alveare serve ./quantized_weights --port 9000
+
+ENVIRONMENT:
+    Run inside the `alveare-aie` conda env with the AIE toolchain sourced.
+    See docs/SETUP.md for the full, version-pinned setup.
+
+    ALVEARE_PYTHON   python interpreter to use (default: python)
+    ALVEARE_HOST     default serve bind address
+    ALVEARE_PORT     default serve port
+EOF
+}
+
+# Resolve a model shorthand or path to an absolute weights directory.
+resolve_weights_dir() {
+  local model="$1"
+  case "$model" in
+    llama|llama-3.2-1b|llama3.2)   echo "$ROOT/quantized_weights" ;;
+    gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/quantized_weights_gemma" ;;
+    gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
+    *)                             echo "$model" ;;
+  esac
+}
+
+cmd_check() {
+  exec bash "$ROOT/tools/check_npu.sh" "$@"
+}
+
+cmd_setup() {
+  echo "=== Alveare setup preflight ==="
+  echo "Full, version-pinned instructions: docs/SETUP.md"
+  echo
+  local ok=1
+
+  if [ -c /dev/accel/accel0 ]; then
+    echo "  [ok]   NPU device node /dev/accel/accel0 present"
+  else
+    echo "  [MISS] NPU device node /dev/accel/accel0 not found"; ok=0
+  fi
+
+  if id -nG 2>/dev/null | grep -qw render; then
+    echo "  [ok]   user is in the 'render' group"
+  else
+    echo "  [warn] user not in 'render' group (needed for non-root NPU access)"
+  fi
+
+  if command -v xrt-smi >/dev/null 2>&1; then
+    echo "  [ok]   xrt-smi found"
+  else
+    echo "  [MISS] xrt-smi not found (install libxrt-utils-npu)"; ok=0
+  fi
+
+  if command -v "$PY" >/dev/null 2>&1; then
+    echo "  [ok]   python: $($PY --version 2>&1)"
+  else
+    echo "  [MISS] python interpreter '$PY' not found"; ok=0
+  fi
+
+  if "$PY" -c 'import pyxrt' >/dev/null 2>&1; then
+    echo "  [ok]   pyxrt import works"
+  else
+    echo "  [warn] cannot import pyxrt (activate the alveare-aie conda env)"
+  fi
+
+  if "$PY" -c 'import aie' >/dev/null 2>&1; then
+    echo "  [ok]   mlir-aie (aie) import works"
+  else
+    echo "  [warn] cannot import 'aie' (install mlir_aie wheel; see docs/SETUP.md)"
+  fi
+
+  echo
+  if [ "$ok" -eq 1 ]; then
+    echo "Core prerequisites look present. Run 'alveare check' for a full NPU smoke test."
+  else
+    echo "Some prerequisites are missing — see docs/SETUP.md."
+  fi
+}
+
+cmd_serve() {
+  if [ "$#" -lt 1 ]; then
+    echo "error: 'serve' needs a model or weights directory. See 'alveare help'." >&2
+    exit 2
+  fi
+  local model="$1"; shift
+  local host="${ALVEARE_HOST:-127.0.0.1}"
+  local port="${ALVEARE_PORT:-8000}"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --host) host="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      *) echo "error: unknown serve option '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  local weights_dir
+  weights_dir="$(resolve_weights_dir "$model")"
+
+  if [ ! -d "$weights_dir" ]; then
+    echo "error: weights directory not found: $weights_dir" >&2
+    echo "Quantize a model first (see tools/ and docs/SETUP.md), e.g.:" >&2
+    echo "    python tools/quantize_gemma4.py" >&2
+    exit 1
+  fi
+  if [ ! -f "$weights_dir/config.json" ]; then
+    echo "warning: $weights_dir has no config.json; the server may fail to detect the model." >&2
+  fi
+
+  echo "Serving model from: $weights_dir"
+  echo "OpenAI-compatible endpoint: http://$host:$port/v1"
+  echo "  GET  /v1/models"
+  echo "  POST /v1/chat/completions"
+  echo
+
+  export ALVEARE_WEIGHTS_DIR="$weights_dir"
+  export ALVEARE_HOST="$host"
+  export ALVEARE_PORT="$port"
+  exec "$PY" "$ROOT/runtime/py/server.py"
+}
+
+main() {
+  local cmd="${1:-help}"
+  [ "$#" -gt 0 ] && shift || true
+  case "$cmd" in
+    setup)        cmd_setup "$@" ;;
+    check)        cmd_check "$@" ;;
+    serve)        cmd_serve "$@" ;;
+    help|-h|--help) usage ;;
+    *) echo "error: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"
