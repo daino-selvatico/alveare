@@ -27,7 +27,7 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 - **OpenAI-compatible HTTP server** (`/v1/models`, `/v1/chat/completions`, streaming SSE).
 - A hand-written, **MIT-licensed** vectorized multi-core AIE `gemv_q` kernel (quantized matrix-vector), plus rmsnorm / rope / attention kernels.
 
-Alveare is **NPU-only and Linux-only.** It targets the XDNA2 NPU on AMD Ryzen AI (Strix Point) hardware. See [Tested on](#tested-on--reference-environment).
+Alveare is **NPU-only and Linux-only.** It targets the **XDNA2** NPU on AMD Ryzen AI hardware. It was developed and validated on a **Gorgon Point** part (Ryzen AI 9 HX 470, the 2026 Ryzen AI refresh); XDNA2 is shared with Strix Point, so the targeting is the same across both. See [Tested on](#tested-on--reference-environment).
 
 ## The open AMD stack we build on
 
@@ -74,18 +74,75 @@ alveare help             Show usage.
 
 ---
 
-## Talking to the server
+## Models — where they go and in what format
 
-The server is **OpenAI-compatible**. Once `alveare serve …` is running (default `http://127.0.0.1:8000`):
+**Alveare does not load GGUF or safetensors at serve time.** You take a source **GGUF** and run the matching quantizer in `tools/`, which converts it into Alveare's own weight layout — **Q4_0 block-quantized** tensors (blocks of 32, per-block scale) written as `.npy` files (weight matrices pre-packed/tiled for the `gemv_q` NPU kernel), plus a `config.json`. The server then loads that directory and streams the weights to the NPU per layer.
 
-**List models**
-```bash
-curl http://127.0.0.1:8000/v1/models
+Each model has a quantizer and a fixed output directory:
+
+| Model | Quantizer | Output weights directory | Serve shorthand | Approx. size |
+|---|---|---|---|---|
+| Llama-3.2-1B-Instruct | `tools/quantize_model.py` | `quantized_weights/` | `llama` | ~0.8 GB |
+| Gemma-3-1B-it | `tools/quantize_gemma.py` | `quantized_weights_gemma/` | `gemma3` | ~0.8 GB |
+| Gemma-4-12B-it | `tools/quantize_gemma4.py` | `quantized_weights_gemma4/` | `gemma4` | ~9.7 GB |
+
+The server **auto-detects the architecture** from `config.json` in the served directory. These `quantized_weights*` directories are **git-ignored and must never be committed** — they are large model data, not source.
+
+### From "I have a model" to "it's served"
+
+1. **Get a source GGUF.** Download the model's GGUF (e.g. from Hugging Face / your `llama.cpp` models dir). The quantize scripts currently read a **hardcoded `gguf_path` at the top of the script** — edit it to point at your GGUF (and optionally `out_dir`). Example expected path in `tools/quantize_gemma4.py`: a local `gemma-4-12b-it-…-Q4_K_XL.gguf`.
+2. **Quantize** into Alveare's layout:
+   ```bash
+   python tools/quantize_gemma4.py     # writes ./quantized_weights_gemma4/ (config.json + *.npy)
+   ```
+3. **Serve** it:
+   ```bash
+   ./alveare serve gemma4              # or the explicit dir: ./alveare serve ./quantized_weights_gemma4
+   ```
+
+That's the whole path. Supported models today: **Llama-3.2-1B, Gemma-3-1B, Gemma-4-12B** (NPU-only, Linux-only).
+
+---
+
+## Talking to the server (drop-in OpenAI-compatible)
+
+**Alveare's server is OpenAI-compatible — point any OpenAI client at it, no code changes beyond the base URL.** It speaks the standard `/v1` endpoints, so the official `openai` SDK and any OpenAI-compatible tool or library (LangChain, LlamaIndex, `llm`, Continue, etc.) work by just setting `base_url` to Alveare and using any placeholder API key.
+
+Once `alveare serve …` is running (default `http://localhost:8000`):
+
+**Official `openai` Python SDK — the drop-in path**
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+resp = client.chat.completions.create(
+    model="gemma-4-12b-it",
+    messages=[{"role": "user", "content": "What is the capital of France?"}],
+    max_tokens=32,
+    temperature=0.0,
+)
+print(resp.choices[0].message.content)
+
+# Streaming variant:
+stream = client.chat.completions.create(
+    model="gemma-4-12b-it",
+    messages=[{"role": "user", "content": "Write a haiku about NPUs."}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
-**Chat completion (curl)**
+Any OpenAI-compatible library works the same way — e.g. in LangChain, set `ChatOpenAI(base_url="http://localhost:8000/v1", api_key="not-needed", model="gemma-4-12b-it")`.
+
+**Raw HTTP (curl)**
 ```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
+# List the served model
+curl http://localhost:8000/v1/models
+
+# Chat completion
+curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gemma-4-12b-it",
@@ -95,22 +152,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
-Add `"stream": true` to receive Server-Sent Events (`text/event-stream`) instead of a single JSON response.
-
-**Chat completion (Python `openai` client)**
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
-
-resp = client.chat.completions.create(
-    model="gemma-4-12b-it",
-    messages=[{"role": "user", "content": "What is the capital of France?"}],
-    max_tokens=32,
-    temperature=0.0,
-)
-print(resp.choices[0].message.content)
-```
+Add `"stream": true` to the request body to receive Server-Sent Events (`text/event-stream`) instead of a single JSON response.
 
 > The model name is auto-detected from the served weights' `config.json`; `GET /v1/models` reports the exact id to use. Generation is single-request serialized (one NPU) and slow on the 12B — expect several seconds per token.
 
@@ -118,11 +160,11 @@ print(resp.choices[0].message.content)
 
 ## Tested on / reference environment
 
-Alveare was developed and validated **entirely on one machine**. These are its real, live-captured specs — treat them as the known-good reference configuration.
+Alveare was developed and validated **entirely on one machine**. These are its real, live-captured specs — treat them as the known-good reference configuration. Note the silicon: this is a **Gorgon Point** part (AMD Ryzen AI 9 HX 470), the **newer 2026 Ryzen AI refresh** — not Strix Point. It uses the same **XDNA2** NPU generation, so the NPU, driver, firmware, and toolchain targeting are identical to Strix Point.
 
 | Component | Value |
 |---|---|
-| **APU / SoC** | AMD Ryzen AI 9 HX 470 w/ Radeon 890M (Strix Point) |
+| **APU / SoC** | AMD Ryzen AI 9 HX 470 w/ Radeon 890M — **Gorgon Point** (2026 Ryzen AI refresh, *not* Strix Point; same XDNA2 NPU) |
 | **NPU** | XDNA2, device node `/dev/accel/accel0` (`crw-rw----+ root render`) |
 | **NPU driver** | `amdxdna` (upstream, in-tree) |
 | **NPU firmware** | `/lib/firmware/amdnpu/` → `1502_00`, `17f0_10`, `17f0_11` |

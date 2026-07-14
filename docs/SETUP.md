@@ -2,13 +2,13 @@
 
 How to install Alveare's toolchain, verify the NPU, quantize a model, and serve it.
 
-Alveare is **Linux-only and NPU-only**: it targets the AMD Ryzen AI (XDNA2) NPU on Strix Point hardware. The versions below are the exact, known-good ones this project was validated against (see [`toolchain-setup.md`](toolchain-setup.md) and the [Tested-on table in the README](../README.md#tested-on--reference-environment)). Toolchain drift is the #1 reproducibility risk here — pin these.
+Alveare is **Linux-only and NPU-only**: it targets the AMD Ryzen AI **XDNA2** NPU. It was developed and validated on a **Gorgon Point** part (Ryzen AI 9 HX 470, the 2026 Ryzen AI refresh); XDNA2 is shared with Strix Point, so the same toolchain applies to both. The versions below are the exact, known-good ones this project was validated against (see [`toolchain-setup.md`](toolchain-setup.md) and the [Tested-on table in the README](../README.md#tested-on--reference-environment)). Toolchain drift is the #1 reproducibility risk here — pin these.
 
 ---
 
 ## 0. Prerequisites (hardware)
 
-- An AMD Ryzen AI (Strix Point / XDNA2) machine with the NPU exposed at `/dev/accel/accel0`.
+- An AMD Ryzen AI XDNA2 machine (Gorgon Point or Strix Point) with the NPU exposed at `/dev/accel/accel0`.
 - The upstream `amdxdna` driver loaded and NPU firmware present under `/lib/firmware/amdnpu/`.
 - Your user in the `render` group (so you can reach the NPU without root):
   ```bash
@@ -96,7 +96,7 @@ Before running anything on the NPU, activate the conda env and source the AIE en
 
 ```bash
 conda activate alveare-aie
-source mlir-aie/utils/env_setup.sh    # prints NPU2=1 on Strix Point
+source mlir-aie/utils/env_setup.sh    # prints NPU2=1 on an XDNA2 NPU
 ```
 
 `NPU2=1` confirms a Gen-2 NPU was detected.
@@ -117,19 +117,21 @@ It should end with `PASS!` and `✓ NPU smoke test completed successfully!`. A l
 
 ## 8. Quantize a model
 
-Alveare loads weights in a tiled Q4 layout produced from a GGUF file. Pick the script for your model and point it at your GGUF (edit the `gguf_path`/`out_dir` at the top of the script, or drop the GGUF at the expected path):
+**Alveare does not load GGUF or safetensors at serve time.** You take a source **GGUF** and run the matching quantizer, which converts it into Alveare's own weight layout: **Q4_0 block-quantized** tensors (blocks of 32, one scale per block), pre-packed/tiled for the `gemv_q` NPU kernel and written as `.npy` files, alongside a `config.json`.
 
-| Model | Script | Output directory |
-|---|---|---|
-| Llama-3.2-1B-Instruct | `tools/quantize_model.py` | `quantized_weights` |
-| Gemma-3-1B-it | `tools/quantize_gemma.py` | `quantized_weights_gemma` |
-| Gemma-4-12B-it | `tools/quantize_gemma4.py` | `quantized_weights_gemma4` |
+Pick the script for your model and point it at your GGUF by editing the hardcoded `gguf_path` (and optionally `out_dir`) at the top of the script:
+
+| Model | Script | Source GGUF (edit `gguf_path`) | Output directory | Approx. size | Serve shorthand |
+|---|---|---|---|---|---|
+| Llama-3.2-1B-Instruct | `tools/quantize_model.py` | an f16 Llama-3.2-1B GGUF | `quantized_weights/` | ~0.8 GB | `llama` |
+| Gemma-3-1B-it | `tools/quantize_gemma.py` | a bf16 Gemma-3-1B GGUF | `quantized_weights_gemma/` | ~0.8 GB | `gemma3` |
+| Gemma-4-12B-it | `tools/quantize_gemma4.py` | a Q4_K Gemma-4-12B GGUF | `quantized_weights_gemma4/` | ~9.7 GB | `gemma4` |
 
 ```bash
-python tools/quantize_gemma4.py
+python tools/quantize_gemma4.py     # writes ./quantized_weights_gemma4/  (config.json + *.npy)
 ```
 
-The output directory contains the tiled weights plus a `config.json` the server uses to auto-detect the architecture. Quantized weights are large and **git-ignored** — never commit them.
+The output directory contains the packed `.npy` weight tensors plus a `config.json` the server uses to **auto-detect the architecture**. These `quantized_weights*` directories are large and **git-ignored — never commit them**.
 
 ---
 
