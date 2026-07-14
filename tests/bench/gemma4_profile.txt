@@ -1,44 +1,21 @@
 === ALVEARE PREFILL (17 tokens) PROFILE ===
-Total latency: 162041.11 ms
+Total latency: 98849.99 ms
 GEMV calls count: 58560
 
-- weight streaming I/O (LazyLayerWeights load): 22956.71 ms (14.2%)
-- raw NPU GEMV compute (sum over all calls): 101855.95 ms (62.9%)
-- per-call host/PyXRT overhead x calls: 14667.34 ms (9.1%)
-- host<->device tensor sync/copy time: 19510.51 ms (12.0%)
+- weight streaming I/O (LazyLayerWeights load): 1532.70 ms (1.6%)
+- raw NPU GEMV compute (sum over all calls): 54566.36 ms (55.2%)
+- per-call host/PyXRT overhead x calls: 12998.27 ms (13.1%)
+- host<->device tensor sync/copy time: 24167.07 ms (24.4%)
 - LM head GEMV specifically: 0.00 ms (0.0%)
-- Other CPU overhead (data prep/other): 2383.56 ms (1.5%)
+- Other CPU overhead (data prep/other): 4895.11 ms (5.0%)
 
 === ALVEARE DECODE STEP 1 PROFILE ===
-Total latency: 9085.71 ms
+Total latency: 4984.84 ms
 GEMV calls count: 3184
 
-- weight streaming I/O (LazyLayerWeights load): 704.10 ms (7.7%)
-- raw NPU GEMV compute (sum over all calls): 5524.05 ms (60.8%)
-- per-call host/PyXRT overhead x calls: 488.42 ms (5.4%)
-- host<->device tensor sync/copy time: 2203.90 ms (24.3%)
-- LM head GEMV specifically: 1749.78 ms (19.3%)
-- Other CPU overhead (data prep/other): 124.79 ms (1.4%)
-
-=== ALVEARE PREFILL (17 tokens) PROFILE ===
-Total latency: 102150.47 ms
-GEMV calls count: 58560
-
-- weight streaming I/O (LazyLayerWeights load): 13850.24 ms (13.6%)
-- raw NPU GEMV compute (sum over all calls): 54598.84 ms (53.4%)
-- per-call host/PyXRT overhead x calls: 12580.76 ms (12.3%)
-- host<->device tensor sync/copy time: 18440.63 ms (18.1%)
-- LM head GEMV specifically: 0.00 ms (0.0%)
-- Other CPU overhead (data prep/other): 2135.91 ms (2.1%)
-
-=== ALVEARE DECODE STEP 1 PROFILE ===
-Total latency: 5282.66 ms
-GEMV calls count: 3184
-
-- weight streaming I/O (LazyLayerWeights load): 720.61 ms (13.6%)
-- raw NPU GEMV compute (sum over all calls): 2986.66 ms (56.5%)
-- per-call host/PyXRT overhead x calls: 391.37 ms (7.4%)
-- host<->device tensor sync/copy time: 1039.40 ms (19.7%)
-- LM head GEMV specifically: 352.57 ms (6.7%)
-- Other CPU overhead (data prep/other): 112.88 ms (2.1%)
-
+- weight streaming I/O (LazyLayerWeights load): 79.44 ms (1.6%)
+- raw NPU GEMV compute (sum over all calls): 2957.15 ms (59.3%)
+- per-call host/PyXRT overhead x calls: 336.87 ms (6.8%)
+- host<->device tensor sync/copy time: 1327.13 ms (26.6%)
+- LM head GEMV specifically: 371.16 ms (7.4%)
+- Other CPU overhead (data prep/other): 245.60 ms (4.9%)
