@@ -27,6 +27,10 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 - **OpenAI-compatible HTTP server** (`/v1/models`, `/v1/chat/completions`, streaming SSE).
 - A hand-written, **MIT-licensed** vectorized multi-core AIE `gemv_q` kernel (quantized matrix-vector), plus rmsnorm / rope / attention kernels.
 
+### Current limitations
+
+- **Prompt prefill runs entirely on CPU:** Currently, the initial prompt processing (prefill) phase is not offloaded to the NPU. It runs entirely on the host CPU using standard numpy operations, which causes 100% CPU utilization and can be a bottleneck for long contexts. Only the token generation (decode) phase is offloaded to the NPU. Moving batched prefill to the NPU is a planned roadmap item.
+
 Alveare is **NPU-only and Linux-only.** It targets the **XDNA2** NPU on AMD Ryzen AI hardware. It was developed and validated on a **Gorgon Point** part (Ryzen AI 9 HX 470, the 2026 Ryzen AI refresh); XDNA2 is shared with Strix Point, so the targeting is the same across both. See [Tested on](#tested-on--reference-environment).
 
 ## The open AMD stack we build on
