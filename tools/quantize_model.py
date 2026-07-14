@@ -33,9 +33,11 @@ def quantize_and_pack_tensor(W: np.ndarray, target_N: int, target_K: int) -> np.
     w_combined = pack_to_combined(w_q4, scales)
     return w_combined
 
-def main():
-    gguf_path = "/home/daino/llama-mtp/models/Llama-3.2-1B-Instruct-f16.gguf"
-    out_dir = Path("/home/daino/progetti/alveare/quantized_weights")
+DEFAULT_GGUF = "/home/daino/llama-mtp/models/Llama-3.2-1B-Instruct-f16.gguf"
+DEFAULT_OUT = str(Path(__file__).resolve().parents[1] / "quantized_weights")
+
+def main(gguf_path=DEFAULT_GGUF, out_dir=DEFAULT_OUT):
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"Loading GGUF from {gguf_path}...")
@@ -123,4 +125,9 @@ def main():
     print("Quantization completed successfully!")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="Quantize a Llama-3.2-1B GGUF into Alveare's Q4_0 NPU weight layout.")
+    ap.add_argument("gguf", nargs="?", default=DEFAULT_GGUF, help="source GGUF file (default: %(default)s)")
+    ap.add_argument("-o", "--out", default=DEFAULT_OUT, help="output weights directory (default: %(default)s)")
+    args = ap.parse_args()
+    main(gguf_path=args.gguf, out_dir=args.out)

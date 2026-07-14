@@ -8,11 +8,20 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from tools.convert.gemv_q_convert import quantize_to_q4_0, pack_to_combined
 
-# Add llama.cpp gguf-py to path to import GGUFReader and dequantize
-sys.path.append("/home/daino/llama-mtp/llama.cpp/gguf-py")
-from gguf import GGUFReader
-from gguf.quants import dequantize
-from gguf.constants import GGMLQuantizationType
+# GGUFReader + dequantize come from the `gguf` pip package (see requirements.txt).
+# Only fall back to a local llama.cpp gguf-py checkout if the package is absent.
+try:
+    from gguf import GGUFReader
+    from gguf.quants import dequantize
+    from gguf.constants import GGMLQuantizationType
+except ModuleNotFoundError:
+    sys.path.append(os.environ.get("LLAMA_CPP_GGUF_PY", "/home/daino/llama-mtp/llama.cpp/gguf-py"))
+    from gguf import GGUFReader
+    from gguf.quants import dequantize
+    from gguf.constants import GGMLQuantizationType
+
+DEFAULT_GGUF = "/home/daino/llama-mtp/models/gemma-4-12b-it-UD-Q4_K_XL.gguf"
+DEFAULT_OUT = str(Path(__file__).resolve().parents[1] / "quantized_weights_gemma4")
 
 def pad_matrix(W: np.ndarray, target_N: int, target_K: int) -> np.ndarray:
     """Pad matrix W to target_N x target_K with zeros."""
@@ -31,9 +40,8 @@ def quantize_and_pack_tensor(W: np.ndarray, target_N: int, target_K: int) -> np.
     w_combined = pack_to_combined(w_q4, scales)
     return w_combined
 
-def main():
-    gguf_path = "/home/daino/llama-mtp/models/gemma-4-12b-it-UD-Q4_K_XL.gguf"
-    out_dir = Path("/home/daino/progetti/alveare/quantized_weights_gemma4")
+def main(gguf_path=DEFAULT_GGUF, out_dir=DEFAULT_OUT):
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"Loading GGUF from {gguf_path}...")
@@ -181,4 +189,9 @@ def main():
     print("Quantization completed successfully!")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="Quantize a Gemma-4-12B GGUF into Alveare's Q4_0 NPU weight layout.")
+    ap.add_argument("gguf", nargs="?", default=DEFAULT_GGUF, help="source GGUF file (default: %(default)s)")
+    ap.add_argument("-o", "--out", default=DEFAULT_OUT, help="output weights directory (default: %(default)s)")
+    args = ap.parse_args()
+    main(gguf_path=args.gguf, out_dir=args.out)

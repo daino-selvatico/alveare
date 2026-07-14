@@ -37,19 +37,38 @@ USAGE:
     alveare <command> [options]
 
 COMMANDS:
+    install               One-command full install (conda env + toolchain + deps).
+                          Wraps ./install.sh.
     setup                 Print setup guidance and run lightweight preflight checks.
     check                 Run the NPU smoke test (device node, XRT, conda env,
                           memcpy kernel). Wraps tools/check_npu.sh.
+    quantize <arch> <gguf> [name]
+                          Convert a source GGUF into Alveare's NPU weight layout.
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
+    chat [opts]           Minimal terminal chat against a running server.
     help                  Show this help.
 
+QUANTIZE:
+    alveare quantize <arch> <path-to.gguf> [name]
+
+    <arch> selects the model family / quantizer:
+        llama   (Llama-3.2-1B)   gemma3  (Gemma-3-1B)   gemma4  (Gemma-4-12B)
+    <name> is optional; it names the output dir quantized_weights_<name>
+    (default: the GGUF's file name). You then `serve <name>`.
+
+    Examples:
+        alveare quantize gemma4 ~/models/gemma-4-12b-it-Q4_K_XL.gguf
+        alveare quantize gemma4 ./pippo.gguf pippo     # -> quantized_weights_pippo
+        alveare serve pippo
+
 SERVE:
-    <model> is either a known model shorthand or a path to a quantized-weights
-    directory (one containing config.json):
+    <model> resolves in this order: built-in shorthand, then an existing
+    directory path, then a generated name (quantized_weights_<model>):
 
         llama    ->  ./quantized_weights          (Llama-3.2-1B-Instruct)
         gemma3   ->  ./quantized_weights_gemma     (Gemma-3-1B-it)
         gemma4   ->  ./quantized_weights_gemma4    (Gemma-4-12B-it)
+        pippo    ->  ./quantized_weights_pippo      (from `quantize ... pippo`)
         <dir>    ->  any directory with a config.json
 
     Options:
@@ -59,6 +78,11 @@ SERVE:
     Examples:
         alveare serve gemma4
         alveare serve ./quantized_weights --port 9000
+
+CHAT:
+    alveare chat [--host H] [--port P] [--model NAME] [--no-stream]
+    A tiny REPL that talks to a running server's OpenAI endpoint. Start a
+    server first (alveare serve ...), then chat from another terminal.
 
 ENVIRONMENT:
     Run inside the `alveare-aie` conda env with the AIE toolchain sourced.
@@ -70,14 +94,34 @@ ENVIRONMENT:
 EOF
 }
 
-# Resolve a model shorthand or path to an absolute weights directory.
+# Resolve a model name/shorthand/path to a weights directory.
+# Resolution order:
+#   1. built-in shorthands (llama / gemma3 / gemma4) -> their default dirs
+#   2. a directory that exists as-is (an explicit path)
+#   3. a generated name <n> -> $ROOT/quantized_weights_<n> (from `alveare quantize ... <n>`)
 resolve_weights_dir() {
   local model="$1"
   case "$model" in
-    llama|llama-3.2-1b|llama3.2)   echo "$ROOT/quantized_weights" ;;
+    llama|llama-3.2-1b|llama3.2)   echo "$ROOT/quantized_weights_llama" ;;
     gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/quantized_weights_gemma" ;;
     gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
-    *)                             echo "$model" ;;
+    *)
+      if [ -d "$model" ]; then
+        echo "$model"
+      else
+        echo "$ROOT/quantized_weights_$model"
+      fi
+      ;;
+  esac
+}
+
+# Map an architecture keyword to its quantizer script.
+resolve_quantizer() {
+  case "$1" in
+    llama|llama-3.2-1b|llama3.2)   echo "$ROOT/tools/quantize_model.py" ;;
+    gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/tools/quantize_gemma.py" ;;
+    gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/tools/quantize_gemma4.py" ;;
+    *)                             echo "" ;;
   esac
 }
 
@@ -163,8 +207,9 @@ cmd_serve() {
 
   if [ ! -d "$weights_dir" ]; then
     echo "error: weights directory not found: $weights_dir" >&2
-    echo "Quantize a model first (see tools/ and docs/SETUP.md), e.g.:" >&2
-    echo "    python tools/quantize_gemma4.py" >&2
+    echo "Quantize a model first, e.g.:" >&2
+    echo "    ./alveare quantize gemma4 /path/to/model.gguf" >&2
+    echo "then:  ./alveare serve <name>   (see docs/SETUP.md)" >&2
     exit 1
   fi
   if [ ! -f "$weights_dir/config.json" ]; then
@@ -201,13 +246,60 @@ cmd_serve() {
   exec "$PY" "$ROOT/runtime/py/server.py"
 }
 
+cmd_install() {
+  if [ ! -x "$ROOT/install.sh" ]; then
+    echo "error: install.sh not found or not executable at $ROOT/install.sh" >&2
+    exit 1
+  fi
+  exec bash "$ROOT/install.sh" "$@"
+}
+
+cmd_quantize() {
+  if [ "$#" -lt 2 ]; then
+    echo "error: usage: alveare quantize <arch> <path-to.gguf> [name]" >&2
+    echo "       <arch> is one of: llama, gemma3, gemma4" >&2
+    exit 2
+  fi
+  local arch="$1"; local gguf="$2"; local name="${3:-}"
+
+  local quantizer
+  quantizer="$(resolve_quantizer "$arch")"
+  if [ -z "$quantizer" ]; then
+    echo "error: unknown arch '$arch' (expected: llama, gemma3, gemma4)" >&2
+    exit 2
+  fi
+  if [ ! -f "$gguf" ]; then
+    echo "error: GGUF file not found: $gguf" >&2
+    exit 1
+  fi
+
+  # Default the output name to the GGUF's base filename (without .gguf).
+  if [ -z "$name" ]; then
+    name="$(basename "$gguf")"; name="${name%.gguf}"
+  fi
+  local out_dir="$ROOT/quantized_weights_$name"
+
+  echo "Quantizing ($arch) $gguf"
+  echo "  -> $out_dir"
+  echo "  then serve with:  ./alveare serve $name"
+  echo
+  exec "$PY" "$quantizer" "$gguf" --out "$out_dir"
+}
+
+cmd_chat() {
+  exec "$PY" "$ROOT/tools/chat.py" "$@"
+}
+
 main() {
   local cmd="${1:-help}"
   [ "$#" -gt 0 ] && shift || true
   case "$cmd" in
+    install)      cmd_install "$@" ;;
     setup)        cmd_setup "$@" ;;
     check)        cmd_check "$@" ;;
+    quantize)     cmd_quantize "$@" ;;
     serve)        cmd_serve "$@" ;;
+    chat)         cmd_chat "$@" ;;
     help|-h|--help) usage ;;
     *) echo "error: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
   esac
