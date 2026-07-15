@@ -10,6 +10,7 @@ import aie.iron as iron
 # Add project root to sys.path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from kernels.gemv_q.gemv_q import gemv_q_npu
+from kernels.gemm_q.gemm_q import gemm_q_npu
 from kernels.rmsnorm.rmsnorm import rmsnorm_npu
 from kernels.rope.rope import rope_npu
 
@@ -153,6 +154,11 @@ class LlamaNPUModel:
         self.x_gemv_t = iron.tensor(np.zeros(2048, dtype=bfloat16), dtype=bfloat16, device="npu")
         self.y_gemv_t = iron.zeros(2048, dtype=bfloat16, device="npu")
         
+        # GEMM batched prefill tensors (max batch size = 16)
+        self.MAX_BATCH_SIZE = 16
+        self.x_gemm_t = iron.tensor(np.zeros(self.MAX_BATCH_SIZE * 2048, dtype=bfloat16), dtype=bfloat16, device="npu")
+        self.y_gemm_t = iron.zeros(self.MAX_BATCH_SIZE * 2048, dtype=bfloat16, device="npu")
+        
         # RMSNorm tensors (reused only for Llama path or direct testing)
         self.x_rmsnorm_t = iron.tensor(np.zeros(2048, dtype=bfloat16), dtype=bfloat16, device="npu")
         self.w_rmsnorm_t = iron.tensor(np.zeros(2048, dtype=np.float32), dtype=np.float32, device="npu")
@@ -271,6 +277,62 @@ class LlamaNPUModel:
                 y_sum[start_row:end_row] += res[:(end_row-start_row)]
 
         return y_sum.astype(bfloat16)
+
+    def run_gemm_npu(self, W_combined, x_bf16):
+        B = x_bf16.shape[0]
+        N = W_combined.shape[0]
+        K_blocks = W_combined.shape[1] // 20
+        K = K_blocks * 32
+
+        target_N = 2048
+        target_K = 2048
+
+        y_out = np.zeros((B, N), dtype=np.float32)
+
+        # Loop over batch chunks
+        for start_b in range(0, B, self.MAX_BATCH_SIZE):
+            end_b = min(start_b + self.MAX_BATCH_SIZE, B)
+            batch_chunk = x_bf16[start_b:end_b]
+            
+            y_sum = np.zeros((self.MAX_BATCH_SIZE, N), dtype=np.float32)
+
+            # Loop over column chunks
+            for start_col in range(0, K, target_K):
+                end_col = min(start_col + target_K, K)
+                x_chunk = batch_chunk[:, start_col:end_col]
+
+                # Pad activation chunk if it's smaller than target
+                if x_chunk.shape[1] < target_K or x_chunk.shape[0] < self.MAX_BATCH_SIZE:
+                    x_input = np.zeros((self.MAX_BATCH_SIZE, target_K), dtype=bfloat16)
+                    x_input[:x_chunk.shape[0], :x_chunk.shape[1]] = x_chunk
+                else:
+                    x_input = x_chunk
+
+                self.x_gemm_t.numpy()[:] = x_input.reshape(-1)
+                self.x_gemm_t._sync_to_device()
+
+                b_start = start_col // 32
+                b_end = end_col // 32
+                W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
+
+                for start_row in range(0, N, target_N):
+                    end_row = min(start_row + target_N, N)
+                    W_chunk = W_col_slice[start_row:end_row]
+
+                    # Copy to resident NPU tensors
+                    self.w_gemv_t.numpy()[:] = W_chunk.reshape(-1)
+                    self.w_gemv_t._sync_to_device()
+
+                    # Execute JIT NPU kernel
+                    gemm_q_npu(self.w_gemv_t, self.x_gemm_t, self.y_gemm_t, B=self.MAX_BATCH_SIZE, N=2048, K=2048, m=32, k_tile=256)
+
+                    # Fetch result
+                    res = np.array(self.y_gemm_t.numpy()).astype(np.float32).reshape(self.MAX_BATCH_SIZE, 2048)
+                    y_sum[:, start_row:end_row] += res[:, :(end_row-start_row)]
+
+            y_out[start_b:end_b] = y_sum[:(end_b-start_b)]
+
+        return y_out.astype(bfloat16)
 
     def run_rmsnorm_npu_resident(self, x_bf16, w_fp32):
         K = x_bf16.shape[0]
@@ -736,3 +798,198 @@ class LlamaNPUModel:
                 logits = (self.lm_head_dequant.astype(np.float32) @ x_norm.astype(np.float32)).astype(bfloat16)
                 
             return logits[:128256].astype(np.float32)
+
+    def run_rmsnorm_batch_cpu(self, x_bf16, w_fp32):
+        x_fp32 = x_bf16.astype(np.float32)
+        if self.model_type in ["gemma3", "gemma4"]:
+            eps = 1e-6
+            variance = np.mean(x_fp32 ** 2, axis=-1, keepdims=True)
+            normed = x_fp32 * (1.0 / np.sqrt(variance + eps))
+            if w_fp32 is not None:
+                normed = normed * w_fp32
+            return normed.astype(bfloat16)
+        else:
+            variance = np.mean(x_fp32 ** 2, axis=-1, keepdims=True)
+            return (x_fp32 * (1.0 / np.sqrt(variance + 1e-5)) * w_fp32).astype(bfloat16)
+
+    def run_rope_batch_cpu_gemma(self, x_bf16, pos_start, base_freq):
+        B, K = x_bf16.shape
+        if self.model_type == "gemma3":
+            dim = 256
+        else:
+            dim = 256 if base_freq == 10000.0 else 512
+        num_heads = K // dim
+        
+        pos_array = np.arange(pos_start, pos_start + B)
+        if base_freq == 10000.0:
+            cos_sin = self.cos_sin_table_sliding[pos_array]
+        else:
+            cos_sin = self.cos_sin_table_full[pos_array]
+            
+        cos = cos_sin[:, :dim//2].astype(np.float32)
+        sin = cos_sin[:, dim//2:].astype(np.float32)
+        
+        x_fp32 = x_bf16.astype(np.float32).reshape(B, num_heads, dim)
+        y_fp32 = np.zeros_like(x_fp32)
+        
+        for h in range(num_heads):
+            x1 = x_fp32[:, h, :dim//2]
+            x2 = x_fp32[:, h, dim//2:]
+            y_fp32[:, h, :dim//2] = x1 * cos - x2 * sin
+            y_fp32[:, h, dim//2:] = x2 * cos + x1 * sin
+            
+        return y_fp32.reshape(B, K).astype(bfloat16)
+
+    def run_attention_batch_host(self, q_rope, pos_start, l):
+        B = q_rope.shape[0]
+        if self.model_type == "gemma4":
+            is_sliding = (l + 1) % 6 != 0
+            num_heads = 16
+            num_kv_heads = 8 if is_sliding else 1
+            dim = 256 if is_sliding else 512
+            scale = 1.0
+            window_size = 1024
+        else:
+            raise NotImplementedError()
+            
+        q = q_rope.astype(np.float32).reshape(B, num_heads, dim)
+        output = np.zeros((B, num_heads, dim), dtype=np.float32)
+        
+        for b in range(B):
+            pos = pos_start + b
+            seq_len = pos + 1
+            W = min(seq_len, window_size) if is_sliding else seq_len
+            
+            k = self.k_caches[l][:, pos + 1 - W : pos + 1, :].astype(np.float32)
+            v = self.v_caches[l][:, pos + 1 - W : pos + 1, :].astype(np.float32)
+            
+            group_ratio = num_heads // num_kv_heads
+            if group_ratio > 1:
+                k = np.repeat(k, group_ratio, axis=0)
+                v = np.repeat(v, group_ratio, axis=0)
+                
+            scores = np.zeros((num_heads, W), dtype=np.float32)
+            for h in range(num_heads):
+                scores[h] = np.dot(k[h], q[b, h]) * scale
+                
+            max_scores = np.max(scores, axis=-1, keepdims=True)
+            exp_scores = np.exp(scores - max_scores)
+            probs = exp_scores / np.sum(exp_scores, axis=-1, keepdims=True)
+            
+            for h in range(num_heads):
+                output[b, h] = np.dot(probs[h], v[h])
+                
+        return output.reshape(B, -1).astype(bfloat16)
+
+    def run_layer_batch(self, x_bf16, pos_start, l, use_npu=True):
+        B = x_bf16.shape[0]
+        if self.model_type == "gemma4":
+            x_norm = self.run_rmsnorm_batch_cpu(x_bf16, self.layer_attn_norms[l])
+            
+            is_sliding = (l + 1) % 6 != 0
+            q_size = 4096 if is_sliding else 8192
+            k_size = 2048 if is_sliding else 512
+            v_size = 2048 if is_sliding else 512
+            h_dim = 256 if is_sliding else 512
+            n_heads = 16
+            n_kv_heads = 8 if is_sliding else 1
+            
+            if not use_npu:
+                from tools.ref.gemv_q import dequantize_combined
+                layer_w_dequant = {}
+                for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
+                    if proj == "attn_v" and not is_sliding: continue
+                    layer_w_dequant[proj] = dequantize_combined(self.layer_weights[l][proj]).astype(bfloat16)
+
+            x_norm_pad = np.zeros((B, 4096), dtype=np.float32)
+            x_norm_pad[:, :3840] = x_norm.astype(np.float32)
+            
+            if use_npu:
+                q = self.run_gemm_npu(self.layer_weights[l]["attn_q"], x_norm_pad)[:, :q_size]
+                k = self.run_gemm_npu(self.layer_weights[l]["attn_k"], x_norm_pad)[:, :k_size]
+                if is_sliding:
+                    v = self.run_gemm_npu(self.layer_weights[l]["attn_v"], x_norm_pad)[:, :v_size]
+                else:
+                    v = k
+            else:
+                q = (x_norm_pad @ layer_w_dequant["attn_q"].astype(np.float32).T).astype(bfloat16)[:, :q_size]
+                k = (x_norm_pad @ layer_w_dequant["attn_k"].astype(np.float32).T).astype(bfloat16)[:, :k_size]
+                if is_sliding:
+                    v = (x_norm_pad @ layer_w_dequant["attn_v"].astype(np.float32).T).astype(bfloat16)[:, :v_size]
+                else:
+                    v = k
+                
+            q_normed = np.zeros_like(q)
+            for h in range(n_heads):
+                q_normed[:, h * h_dim : (h + 1) * h_dim] = self.run_rmsnorm_batch_cpu(q[:, h * h_dim : (h + 1) * h_dim], self.layer_q_norms[l])
+            k_normed = np.zeros_like(k)
+            for h in range(n_kv_heads):
+                k_normed[:, h * h_dim : (h + 1) * h_dim] = self.run_rmsnorm_batch_cpu(k[:, h * h_dim : (h + 1) * h_dim], self.layer_k_norms[l])
+            v_normed = np.zeros_like(v)
+            for h in range(n_kv_heads):
+                v_normed[:, h * h_dim : (h + 1) * h_dim] = self.run_rmsnorm_batch_cpu(v[:, h * h_dim : (h + 1) * h_dim], None)
+                
+            base_freq = 10000.0 if is_sliding else 1000000.0
+            q_rope = self.run_rope_batch_cpu_gemma(q_normed, pos_start, base_freq)
+            k_rope = self.run_rope_batch_cpu_gemma(k_normed, pos_start, base_freq)
+            
+            k_rope_reshaped = k_rope.reshape(B, n_kv_heads, h_dim)
+            v_normed_reshaped = v_normed.reshape(B, n_kv_heads, h_dim)
+            
+            for b in range(B):
+                self.k_caches[l][:, pos_start + b, :] = k_rope_reshaped[b]
+                self.v_caches[l][:, pos_start + b, :] = v_normed_reshaped[b]
+            
+            attn_out = self.run_attention_batch_host(q_rope, pos_start, l)
+            
+            attn_out_size = 4096 if is_sliding else 8192
+            attn_out_pad = np.zeros((B, attn_out_size), dtype=np.float32)
+            attn_out_pad[:, :attn_out.shape[1]] = attn_out.astype(np.float32)
+            if use_npu:
+                attn_proj = self.run_gemm_npu(self.layer_weights[l]["attn_output"], attn_out_pad)[:, :3840]
+            else:
+                attn_proj = (attn_out_pad @ layer_w_dequant["attn_output"].astype(np.float32).T).astype(bfloat16)[:, :3840]
+                
+            attn_proj_normed = self.run_rmsnorm_batch_cpu(attn_proj, self.layer_post_attn_norms[l])
+            x_post_attn = (x_bf16.astype(np.float32) + attn_proj_normed.astype(np.float32)).astype(bfloat16)
+            
+            x_norm2 = self.run_rmsnorm_batch_cpu(x_post_attn, self.layer_ffn_norms[l])
+            
+            x_norm2_pad = np.zeros((B, 4096), dtype=np.float32)
+            x_norm2_pad[:, :3840] = x_norm2.astype(np.float32)
+            if use_npu:
+                gate = self.run_gemm_npu(self.layer_weights[l]["ffn_gate"], x_norm2_pad)[:, :15360]
+                up = self.run_gemm_npu(self.layer_weights[l]["ffn_up"], x_norm2_pad)[:, :15360]
+            else:
+                gate = (x_norm2_pad @ layer_w_dequant["ffn_gate"].astype(np.float32).T).astype(bfloat16)[:, :15360]
+                up = (x_norm2_pad @ layer_w_dequant["ffn_up"].astype(np.float32).T).astype(bfloat16)[:, :15360]
+                
+            gate_fp32 = gate.astype(np.float32)
+            up_fp32 = up.astype(np.float32)
+            gelu_out = 0.5 * gate_fp32 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (gate_fp32 + 0.044715 * (gate_fp32 ** 3))))
+            geglu_out = (gelu_out * up_fp32).astype(bfloat16)
+            
+            geglu_out_pad = np.zeros((B, 16384), dtype=np.float32)
+            geglu_out_pad[:, :15360] = geglu_out.astype(np.float32)
+            if use_npu:
+                down = self.run_gemm_npu(self.layer_weights[l]["ffn_down"], geglu_out_pad)[:, :3840]
+            else:
+                down = (geglu_out_pad @ layer_w_dequant["ffn_down"].astype(np.float32).T).astype(bfloat16)[:, :3840]
+                
+            down_normed = self.run_rmsnorm_batch_cpu(down, self.layer_post_ffw_norms[l])
+            y_final = (x_post_attn.astype(np.float32) + down_normed.astype(np.float32)).astype(bfloat16)
+            
+            y_final = (y_final.astype(np.float32) * self.layer_output_scales[l]).astype(bfloat16)
+            self.layer_weights[l].clear()
+            return y_final
+        else:
+            raise NotImplementedError()
+
+    def forward_batch(self, token_ids: list[int], pos_start: int, use_npu: bool = True) -> np.ndarray:
+        if self.model_type == "gemma4":
+            x_bf16 = (self.token_embd[token_ids].astype(np.float32) * np.sqrt(self.hidden_size)).astype(bfloat16)
+            for l in range(self.num_hidden_layers):
+                x_bf16 = self.run_layer_batch(x_bf16, pos_start, l, use_npu=use_npu)
+            return None
+        else:
+            raise NotImplementedError()

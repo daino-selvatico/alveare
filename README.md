@@ -29,7 +29,9 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 
 ### Current limitations
 
-- **Prompt prefill runs entirely on CPU:** Currently, the initial prompt processing (prefill) phase is not offloaded to the NPU. It runs entirely on the host CPU using standard numpy operations, which causes 100% CPU utilization and can be a bottleneck for long contexts. Only the token generation (decode) phase is offloaded to the NPU. Moving batched prefill to the NPU is a planned roadmap item.
+- **Decode speed:** Decode is currently ~4.6 s/token on Gemma-4-12B. Correctness came first; speed optimization is the ongoing focus.
+- **Experimental state:** Expect rough edges!
+- **Prompt batched prefill:** The initial prompt prefill phase is now successfully offloaded to the NPU with batched matrix multiplications, drastically improving Time-to-First-Token latency compared to the initial CPU-only implementation!
 
 Alveare is **NPU-only and Linux-only.** It targets the **XDNA2** NPU on AMD Ryzen AI hardware. It was developed and validated on a **Gorgon Point** part (Ryzen AI 9 HX 470, the 2026 Ryzen AI refresh); XDNA2 is shared with Strix Point, so the targeting is the same across both. See [Tested on](#tested-on--reference-environment).
 

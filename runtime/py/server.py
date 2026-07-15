@@ -99,11 +99,19 @@ async def generate_stream(
         num_prompt_tokens = len(input_ids)
         print(f"[{request_id}] Starting prefill of {num_prompt_tokens} tokens...")
         t0_prefill = time.perf_counter()
-        for pos in range(num_prompt_tokens - 1):
-            # Run without returning logits (saves time)
-            model.forward(input_ids[pos], pos, return_logits=False, use_npu=False)
-            # Yield to other async tasks briefly
-            await asyncio.sleep(0)
+        
+        prompt_ids = input_ids[:-1]
+        if model.model_type == "gemma4":
+            B = 16
+            for i in range(0, len(prompt_ids), B):
+                chunk = prompt_ids[i:i+B]
+                model.forward_batch(chunk, i, use_npu=True)
+                await asyncio.sleep(0)
+        else:
+            for pos in range(num_prompt_tokens - 1):
+                model.forward(input_ids[pos], pos, return_logits=False, use_npu=False)
+                await asyncio.sleep(0)
+                
         t1_prefill = time.perf_counter()
         print(f"[{request_id}] Prefill completed in {t1_prefill - t0_prefill:.2f}s")
         
@@ -196,12 +204,22 @@ async def chat_completions(request: ChatCompletionRequest):
         async with lock:
             model.reset_caches()
             
-            # Prefill prompt
+            # 1. Prefill prompt
             num_prompt_tokens = len(input_ids)
             print(f"[{request_id}] Starting prefill of {num_prompt_tokens} tokens...")
-            for pos in range(num_prompt_tokens - 1):
-                model.forward(input_ids[pos], pos, return_logits=False, use_npu=False)
-                await asyncio.sleep(0)
+            t0_prefill = time.perf_counter()
+            
+            prompt_ids = input_ids[:-1]
+            if model.model_type == "gemma4":
+                B = 16
+                for i in range(0, len(prompt_ids), B):
+                    chunk = prompt_ids[i:i+B]
+                    model.forward_batch(chunk, i)
+                    await asyncio.sleep(0)
+            else:
+                for pos in range(num_prompt_tokens - 1):
+                    model.forward(input_ids[pos], pos, return_logits=False, use_npu=False)
+                    await asyncio.sleep(0)
                 
             # Generation loop
             current_token_id = input_ids[-1]
