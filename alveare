@@ -79,6 +79,7 @@ SERVE:
     Options:
         --host <addr>   Bind address (default 127.0.0.1, or $ALVEARE_HOST).
         --port <port>   Port (default 8000, or $ALVEARE_PORT).
+        --offline       Run completely offline (sets HF_HUB_OFFLINE=1).
 
     Examples:
         alveare serve gemma4
@@ -198,14 +199,21 @@ cmd_serve() {
   local model="$1"; shift
   local host="${ALVEARE_HOST:-127.0.0.1}"
   local port="${ALVEARE_PORT:-8000}"
+  local offline=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host) host="$2"; shift 2 ;;
       --port) port="$2"; shift 2 ;;
+      --offline) offline=1; shift 1 ;;
       *) echo "error: unknown serve option '$1'" >&2; exit 2 ;;
     esac
   done
+
+  if [ "$offline" -eq 1 ]; then
+    export HF_HUB_OFFLINE=1
+    echo "Running in offline mode (HF_HUB_OFFLINE=1)"
+  fi
 
   local weights_dir
   weights_dir="$(resolve_weights_dir "$model")"
