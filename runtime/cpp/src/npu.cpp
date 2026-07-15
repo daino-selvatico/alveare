@@ -8,6 +8,8 @@
 
 #include "nlohmann/json.hpp"
 
+#include "alveare/bf16.h"
+
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_hw_context.h>
@@ -17,9 +19,9 @@ namespace alveare {
 
 namespace {
 
-std::string shape_key(const std::string& kind, int N, int K, int B) {
+std::string shape_key(const std::string& kind, int N, int K, int B, int H = 0, int I = 0, const std::string& act = "") {
     return kind + ':' + std::to_string(N) + ':' + std::to_string(K) + ':' +
-           std::to_string(B);
+           std::to_string(B) + ':' + std::to_string(H) + ':' + std::to_string(I) + ':' + act;
 }
 
 std::string dirname_of(const std::string& path) {
@@ -64,9 +66,10 @@ struct NpuRegistry::Impl {
     std::vector<ResidentWeight> weights;
 
     const KernelSpec* find_spec(const std::string& kind, int N, int K,
-                                int B) const {
+                                int B, int H = 0, int I = 0, const std::string& act = "") const {
         for (const auto& s : specs)
-            if (s.kind == kind && s.N == N && s.K == K && s.B == B) return &s;
+            if (s.kind == kind && s.N == N && s.K == K && s.B == B &&
+                s.H == H && s.I == I && s.activation == act) return &s;
         return nullptr;
     }
 
@@ -97,15 +100,15 @@ struct NpuRegistry::Impl {
         loaded.erase(victim);
     }
 
-    LoadedKernel& ensure_loaded(const std::string& kind, int N, int K, int B) {
-        const std::string key = shape_key(kind, N, K, B);
+    LoadedKernel& ensure_loaded(const std::string& kind, int N, int K, int B, int H = 0, int I = 0, const std::string& act = "") {
+        const std::string key = shape_key(kind, N, K, B, H, I, act);
         auto it = loaded.find(key);
         if (it != loaded.end()) {
             it->second.last_used = ++tick;
             return it->second;
         }
 
-        const KernelSpec* spec = find_spec(kind, N, K, B);
+        const KernelSpec* spec = find_spec(kind, N, K, B, H, I, act);
         if (!spec) throw std::runtime_error("npu: no kernel for " + key);
 
         // Load, evicting on context exhaustion (XRT errno 22) and retrying.
@@ -127,9 +130,15 @@ struct NpuRegistry::Impl {
                             instrs.size() * sizeof(uint32_t));
                 lk.instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-                const size_t rows = (kind == "gemm") ? size_t(B) : 1;
-                const size_t x_bytes = rows * size_t(K) * sizeof(uint16_t);
-                const size_t y_bytes = rows * size_t(N) * sizeof(uint16_t);
+                size_t x_bytes = 0, y_bytes = 0;
+                if (kind == "ffn_fused") {
+                    x_bytes = size_t(H) * sizeof(uint16_t);
+                    y_bytes = size_t(spec->n_cores) * size_t(H) * sizeof(uint16_t);
+                } else {
+                    const size_t rows = (kind == "gemm") ? size_t(B) : 1;
+                    x_bytes = rows * size_t(K) * sizeof(uint16_t);
+                    y_bytes = rows * size_t(N) * sizeof(uint16_t);
+                }
                 lk.x_bo = xrt::bo(device, x_bytes, XRT_BO_FLAGS_HOST_ONLY,
                                   lk.kernel.group_id(4));
                 lk.y_bo = xrt::bo(device, y_bytes, XRT_BO_FLAGS_HOST_ONLY,
@@ -170,6 +179,9 @@ NpuRegistry::NpuRegistry(const std::string& manifest_path, unsigned device_index
         s.N = e.value("N", 0);
         s.K = e.value("K", 0);
         s.B = e.value("B", 0);
+        s.H = e.value("H", 0);
+        s.I = e.value("I", 0);
+        s.activation = e.value("activation", std::string{});
         s.m = e.value("m", 0);
         s.k_tile = e.value("k_tile", 0);
         s.n_cores = e.value("n_cores", 0);
@@ -195,12 +207,30 @@ bool NpuRegistry::has_gemm(int B, int N, int K) const {
     return impl_->find_spec("gemm", N, K, B) != nullptr;
 }
 
+bool NpuRegistry::has_ffn_fused(int H, int I, const std::string& activation) const {
+    return impl_->find_spec("ffn_fused", 0, 0, 0, H, I, activation) != nullptr;
+}
+
 WeightHandle NpuRegistry::create_gemv_weight(int N, int K, const void* packed,
                                              size_t nbytes) {
     LoadedKernel& lk = impl_->ensure_loaded("gemv", N, K, 0);
     ResidentWeight rw;
     rw.N = N;
     rw.K = K;
+    rw.bo = xrt::bo(impl_->device, nbytes, XRT_BO_FLAGS_HOST_ONLY,
+                    lk.kernel.group_id(3));
+    std::memcpy(rw.bo.map<void*>(), packed, nbytes);
+    rw.bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    impl_->weights.push_back(std::move(rw));
+    return static_cast<WeightHandle>(impl_->weights.size() - 1);
+}
+
+WeightHandle NpuRegistry::create_ffn_fused_weight(int H, int I, const std::string& activation,
+                                                  const void* packed, size_t nbytes) {
+    LoadedKernel& lk = impl_->ensure_loaded("ffn_fused", 0, 0, 0, H, I, activation);
+    ResidentWeight rw;
+    rw.N = H; // Abuse N,K for H,I to avoid changing struct
+    rw.K = I;
     rw.bo = xrt::bo(impl_->device, nbytes, XRT_BO_FLAGS_HOST_ONLY,
                     lk.kernel.group_id(3));
     std::memcpy(rw.bo.map<void*>(), packed, nbytes);
@@ -230,8 +260,51 @@ void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
     std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(N) * sizeof(uint16_t));
 }
 
+void NpuRegistry::run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
+                                const void* x_bf16, void* y_bf16) {
+    if (w >= impl_->weights.size())
+        throw std::runtime_error("npu: invalid weight handle");
+    const ResidentWeight& rw = impl_->weights[w];
+    if (rw.N != H || rw.K != I)
+        throw std::runtime_error("npu: weight/shape mismatch in run_ffn_fused");
+
+    LoadedKernel& lk = impl_->ensure_loaded("ffn_fused", 0, 0, 0, H, I, activation);
+
+    std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(H) * sizeof(uint16_t));
+    lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo,
+                         lk.y_bo);
+    run.wait();
+
+    lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    
+    // CPU reduction: sum the n_cores partial results into y_bf16
+    const uint16_t* y_partial = lk.y_bo.map<const uint16_t*>();
+    uint16_t* y_out = static_cast<uint16_t*>(y_bf16);
+    int n_cores = lk.spec.n_cores;
+    
+    // Convert to fp32, sum, convert back to bf16
+    std::vector<float> y_fp32(H, 0.0f);
+    for (int c = 0; c < n_cores; ++c) {
+        for (int h = 0; h < H; ++h) {
+            bf16 val;
+            val.v = y_partial[c * H + h];
+            y_fp32[h] += val.to_float();
+        }
+    }
+    for (int h = 0; h < H; ++h) {
+        bf16 val(y_fp32[h]);
+        y_out[h] = val.v;
+    }
+}
+
 void NpuRegistry::pin_gemv(int N, int K) {
     impl_->ensure_loaded("gemv", N, K, 0).pinned = true;
+}
+
+void NpuRegistry::pin_ffn_fused(int H, int I, const std::string& activation) {
+    impl_->ensure_loaded("ffn_fused", 0, 0, 0, H, I, activation).pinned = true;
 }
 
 int NpuRegistry::loaded_contexts() const {

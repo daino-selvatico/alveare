@@ -32,6 +32,11 @@ set(ALVEARE_CORE_SRC
     src/npy.cpp
     src/config.cpp
     src/npu.cpp
+    src/weights.cpp
+    src/model.cpp
+    src/tokenizer.cpp
+    src/generator.cpp
+    src/server.cpp
 )
 
 add_executable(alveare_runtime src/main.cpp ${ALVEARE_CORE_SRC})
@@ -39,6 +44,11 @@ target_include_directories(alveare_runtime PRIVATE ${XRT_INCLUDE_DIRS})
 target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread)
 
 # NPU registry smoke test: runs a harvested GEMV shape and checks parity.
-add_executable(npu_smoke test/npu_smoke.cpp ${ALVEARE_CORE_SRC})
-target_include_directories(npu_smoke PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(npu_smoke PRIVATE ${XRT_COREUTIL_TARGET} pthread)
+add_executable(parity_test test/parity_test.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(parity_test PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)
+
+# Layer decode test
+add_executable(layer_test test/layer_test.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(layer_test PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)
