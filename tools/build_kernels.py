@@ -55,10 +55,17 @@ def n_cores_for(N: int) -> int:
 
 def packed_shape_to_logical(path: Path) -> tuple[int, int]:
     """(N, K/32*20) uint8 on disk -> logical (N, K)."""
-    # Read only the .npy header; never load the payload.
+    # Read only the .npy header; never load the payload. Use the versioned
+    # public readers (the private _read_array_header was removed in numpy 2.x,
+    # which the alveare-aie toolchain env ships).
     with open(path, "rb") as f:
         version = np.lib.format.read_magic(f)
-        shape, _fortran, _dtype = np.lib.format._read_array_header(f, version)
+        if version == (1, 0):
+            shape, _fortran, _dtype = np.lib.format.read_array_header_1_0(f)
+        elif version == (2, 0):
+            shape, _fortran, _dtype = np.lib.format.read_array_header_2_0(f)
+        else:
+            raise ValueError(f"{path}: unsupported .npy version {version}")
     N, packed = shape
     assert packed % 20 == 0, f"{path}: packed dim {packed} not a multiple of 20"
     K = (packed // 20) * 32
