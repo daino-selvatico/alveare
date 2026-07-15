@@ -201,6 +201,28 @@ Add `"stream": true` for Server-Sent Events. Requests are serialized (one NPU), 
 
 ---
 
+## 11. Offline Execution (Air-Gapped)
+
+By default, the server downloads tokenizer files (`tokenizer.json`, `tokenizer_config.json`, `special_tokens_map.json`) from Hugging Face into your `~/.cache/huggingface/hub/` directory.
+
+To run the server in a completely offline environment without Hugging Face telemetry or online checks, use the `--offline` flag:
+
+```bash
+./alveare serve g4-12b --offline
+```
+
+This sets `HF_HUB_OFFLINE=1` under the hood. It will successfully start using the cached files in `~/.cache/`.
+
+### 100% Air-Gapped Portability
+If you wish to transfer the model to a machine that has *never* had internet access, you can bypass the `~/.cache` directory entirely:
+1. Download `tokenizer.json`, `tokenizer_config.json`, and `special_tokens_map.json` for your model.
+2. Place them directly inside your generated weights folder (e.g., `./quantized_weights_g4-12b/`).
+3. Run with `./alveare serve g4-12b --offline`.
+
+Alveare's tokenizer glue will detect these files locally and avoid querying Hugging Face, making your quantized weights folder a fully self-contained portable package.
+
+---
+
 ## Troubleshooting
 
 - **`cannot import pyxrt`** — the conda env's Python must be 3.14 to match the system `pyxrt` build (step 2).
