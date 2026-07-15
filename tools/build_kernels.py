@@ -34,12 +34,13 @@ sys.path.append(str(ROOT))
 from kernels.gemv_q.gemv_q import gemv_q_npu
 from kernels.gemm_q.gemm_q import gemm_q_npu
 
+from kernels.ffn_fused.ffn_fused import ffn_fused_npu
+
 M = 32          # kernel row tile (fixed in the IRON designs)
 K_TILE = 256    # kernel K tile (fixed in the IRON designs)
 
-# The 7 projections streamed per layer, plus the tied LM head.
-PROJECTIONS = ["attn_q", "attn_k", "attn_v", "attn_output",
-               "ffn_gate", "ffn_up", "ffn_down"]
+# The standard GEMV/GEMM projections. FFN is handled separately as a fused block.
+PROJECTIONS = ["attn_q", "attn_k", "attn_v", "attn_output"]
 
 
 def n_cores_for(N: int) -> int:
@@ -72,21 +73,29 @@ def packed_shape_to_logical(path: Path) -> tuple[int, int]:
     return int(N), int(K)
 
 
-def enumerate_shapes(weights_dir: Path, num_layers: int) -> set[tuple[int, int]]:
-    shapes: set[tuple[int, int]] = set()
+def enumerate_shapes(weights_dir: Path, num_layers: int) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    gemv_shapes: set[tuple[int, int]] = set()
+    ffn_shapes: set[tuple[int, int]] = set()
+    
     for l in range(num_layers):
         for proj in PROJECTIONS:
             p = weights_dir / f"blk.{l}.{proj}.weight_packed.npy"
             if p.exists():
-                shapes.add(packed_shape_to_logical(p))
+                gemv_shapes.add(packed_shape_to_logical(p))
+                
+        # Handle FFN shapes for fusion. We read the gate projection to get (I, H).
+        p_gate = weights_dir / f"blk.{l}.ffn_gate.weight_packed.npy"
+        if p_gate.exists():
+            I, H = packed_shape_to_logical(p_gate)
+            ffn_shapes.add((H, I))
+            
     lm = weights_dir / "lm_head_packed.npy"
     if lm.exists():
-        # LM head is chunked to MAX_N=16384 along N in run_gemv_npu; harvest the
-        # chunk shape actually launched, not the full (vocab, K). Padding/bucketing
-        # policy (plan decision #2) is applied by the C++ registry, not here.
+        # LM head is chunked to MAX_N=16384 along N in run_gemv_npu
         _, K = packed_shape_to_logical(lm)
-        shapes.add((16384, K))
-    return shapes
+        gemv_shapes.add((16384, K))
+        
+    return gemv_shapes, ffn_shapes
 
 
 def compile_gemv(N: int, K: int, out: Path) -> dict:
@@ -111,6 +120,27 @@ def compile_gemm(B: int, N: int, K: int, out: Path) -> dict:
             "xclbin": xclbin.name, "insts": insts.name}
 
 
+def compile_ffn_fused(H: int, I: int, activation: str, out: Path) -> dict:
+    name = f"ffn_fused_{H}x{I}_{activation}"
+    xclbin = out / f"{name}.xclbin"
+    insts = out / f"{name}.insts"
+    ffn_fused_npu.specialize(H=H, I=I, m_I=M, k_tile=K_TILE, activation=activation).compile(
+        xclbin_path=str(xclbin), inst_path=str(insts))
+    # n_cores logic matches ffn_fused.py
+    if I % (8 * M) == 0:
+        n_cores = 8
+    elif I % (4 * M) == 0:
+        n_cores = 4
+    elif I % (2 * M) == 0:
+        n_cores = 2
+    else:
+        n_cores = 1
+        
+    return {"kind": "ffn_fused", "H": H, "I": I, "m_I": M, "k_tile": K_TILE, "activation": activation,
+            "n_cores": n_cores,
+            "xclbin": xclbin.name, "insts": insts.name}
+
+
 def main():
     ap = argparse.ArgumentParser(description="AOT-harvest NPU kernels for the C++ runtime")
     ap.add_argument("--weights-dir", required=True, type=Path)
@@ -119,28 +149,45 @@ def main():
     ap.add_argument("--no-gemm", action="store_true", help="skip prefill GEMM shapes")
     args = ap.parse_args()
 
+    # Initialize the IRON NPU device context (required before compilation)
+    import aie.iron as iron
+    _ = iron.tensor([0], device="npu")
+
     cfg = json.loads((args.weights_dir / "config.json").read_text())
     num_layers = cfg.get("num_hidden_layers", 48)
+    # Default to gelu, though llama uses silu (hidden_act = "silu")
+    activation = cfg.get("hidden_act", "gelu") 
+    
     args.out.mkdir(parents=True, exist_ok=True)
 
-    shapes = sorted(enumerate_shapes(args.weights_dir, num_layers))
-    print(f"Model '{cfg.get('model_type')}' — {len(shapes)} distinct matmul shapes:")
-    for N, K in shapes:
-        print(f"  N={N:6d} K={K:6d}  n_cores={n_cores_for(N)}")
+    gemv_shapes, ffn_shapes = enumerate_shapes(args.weights_dir, num_layers)
+    gemv_shapes = sorted(gemv_shapes)
+    ffn_shapes = sorted(ffn_shapes)
+    
+    total_shapes = len(gemv_shapes) + len(ffn_shapes)
+    print(f"Model '{cfg.get('model_type')}' — {total_shapes} distinct matmul shapes:")
+    for N, K in gemv_shapes:
+        print(f"  GEMV N={N:6d} K={K:6d}  n_cores={n_cores_for(N)}")
+    for H, I in ffn_shapes:
+        print(f"  FFN  H={H:6d} I={I:6d}  activation={activation}")
 
     # Decision #2 sanity check: decode must fit the ~8-context budget resident.
-    if len(shapes) > 8:
-        print(f"\n[!] {len(shapes)} > 8 hardware contexts: the C++ registry must "
+    if total_shapes > 8:
+        print(f"\n[!] {total_shapes} > 8 hardware contexts: the C++ registry must "
               f"bucket-pad these into <=8 resident contexts (plan decision #2) to "
               f"avoid xclbin reloads inside the decode loop.")
 
     entries = []
-    for N, K in shapes:
+    for N, K in gemv_shapes:
         print(f"Compiling gemv {N}x{K} ...")
         entries.append(compile_gemv(N, K, args.out))
         if not args.no_gemm:
             print(f"Compiling gemm {N}x{K} b{args.max_batch} ...")
             entries.append(compile_gemm(args.max_batch, N, K, args.out))
+            
+    for H, I in ffn_shapes:
+        print(f"Compiling ffn_fused {H}x{I} ({activation}) ...")
+        entries.append(compile_ffn_fused(H, I, activation, args.out))
 
     manifest = {
         "model_type": cfg.get("model_type"),

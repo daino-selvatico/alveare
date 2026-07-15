@@ -80,6 +80,7 @@ SERVE:
         --host <addr>   Bind address (default 127.0.0.1, or $ALVEARE_HOST).
         --port <port>   Port (default 8000, or $ALVEARE_PORT).
         --offline       Run completely offline (sets HF_HUB_OFFLINE=1).
+        --legacy        Run the legacy Python server instead of the Native C++ server.
 
     Examples:
         alveare serve gemma4
@@ -206,6 +207,7 @@ cmd_serve() {
       --host) host="$2"; shift 2 ;;
       --port) port="$2"; shift 2 ;;
       --offline) offline=1; shift 1 ;;
+      --legacy) legacy=1; shift 1 ;;
       *) echo "error: unknown serve option '$1'" >&2; exit 2 ;;
     esac
   done
@@ -256,7 +258,19 @@ cmd_serve() {
   export ALVEARE_WEIGHTS_DIR="$weights_dir"
   export ALVEARE_HOST="$host"
   export ALVEARE_PORT="$port"
-  exec "$PY" "$ROOT/runtime/py/server.py"
+  
+  if [ "${legacy:-0}" -eq 1 ]; then
+    echo "Starting Legacy Python Server..."
+    exec "$PY" "$ROOT/runtime/py/server.py"
+  else
+    echo "Starting Native C++ Server..."
+    local manifest="$ROOT/kernels/build/manifest.json"
+    if [ ! -f "$manifest" ]; then
+      echo "error: manifest not found at $manifest. Ensure kernels are built." >&2
+      exit 1
+    fi
+    exec "$ROOT/runtime/cpp/build/alveare_runtime" "$weights_dir" "$manifest" "$port"
+  fi
 }
 
 cmd_install() {

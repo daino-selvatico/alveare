@@ -11,10 +11,13 @@ namespace alveare {
 // One AOT-compiled kernel as harvested by tools/build_kernels.py, mirrored from
 // kernels/build/manifest.json. A gemv entry has B == 0; a gemm entry has B > 0.
 struct KernelSpec {
-    std::string kind;   // "gemv" (decode) or "gemm" (prefill)
+    std::string kind;   // "gemv" (decode), "gemm" (prefill), "ffn_fused"
     int N = 0;
     int K = 0;
     int B = 0;          // batch (gemm only)
+    int H = 0;          // ffn_fused
+    int I = 0;          // ffn_fused
+    std::string activation; // ffn_fused
     int m = 0;
     int k_tile = 0;
     int n_cores = 0;
@@ -53,9 +56,10 @@ public:
     const std::vector<KernelSpec>& kernels() const;
     const std::string& model_type() const;
 
-    // True if the manifest contains a gemv/gemm kernel of the given shape.
+    // True if the manifest contains a gemv/gemm/ffn_fused kernel of the given shape.
     bool has_gemv(int N, int K) const;
     bool has_gemm(int B, int N, int K) const;
+    bool has_ffn_fused(int H, int I, const std::string& activation) const;
 
     // Upload packed weights of logical shape (N, K) -- laid out (N, K/32*20)
     // uint8, Q4_0 -- into a resident device BO once. The returned handle is
@@ -64,6 +68,9 @@ public:
     WeightHandle create_gemv_weight(int N, int K, const void* packed,
                                     size_t nbytes);
 
+    WeightHandle create_ffn_fused_weight(int H, int I, const std::string& activation,
+                                         const void* packed, size_t nbytes);
+
     // y[N] = W @ x[K], all bf16 on the host boundary. w must come from
     // create_gemv_weight with the same (N, K). x_bf16 points at K bf16 values,
     // y_bf16 receives N bf16 values. Activation/output BOs are pinned and
@@ -71,9 +78,13 @@ public:
     void run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
                   void* y_bf16);
 
+    void run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
+                       const void* x_bf16, void* y_bf16);
+
     // Mark a shape's context as resident (pinned): never evicted. Call for the
     // decode working-set shapes so the token loop issues zero xclbin reloads.
     void pin_gemv(int N, int K);
+    void pin_ffn_fused(int H, int I, const std::string& activation);
 
     // Number of hardware contexts currently loaded (for tests / diagnostics).
     int loaded_contexts() const;
