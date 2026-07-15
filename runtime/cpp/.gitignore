@@ -1,0 +1,4 @@
+# CMake / compiler output and harvested kernel artifacts — all regenerable.
+build/
+*.o
+*.obj
