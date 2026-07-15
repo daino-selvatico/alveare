@@ -70,6 +70,15 @@ fi
 say "Runtime Python deps (requirements.txt)"
 pip install -r "$ROOT/requirements.txt"
 
+# 6. Build the Native C++ Runtime Server.
+say "Native C++ Server (CMake + Make)"
+if command -v cmake >/dev/null 2>&1; then
+  mkdir -p "$ROOT/runtime/cpp/build"
+  (cd "$ROOT/runtime/cpp/build" && cmake .. && make -j$(nproc 2>/dev/null || echo 4))
+else
+  warn "cmake not found; skipping C++ build. Install cmake and build manually in runtime/cpp/build."
+fi
+
 say "Done."
 cat <<EOF
 
@@ -84,6 +93,7 @@ Then verify the NPU:
 
 And the model workflow:
     ./alveare quantize gemma4 /path/to/gemma-4-12b-it.gguf
+    ./alveare build-kernels gemma4
     ./alveare serve gemma4
     ./alveare chat                 # from another terminal
 
