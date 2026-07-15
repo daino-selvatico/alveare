@@ -146,7 +146,23 @@ List what you've installed:
 
 ---
 
-## 9. Serve a model
+## 9. Compile Hardware Kernels
+
+Since Alveare relies on a high-performance C++ backend communicating directly with the XDNA2 hardware, it strictly requires hardware kernels (`.xclbin` files) compiled specifically for your model's exact tensor dimensions.
+
+Once you have quantized your model, you must build the kernels for it:
+
+```bash
+./alveare build-kernels g4-12b
+```
+
+**WARNING:** This step queries the AIE compiler (Vitis/XRT) and translates math operations into silicon architecture. **It will take several hours to complete.** 
+
+The output will be placed in `kernels/build/` (specifically, a `manifest.json` map and the `.xclbin` files), which the runtime will auto-detect during serving.
+
+---
+
+## 10. Serve a model
 
 ```bash
 ./alveare serve g4-12b                    # -> ./quantized_weights_g4-12b
@@ -155,11 +171,11 @@ List what you've installed:
 
 `<model>` resolves as: built-in shorthand (`llama`/`gemma3`/`gemma4`) → an existing directory path → a generated alias (`quantized_weights_<model>`). Defaults: host `127.0.0.1`, port `8000` (override with `--host` / `--port` or the `ALVEARE_HOST` / `ALVEARE_PORT` env vars).
 
-Under the hood this sets `ALVEARE_WEIGHTS_DIR` and launches `runtime/py/server.py`.
+Under the hood this sets `ALVEARE_WEIGHTS_DIR` and launches the high-performance Native C++ Server.
 
 ---
 
-## 10. Talk to the server (OpenAI-compatible)
+## 11. Talk to the server (OpenAI-compatible)
 
 ```bash
 # List the served model

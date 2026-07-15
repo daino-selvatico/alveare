@@ -44,6 +44,7 @@ COMMANDS:
                           memcpy kernel). Wraps tools/check_npu.sh.
     quantize [alias] <gguf> [--arch A]
                           Convert a source GGUF into Alveare's NPU weight layout.
+    build-kernels <model> Compile the hardware NPU kernels (.xclbin) for a model.
     list  (or: models)    List installed models (quantized weight directories).
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
     chat [opts]           Minimal terminal chat against a running server.
@@ -65,6 +66,17 @@ QUANTIZE:
         alveare quantize g4-4b  ~/models/gemma-4-4b-it.gguf   # a second Gemma-4, coexists
         alveare quantize mymodel ./weird.gguf --arch gemma4   # force the architecture
         alveare serve g4-12b
+
+BUILD-KERNELS:
+    alveare build-kernels <model>
+
+    Builds the XDNA2 hardware kernels (.xclbin) tailored to the exact matrix 
+    shapes of your quantized model. This interrogates the AIE compiler and 
+    may take several hours to complete. The kernels will be placed in 
+    'kernels/build', which is automatically searched by 'serve'.
+
+    Examples:
+        alveare build-kernels gemma4
 
 SERVE:
     <model> resolves in this order: built-in shorthand, then an existing
@@ -281,6 +293,29 @@ cmd_install() {
   exec bash "$ROOT/install.sh" "$@"
 }
 
+cmd_build_kernels() {
+  if [ "$#" -lt 1 ]; then
+    echo "error: 'build-kernels' needs a model or weights directory. See 'alveare help'." >&2
+    exit 2
+  fi
+  local model="$1"; shift
+  local weights_dir
+  weights_dir="$(resolve_weights_dir "$model")"
+
+  if [ ! -d "$weights_dir" ]; then
+    echo "error: weights directory not found: $weights_dir" >&2
+    exit 1
+  fi
+
+  local out_dir="$ROOT/kernels/build"
+  mkdir -p "$out_dir"
+  echo "Building hardware kernels for $weights_dir"
+  echo "Output directory: $out_dir"
+  echo "NOTE: This interrogates the XDNA2 compiler and can take a long time."
+  echo "----------------------------------------------------------------------"
+  exec "$PY" "$ROOT/tools/build_kernels.py" "$weights_dir" "$out_dir" "$@"
+}
+
 cmd_quantize() {
   # Usage:
   #   alveare quantize <gguf> [--arch A]           name defaults to the GGUF filename
@@ -373,6 +408,7 @@ main() {
     install)      cmd_install "$@" ;;
     setup)        cmd_setup "$@" ;;
     check)        cmd_check "$@" ;;
+    build-kernels)cmd_build_kernels "$@" ;;
     quantize)     cmd_quantize "$@" ;;
     list|models)  cmd_list "$@" ;;
     serve)        cmd_serve "$@" ;;
