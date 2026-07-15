@@ -54,8 +54,8 @@ conda activate "$ENV_NAME"
 
 # 3. AIE toolchain wheels (MLIR-AIE / IRON + Peano).
 say "MLIR-AIE (IRON) + llvm-aie (Peano) wheels"
-pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
-pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+python -m pip install --ignore-installed mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+python -m pip install --ignore-installed llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
 # 4. Matching mlir-aie clone (for utils/env_setup.sh + programming_examples).
 say "mlir-aie repo clone @ $MLIR_AIE_COMMIT"
@@ -68,7 +68,7 @@ fi
 
 # 5. Runtime + tooling Python deps.
 say "Runtime Python deps (requirements.txt)"
-pip install -r "$ROOT/requirements.txt"
+python -m pip install --ignore-installed -r "$ROOT/requirements.txt"
 
 # 6. Build the Native C++ Runtime Server.
 say "Native C++ Server (CMake + Make)"
