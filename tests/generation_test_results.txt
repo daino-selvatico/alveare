@@ -7,5 +7,5 @@ The capital of France is
 llama.cpp Output:
 The capital of France is
 
-NPU Latencies (ms) after first token: ['696.2', '687.5', '713.6', '715.3']
-Average latency after first token: 703.1 ms
+NPU Latencies (ms) after first token: ['513.8', '506.6', '499.5', '500.6']
+Average latency after first token: 505.1 ms

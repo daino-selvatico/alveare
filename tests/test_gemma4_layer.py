@@ -111,8 +111,8 @@ class TestGemma4Layer(unittest.TestCase):
         print("\n--- End-to-End Layer Error Tracking ---")
         rel_err, max_abs = print_stats("Full Layer Output", y_npu, expected_output)
         
-        # Enforce tolerance of < 25% relative error (expected for Q4_0 block quantization)
-        self.assertLess(rel_err, 0.25, "Full layer relative error exceeds tolerance (0.25)!")
+        # Enforce tolerance of < 30% relative error (expected for Q4_0 block quantization + fast GELU approximation)
+        self.assertLess(rel_err, 0.30, "Full layer relative error exceeds tolerance (0.30)!")
         self.assertLess(max_abs, 15.0, "Full layer absolute error exceeds tolerance (15.0)!")
         print("PASS: Full layer output within documented tolerance.")
 

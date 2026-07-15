@@ -26,6 +26,7 @@ from kernels.gemv_q.gemv_q import gemv_q_npu
 from kernels.gemm_q.gemm_q import gemm_q_npu
 from kernels.rmsnorm.rmsnorm import rmsnorm_npu
 from kernels.rope.rope import rope_npu
+from kernels.ffn_fused.ffn_fused import ffn_fused_npu, pack_ffn_fused_weights
 
 class ResidentWeight:
     def __init__(self, tensor, shape):
@@ -172,6 +173,26 @@ class LlamaNPUModel:
             self.k_caches = [np.zeros((self.num_key_value_heads, self.max_seq_len, self.head_dim), dtype=bfloat16) for _ in range(self.num_hidden_layers)]
             self.v_caches = [np.zeros((self.num_key_value_heads, self.max_seq_len, self.head_dim), dtype=bfloat16) for _ in range(self.num_hidden_layers)]
         
+        print("Pre-fusing and preloading FFN weights to NPU...")
+        self.layer_ffn_fused_tensors = []
+        for l in range(self.num_hidden_layers):
+            if self.model_type == "gemma4":
+                w_gate = np.load(self.weights_dir / f"blk.{l}.ffn_gate.weight_packed.npy")
+                w_up = np.load(self.weights_dir / f"blk.{l}.ffn_up.weight_packed.npy")
+                w_down = np.load(self.weights_dir / f"blk.{l}.ffn_down.weight_packed.npy")
+            else:
+                w_gate = self.layer_weights[l]["ffn_gate"]
+                w_up = self.layer_weights[l]["ffn_up"]
+                w_down = self.layer_weights[l]["ffn_down"]
+                
+            k_tile = 128 if self.hidden_size == 1152 else 256
+            w_fused_combined = pack_ffn_fused_weights(
+                w_gate, w_up, w_down,
+                H=self.hidden_size, I=self.intermediate_size, m_I=32, k_tile=k_tile
+            )
+            t = iron.tensor(w_fused_combined.reshape(-1), dtype=np.uint8, device="npu")
+            self.layer_ffn_fused_tensors.append(ResidentWeight(t, w_fused_combined.shape))
+            
         print("Allocating resident NPU tensors for zero-copy execution...")
         # GEMV tensors
         self.MAX_N = 16384
@@ -338,6 +359,42 @@ class LlamaNPUModel:
 
             res = np.array(self.y_gemv_t.numpy()).astype(np.float32)[:N]
             return res.astype(bfloat16)
+
+    def run_ffn_fused_npu(self, l, x_bf16):
+        k_tile = 128 if self.hidden_size == 1152 else 256
+        act_type = "silu" if self.model_type not in ["gemma3", "gemma4"] else "gelu"
+        
+        if self.intermediate_size % (8 * 32) == 0:
+            n_cores = 8
+        elif self.intermediate_size % (4 * 32) == 0:
+            n_cores = 4
+        elif self.intermediate_size % (2 * 32) == 0:
+            n_cores = 2
+        else:
+            n_cores = 1
+            
+        w_fused_res = self.layer_ffn_fused_tensors[l]
+        
+        self.x_gemv_t.numpy()[:self.hidden_size] = x_bf16
+        self.x_gemv_t._sync_to_device()
+        
+        y_partial_t = iron.zeros(n_cores * self.hidden_size, dtype=bfloat16, device="npu")
+        
+        ffn_fused_npu(
+            w_fused_res.tensor,
+            self.x_gemv_t,
+            y_partial_t,
+            H=self.hidden_size,
+            I=self.intermediate_size,
+            m_I=32,
+            k_tile=k_tile,
+            activation=act_type,
+        )
+        
+        y_partial_np = y_partial_t.numpy().reshape(n_cores, self.hidden_size)
+        actual = np.sum(y_partial_np, axis=0).astype(bfloat16)
+        
+        return actual
 
     def run_gemm_npu(self, W_combined, x_bf16):
         B = x_bf16.shape[0]
@@ -624,26 +681,18 @@ class LlamaNPUModel:
             # 9. Pre-FFN norm
             x_norm2 = self.run_rmsnorm_cpu(x_post_attn, self.layer_ffn_norms[l])
             
-            # 10. MLP Gate & Up
+            # 10, 11, 12. MLP Fused (Gate, Up, Activation, Down)
             if use_npu:
-                gate = self.run_gemv_npu(self.layer_weights[l]["ffn_gate"], x_norm2)[:6912]
-                up = self.run_gemv_npu(self.layer_weights[l]["ffn_up"], x_norm2)[:6912]
+                down = self.run_ffn_fused_npu(l, x_norm2)[:1152]
             else:
                 x_norm2_pad = np.zeros(2048, dtype=np.float32)
                 x_norm2_pad[:1152] = x_norm2.astype(np.float32)
                 gate = (self.layer_weights_dequant[l]["ffn_gate"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:6912]
                 up = (self.layer_weights_dequant[l]["ffn_up"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:6912]
-                
-            # 11. GeGLU activation (gelu_pytorch_tanh)
-            gate_fp32 = gate.astype(np.float32)
-            up_fp32 = up.astype(np.float32)
-            gelu_out = 0.5 * gate_fp32 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (gate_fp32 + 0.044715 * (gate_fp32 ** 3))))
-            geglu_out = (gelu_out * up_fp32).astype(bfloat16)
-            
-            # 12. MLP Down Projection
-            if use_npu:
-                down = self.run_gemv_npu(self.layer_weights[l]["ffn_down"], geglu_out)[:1152]
-            else:
+                gate_fp32 = gate.astype(np.float32)
+                up_fp32 = up.astype(np.float32)
+                gelu_out = 0.5 * gate_fp32 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (gate_fp32 + 0.044715 * (gate_fp32 ** 3))))
+                geglu_out = (gelu_out * up_fp32).astype(bfloat16)
                 geglu_out_pad = np.zeros(8192, dtype=np.float32)
                 geglu_out_pad[:6912] = geglu_out.astype(np.float32)
                 down = (self.layer_weights_dequant[l]["ffn_down"].astype(np.float32) @ geglu_out_pad).astype(bfloat16)[:1152]
@@ -740,26 +789,18 @@ class LlamaNPUModel:
             # 9. Pre-FFN norm
             x_norm2 = self.run_rmsnorm_cpu(x_post_attn, self.layer_ffn_norms[l])
             
-            # 10. MLP Gate & Up
+            # 10, 11, 12. MLP Fused (Gate, Up, Activation, Down)
             if use_npu:
-                gate = self.run_gemv_npu(self.layer_weights[l]["ffn_gate"], x_norm2)[:15360]
-                up = self.run_gemv_npu(self.layer_weights[l]["ffn_up"], x_norm2)[:15360]
+                down = self.run_ffn_fused_npu(l, x_norm2)[:3840]
             else:
                 x_norm2_pad = np.zeros(4096, dtype=np.float32)
                 x_norm2_pad[:3840] = x_norm2.astype(np.float32)
                 gate = (layer_w_dequant["ffn_gate"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
                 up = (layer_w_dequant["ffn_up"].astype(np.float32) @ x_norm2_pad).astype(bfloat16)[:15360]
-                
-            # 11. GeGLU activation (gelu_pytorch_tanh)
-            gate_fp32 = gate.astype(np.float32)
-            up_fp32 = up.astype(np.float32)
-            gelu_out = 0.5 * gate_fp32 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (gate_fp32 + 0.044715 * (gate_fp32 ** 3))))
-            geglu_out = (gelu_out * up_fp32).astype(bfloat16)
-            
-            # 12. MLP Down Projection
-            if use_npu:
-                down = self.run_gemv_npu(self.layer_weights[l]["ffn_down"], geglu_out)[:3840]
-            else:
+                gate_fp32 = gate.astype(np.float32)
+                up_fp32 = up.astype(np.float32)
+                gelu_out = 0.5 * gate_fp32 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (gate_fp32 + 0.044715 * (gate_fp32 ** 3))))
+                geglu_out = (gelu_out * up_fp32).astype(bfloat16)
                 geglu_out_pad = np.zeros(16384, dtype=np.float32)
                 geglu_out_pad[:15360] = geglu_out.astype(np.float32)
                 down = (layer_w_dequant["ffn_down"].astype(np.float32) @ geglu_out_pad).astype(bfloat16)[:3840]
@@ -806,21 +847,16 @@ class LlamaNPUModel:
             
             x_norm2 = self.run_rmsnorm_cpu(x_post_attn, self.layer_ffn_norms[l])
             
+            # MLP Fused (Gate, Up, Activation, Down)
             if use_npu:
-                gate = self.run_gemv_npu(self.layer_weights[l]["ffn_gate"], x_norm2)
-                up = self.run_gemv_npu(self.layer_weights[l]["ffn_up"], x_norm2)
+                down = self.run_ffn_fused_npu(l, x_norm2)
             else:
                 gate = (self.layer_weights_dequant[l]["ffn_gate"].astype(np.float32) @ x_norm2.astype(np.float32)).astype(bfloat16)
                 up = (self.layer_weights_dequant[l]["ffn_up"].astype(np.float32) @ x_norm2.astype(np.float32)).astype(bfloat16)
-                
-            gate_fp32 = gate.astype(np.float32)
-            up_fp32 = up.astype(np.float32)
-            silu_out = (gate_fp32 * (1.0 / (1.0 + np.exp(-gate_fp32)))) * up_fp32
-            silu_out_bf16 = silu_out.astype(bfloat16)
-            
-            if use_npu:
-                down = self.run_gemv_npu(self.layer_weights[l]["ffn_down"], silu_out_bf16)
-            else:
+                gate_fp32 = gate.astype(np.float32)
+                up_fp32 = up.astype(np.float32)
+                silu_out = (gate_fp32 * (1.0 / (1.0 + np.exp(-gate_fp32)))) * up_fp32
+                silu_out_bf16 = silu_out.astype(bfloat16)
                 down = (self.layer_weights_dequant[l]["ffn_down"].astype(np.float32) @ silu_out_bf16.astype(np.float32)).astype(bfloat16)
                 
             y_final = (x_post_attn.astype(np.float32) + down.astype(np.float32)).astype(bfloat16)

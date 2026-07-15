@@ -13,6 +13,7 @@ from kernels.rmsnorm.rmsnorm import rmsnorm_npu
 from kernels.rope.rope import rope_npu
 from kernels.attention.attention import attention_npu
 from tools.convert.gemv_q_convert import quantize_to_q4_0, pack_to_combined
+from kernels.ffn_fused.ffn_fused import ffn_fused_npu, pack_ffn_fused_weights
 
 def run_gemv_q_unified(W_fp32, x_bf16):
     """
@@ -124,6 +125,54 @@ def run_attention_npu(q_bf16, k_cache, v_cache, pos):
     # Reshape back to flat attention vector (2048,)
     return np.array(o_t.numpy()).reshape(-1)
 
+def run_ffn_fused_unified(W_gate, W_up, W_down, x_bf16, activation="silu"):
+    I, H = W_gate.shape
+    m_I = 32
+    k_tile = 128 if H == 1152 else 256
+    
+    w_gate_q4, scales_gate = quantize_to_q4_0(W_gate)
+    w_gate_combined = pack_to_combined(w_gate_q4, scales_gate)
+    
+    w_up_q4, scales_up = quantize_to_q4_0(W_up)
+    w_up_combined = pack_to_combined(w_up_q4, scales_up)
+    
+    w_down_q4, scales_down = quantize_to_q4_0(W_down)
+    w_down_combined = pack_to_combined(w_down_q4, scales_down)
+    
+    w_fused_combined = pack_ffn_fused_weights(
+        w_gate_combined, w_up_combined, w_down_combined,
+        H, I, m_I, k_tile
+    )
+    
+    if I % (8 * m_I) == 0:
+        n_cores = 8
+    elif I % (4 * m_I) == 0:
+        n_cores = 4
+    elif I % (2 * m_I) == 0:
+        n_cores = 2
+    else:
+        n_cores = 1
+        
+    w_fused_t = iron.tensor(w_fused_combined.reshape(-1), dtype=np.uint8, device="npu")
+    x_t = iron.tensor(x_bf16.copy().astype(bfloat16), dtype=bfloat16, device="npu")
+    y_partial_t = iron.zeros(n_cores * H, dtype=bfloat16, device="npu")
+    
+    ffn_fused_npu(
+        w_fused_t,
+        x_t,
+        y_partial_t,
+        H=H,
+        I=I,
+        m_I=m_I,
+        k_tile=k_tile,
+        activation=activation,
+    )
+    
+    y_partial_np = y_partial_t.numpy().reshape(n_cores, H)
+    actual = np.sum(y_partial_np, axis=0).astype(bfloat16)
+    
+    return actual
+
 def run_llama_layer(
     x_bf16,
     pos,
@@ -185,23 +234,10 @@ def run_llama_layer(
     x_norm2 = run_rmsnorm_npu(x_post_attn, weights["ffn_norm"])
     print("Layer trace: post-attention RMSNorm completed.")
     
-    # 9. MLP Projections (Gate & Up)
-    print("Layer trace: running MLP Gate projection...")
-    gate = run_gemv_q_unified(weights["w_gate"], x_norm2)
-    print("Layer trace: running MLP Up projection...")
-    up = run_gemv_q_unified(weights["w_up"], x_norm2)
-    print("Layer trace: MLP Gate/Up projections completed.")
-    
-    # 10. MLP Activation (SwiGLU, host-side in NumPy)
-    gate_fp32 = gate.astype(np.float32)
-    up_fp32 = up.astype(np.float32)
-    silu_out = (gate_fp32 * (1.0 / (1.0 + np.exp(-gate_fp32)))) * up_fp32
-    silu_out_bf16 = silu_out.astype(bfloat16)
-    
-    # 11. MLP Down Projection
-    print("Layer trace: running MLP Down projection...")
-    down = run_gemv_q_unified(weights["w_down"], silu_out_bf16)
-    print("Layer trace: MLP Down projection completed.")
+    # 9. MLP Fused (Gate, Up, SiLU, Down)
+    print("Layer trace: running MLP Fused FFN (Gate + Up + SiLU + Down)...")
+    down = run_ffn_fused_unified(weights["w_gate"], weights["w_up"], weights["w_down"], x_norm2, activation="silu")
+    print("Layer trace: MLP Fused FFN completed.")
     
     # 12. Second Residual Connection (host-side)
     y_final = (x_post_attn.astype(np.float32) + down.astype(np.float32)).astype(bfloat16)
