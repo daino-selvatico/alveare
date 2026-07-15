@@ -25,6 +25,7 @@ class Profiler:
             "lm_head_gemv_total_ms": 0.0,
             "weight_load_ms": 0.0,
             
+            "other_cpu_ms": 0.0,
             "total_ms": 0.0
         }
         self.is_profiling = False
@@ -48,76 +49,134 @@ def patched_lazy_get(self, key):
 LazyLayerWeights.__getitem__ = patched_lazy_get
 
 def patched_gemv(self, W_combined, x_bf16):
-    if not profiler.is_profiling:
-        return orig_gemv(self, W_combined, x_bf16)
-
+    profiler.timings["gemv_calls"] += 1
     N = W_combined.shape[0]
     K_blocks = W_combined.shape[1] // 20
     K = K_blocks * 32
-    target_N = 2048
-    target_K = 2048
 
-    y_sum = np.zeros(N, dtype=np.float32)
     t_gemv_start = time.perf_counter()
+    
+    if N > self.MAX_N or K > self.MAX_K:
+        target_N = self.MAX_N
+        target_K = self.MAX_K
+        y_sum = np.zeros(N, dtype=np.float32)
 
-    for start_col in range(0, K, target_K):
-        end_col = min(start_col + target_K, K)
-        x_chunk = x_bf16[start_col:end_col]
+        for start_col in range(0, K, target_K):
+            end_col = min(start_col + target_K, K)
+            x_chunk = x_bf16[start_col:end_col]
+            
+            pad_K = (end_col - start_col + 255) // 256 * 256
+            if pad_K > (end_col - start_col):
+                x_input = np.zeros(pad_K, dtype=bfloat16)
+                x_input[:x_chunk.shape[0]] = x_chunk
+            else:
+                x_input = x_chunk
 
-        if x_chunk.shape[0] < target_K:
-            x_input = np.zeros(target_K, dtype=bfloat16)
-            x_input[:x_chunk.shape[0]] = x_chunk
+            t_sync_x_start = time.perf_counter()
+            self.x_gemv_t.numpy()[:x_input.shape[0]] = x_input
+            self.x_gemv_t._sync_to_device()
+            profiler.timings["gemv_sync_copy_ms"] += (time.perf_counter() - t_sync_x_start) * 1000.0
+
+            b_start = start_col // 32
+            b_end = end_col // 32
+            W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
+
+            for start_row in range(0, N, target_N):
+                end_row = min(start_row + target_N, N)
+                W_chunk = W_col_slice[start_row:end_row]
+                
+                pad_N = (end_row - start_row + 255) // 256 * 256
+                if pad_N > (end_row - start_row):
+                    W_padded = np.zeros((pad_N, W_chunk.shape[1]), dtype=np.uint8)
+                    W_padded[:W_chunk.shape[0], :] = W_chunk
+                    W_input = W_padded
+                else:
+                    W_input = W_chunk
+
+                t_sync_start = time.perf_counter()
+                self.w_gemv_t.numpy()[:W_input.size] = W_input.reshape(-1)
+                self.w_gemv_t._sync_to_device()
+                profiler.timings["gemv_sync_copy_ms"] += (time.perf_counter() - t_sync_start) * 1000.0
+
+                t_kernel_start = time.perf_counter()
+                ret = gemv_q_npu(self.w_gemv_t, self.x_gemv_t, self.y_gemv_t, N=pad_N, K=pad_K, m=32, k_tile=256)
+                t_kernel_end = time.perf_counter()
+
+                e2e_ms = (t_kernel_end - t_kernel_start) * 1000.0
+                npu_ns = getattr(ret[1] if isinstance(ret, tuple) and len(ret) >= 2 else ret, "npu_time", None)
+                if npu_ns is not None:
+                    npu_ms = npu_ns / 1_000_000.0
+                else:
+                    npu_ms = e2e_ms
+                overhead_ms = e2e_ms - npu_ms
+
+                profiler.timings["gemv_raw_npu_ms"] += npu_ms
+                profiler.timings["gemv_pyxrt_overhead_ms"] += overhead_ms
+
+                t_sync_y_start = time.perf_counter()
+                res = np.array(self.y_gemv_t.numpy()).astype(np.float32)
+                profiler.timings["gemv_sync_copy_ms"] += (time.perf_counter() - t_sync_y_start) * 1000.0
+
+                t_other_start = time.perf_counter()
+                y_sum[start_row:end_row] += res[:(end_row-start_row)]
+                profiler.timings["other_cpu_ms"] += (time.perf_counter() - t_other_start) * 1000.0
+
+        t_gemv_end = time.perf_counter()
+        gemv_dur_ms = (t_gemv_end - t_gemv_start) * 1000.0
+        if profiler.in_lm_head:
+            profiler.timings["lm_head_gemv_total_ms"] += gemv_dur_ms
+        profiler.timings["gemv_total_ms"] += gemv_dur_ms
+        profiler.timings["gemv_calls"] += 1
+        return y_sum.astype(bfloat16)
+
+    else:
+        # Fast path profiling
+        if x_bf16.shape[0] < K:
+            x_input = np.zeros(K, dtype=bfloat16)
+            x_input[:x_bf16.shape[0]] = x_bf16
         else:
-            x_input = x_chunk
+            x_input = x_bf16
 
         t_sync_x_start = time.perf_counter()
-        self.x_gemv_t.numpy()[:] = x_input
+        self.x_gemv_t.numpy()[:K] = x_input
         self.x_gemv_t._sync_to_device()
         profiler.timings["gemv_sync_copy_ms"] += (time.perf_counter() - t_sync_x_start) * 1000.0
 
-        b_start = start_col // 32
-        b_end = end_col // 32
-        W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
+        is_resident = hasattr(W_combined, "tensor")
+        w_tensor = W_combined.tensor if is_resident else self.w_gemv_t
 
-        for start_row in range(0, N, target_N):
-            end_row = min(start_row + target_N, N)
-            W_chunk = W_col_slice[start_row:end_row]
-
-            t_sync_start = time.perf_counter()
-            self.w_gemv_t.numpy()[:] = W_chunk.reshape(-1)
+        if not is_resident:
+            t_sync_w_start = time.perf_counter()
+            self.w_gemv_t.numpy()[:W_combined.size] = W_combined.reshape(-1)
             self.w_gemv_t._sync_to_device()
-            t_sync_end = time.perf_counter()
-            profiler.timings["gemv_sync_copy_ms"] += (t_sync_end - t_sync_start) * 1000.0
+            profiler.timings["gemv_sync_copy_ms"] += (time.perf_counter() - t_sync_w_start) * 1000.0
 
-            t_kernel_start = time.perf_counter()
-            ret = gemv_q_npu(self.w_gemv_t, self.x_gemv_t, self.y_gemv_t, N=2048, K=2048, m=32, k_tile=256)
-            t_kernel_end = time.perf_counter()
+        t_kernel_start = time.perf_counter()
+        ret = gemv_q_npu(w_tensor, self.x_gemv_t, self.y_gemv_t, N=N, K=K, m=32, k_tile=256)
+        t_kernel_end = time.perf_counter()
 
-            e2e_ms = (t_kernel_end - t_kernel_start) * 1000.0
-            npu_ns = getattr(ret[1] if isinstance(ret, tuple) and len(ret) >= 2 else ret, "npu_time", None)
-            if npu_ns is not None:
-                npu_ms = npu_ns / 1_000_000.0
-            else:
-                npu_ms = 0.0
+        e2e_ms = (t_kernel_end - t_kernel_start) * 1000.0
+        npu_ns = getattr(ret[1] if isinstance(ret, tuple) and len(ret) >= 2 else ret, "npu_time", None)
+        if npu_ns is not None:
+            npu_ms = npu_ns / 1_000_000.0
+        else:
+            npu_ms = e2e_ms
+        overhead_ms = e2e_ms - npu_ms
 
-            profiler.timings["gemv_raw_npu_ms"] += npu_ms
-            profiler.timings["gemv_pyxrt_overhead_ms"] += (e2e_ms - npu_ms)
-            profiler.timings["gemv_calls"] += 1
+        profiler.timings["gemv_raw_npu_ms"] += npu_ms
+        profiler.timings["gemv_pyxrt_overhead_ms"] += overhead_ms
 
-            t_fetch_start = time.perf_counter()
-            res = np.array(self.y_gemv_t.numpy()).astype(np.float32)
-            t_fetch_end = time.perf_counter()
-            profiler.timings["gemv_sync_copy_ms"] += (t_fetch_end - t_fetch_start) * 1000.0
+        t_sync_y_start = time.perf_counter()
+        res = np.array(self.y_gemv_t.numpy()).astype(np.float32)[:N]
+        profiler.timings["gemv_sync_copy_ms"] += (time.perf_counter() - t_sync_y_start) * 1000.0
 
-            y_sum[start_row:end_row] += res[:(end_row - start_row)]
-
-    t_gemv_end = time.perf_counter()
-    gemv_dur_ms = (t_gemv_end - t_gemv_start) * 1000.0
-    profiler.timings["gemv_total_ms"] += gemv_dur_ms
-    if profiler.in_lm_head:
-        profiler.timings["lm_head_gemv_total_ms"] += gemv_dur_ms
-
-    return y_sum.astype(bfloat16)
+        t_gemv_end = time.perf_counter()
+        gemv_dur_ms = (t_gemv_end - t_gemv_start) * 1000.0
+        if profiler.in_lm_head:
+            profiler.timings["lm_head_gemv_total_ms"] += gemv_dur_ms
+        profiler.timings["gemv_total_ms"] += gemv_dur_ms
+        profiler.timings["gemv_calls"] += 1
+        return res.astype(bfloat16)
 
 LlamaNPUModel.run_gemv_npu = patched_gemv
 

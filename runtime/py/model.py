@@ -6,6 +6,19 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 import aie.iron as iron
+from aie.utils.compile.jit.compilabledesign import CompilableDesign
+
+# Monkey-patch strict size validation to allow using oversized unified NPU resident tensors
+def _patched_validate(self, tensor_args):
+    if not self._expected_tensor_sizes:
+        return
+    import numpy as np
+    for i, (tensor, expected) in enumerate(zip(tensor_args, self._expected_tensor_sizes)):
+        if expected > 0:
+            actual = int(np.size(tensor))
+            if actual < expected:
+                raise RuntimeError(f"Tensor too small. Actual: {actual}, Expected: {expected}")
+CompilableDesign.validate_tensor_args = _patched_validate
 
 # Add project root to sys.path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -14,20 +27,32 @@ from kernels.gemm_q.gemm_q import gemm_q_npu
 from kernels.rmsnorm.rmsnorm import rmsnorm_npu
 from kernels.rope.rope import rope_npu
 
+class ResidentWeight:
+    def __init__(self, tensor, shape):
+        self.tensor = tensor
+        self.shape = shape
+        self.size = np.prod(shape)
+
 class LazyLayerWeights:
     def __init__(self, weights_dir: Path, layer_idx: int):
         self.weights_dir = weights_dir
         self.layer_idx = layer_idx
         self._cache = {}
         
+        print(f"Preloading weights for layer {layer_idx} to NPU...", end="\r")
+        for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
+            path = self.weights_dir / f"blk.{self.layer_idx}.{proj}.weight_packed.npy"
+            if path.exists():
+                data = np.load(path)
+                t = iron.tensor(data.reshape(-1), dtype=np.uint8, device="npu")
+                self._cache[proj] = ResidentWeight(t, data.shape)
+        
     def __getitem__(self, key):
-        if key not in self._cache:
-            path = self.weights_dir / f"blk.{self.layer_idx}.{key}.weight_packed.npy"
-            self._cache[key] = np.load(path, mmap_mode='r')
         return self._cache[key]
         
     def clear(self):
-        self._cache.clear()
+        # Do not clear cache! We want weights to stay resident on NPU.
+        pass
 
 class LlamaNPUModel:
     def __init__(self, weights_dir: Path, max_seq_len: int = 2048):
@@ -102,8 +127,8 @@ class LlamaNPUModel:
                     layer_w[proj] = np.load(path, mmap_mode='r')
                 self.layer_weights.append(layer_w)
             
-        print("Mmap-mapping LM head...")
-        self.lm_head = np.load(self.weights_dir / "lm_head_packed.npy", mmap_mode='r')
+        print("Loading LM head into RAM...")
+        self.lm_head = np.load(self.weights_dir / "lm_head_packed.npy")
         
         if self.model_type != "gemma4":
             print("Pre-dequantizing layer weights for fast CPU prefill...")
@@ -149,15 +174,17 @@ class LlamaNPUModel:
         
         print("Allocating resident NPU tensors for zero-copy execution...")
         # GEMV tensors
-        # Unified shape (2048, 2048) in Q4_0 packed format is (2048, 1280) bytes
-        self.w_gemv_t = iron.tensor(np.zeros((2048, 1280), dtype=np.uint8).reshape(-1), dtype=np.uint8, device="npu")
-        self.x_gemv_t = iron.tensor(np.zeros(2048, dtype=bfloat16), dtype=bfloat16, device="npu")
-        self.y_gemv_t = iron.zeros(2048, dtype=bfloat16, device="npu")
+        self.MAX_N = 16384
+        self.MAX_K = 16384
+        # Unified shape (MAX_N, MAX_K) in Q4_0 packed format is (MAX_N, MAX_K // 32 * 20) bytes
+        self.w_gemv_t = iron.tensor(np.zeros((self.MAX_N, self.MAX_K // 32 * 20), dtype=np.uint8).reshape(-1), dtype=np.uint8, device="npu")
+        self.x_gemv_t = iron.tensor(np.zeros(self.MAX_K, dtype=bfloat16), dtype=bfloat16, device="npu")
+        self.y_gemv_t = iron.zeros(self.MAX_N, dtype=bfloat16, device="npu")
         
         # GEMM batched prefill tensors (max batch size = 16)
         self.MAX_BATCH_SIZE = 16
-        self.x_gemm_t = iron.tensor(np.zeros(self.MAX_BATCH_SIZE * 2048, dtype=bfloat16), dtype=bfloat16, device="npu")
-        self.y_gemm_t = iron.zeros(self.MAX_BATCH_SIZE * 2048, dtype=bfloat16, device="npu")
+        self.x_gemm_t = iron.tensor(np.zeros(self.MAX_BATCH_SIZE * self.MAX_K, dtype=bfloat16), dtype=bfloat16, device="npu")
+        self.y_gemm_t = iron.zeros(self.MAX_BATCH_SIZE * self.MAX_N, dtype=bfloat16, device="npu")
         
         # RMSNorm tensors (reused only for Llama path or direct testing)
         self.x_rmsnorm_t = iron.tensor(np.zeros(2048, dtype=bfloat16), dtype=bfloat16, device="npu")
@@ -233,59 +260,98 @@ class LlamaNPUModel:
         return cos_sin_table.astype(bfloat16)
 
     def run_gemv_npu(self, W_combined, x_bf16):
-        N = W_combined.shape[0]
-        K_blocks = W_combined.shape[1] // 20
-        K = K_blocks * 32
+        is_resident = hasattr(W_combined, "tensor")
+        if is_resident:
+            N = W_combined.shape[0]
+            K_blocks = W_combined.shape[1] // 20
+            K = K_blocks * 32
+            w_tensor = W_combined.tensor
+        else:
+            N = W_combined.shape[0]
+            K_blocks = W_combined.shape[1] // 20
+            K = K_blocks * 32
+            w_tensor = self.w_gemv_t
 
-        target_N = 2048
-        target_K = 2048
+        if N > self.MAX_N or K > self.MAX_K:
+            # Fallback to chunking only for massive matrices (like LM Head)
+            target_N = self.MAX_N
+            target_K = self.MAX_K
+            y_sum = np.zeros(N, dtype=np.float32)
 
-        y_sum = np.zeros(N, dtype=np.float32)
+            for start_col in range(0, K, target_K):
+                end_col = min(start_col + target_K, K)
+                x_chunk = x_bf16[start_col:end_col]
+                
+                # Pad to K multiple of 256
+                pad_K = (end_col - start_col + 255) // 256 * 256
+                if pad_K > (end_col - start_col):
+                    x_input = np.zeros(pad_K, dtype=bfloat16)
+                    x_input[:x_chunk.shape[0]] = x_chunk
+                else:
+                    x_input = x_chunk
 
-        # Loop over column chunks
-        for start_col in range(0, K, target_K):
-            end_col = min(start_col + target_K, K)
-            x_chunk = x_bf16[start_col:end_col]
+                self.x_gemv_t.numpy()[:x_input.shape[0]] = x_input
+                self.x_gemv_t._sync_to_device()
 
-            # Pad activation chunk if it's smaller than 2048
-            if x_chunk.shape[0] < target_K:
-                x_input = np.zeros(target_K, dtype=bfloat16)
-                x_input[:x_chunk.shape[0]] = x_chunk
+                b_start = start_col // 32
+                b_end = end_col // 32
+                W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
+
+                for start_row in range(0, N, target_N):
+                    end_row = min(start_row + target_N, N)
+                    W_chunk = W_col_slice[start_row:end_row]
+                    
+                    pad_N = (end_row - start_row + 255) // 256 * 256
+                    if pad_N > (end_row - start_row):
+                        W_padded = np.zeros((pad_N, W_chunk.shape[1]), dtype=np.uint8)
+                        W_padded[:W_chunk.shape[0], :] = W_chunk
+                        W_input = W_padded
+                    else:
+                        W_input = W_chunk
+
+                    self.w_gemv_t.numpy()[:W_input.size] = W_input.reshape(-1)
+                    self.w_gemv_t._sync_to_device()
+
+                    gemv_q_npu(self.w_gemv_t, self.x_gemv_t, self.y_gemv_t, N=pad_N, K=pad_K, m=32, k_tile=256)
+
+                    res = np.array(self.y_gemv_t.numpy()).astype(np.float32)
+                    y_sum[start_row:end_row] += res[:(end_row-start_row)]
+
+            return y_sum.astype(bfloat16)
+        
+        else:
+            # Optimal fast path without padding waste for layer projections
+            if x_bf16.shape[0] < K:
+                x_input = np.zeros(K, dtype=bfloat16)
+                x_input[:x_bf16.shape[0]] = x_bf16
             else:
-                x_input = x_chunk
+                x_input = x_bf16
 
-            self.x_gemv_t.numpy()[:] = x_input
+            self.x_gemv_t.numpy()[:K] = x_input
             self.x_gemv_t._sync_to_device()
 
-            b_start = start_col // 32
-            b_end = end_col // 32
-            W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
-
-            for start_row in range(0, N, target_N):
-                end_row = min(start_row + target_N, N)
-                W_chunk = W_col_slice[start_row:end_row]
-
-                # Copy to resident NPU tensors
-                self.w_gemv_t.numpy()[:] = W_chunk.reshape(-1)
+            if not is_resident:
+                self.w_gemv_t.numpy()[:W_combined.size] = W_combined.reshape(-1)
                 self.w_gemv_t._sync_to_device()
 
-                # Execute JIT NPU kernel
-                gemv_q_npu(self.w_gemv_t, self.x_gemv_t, self.y_gemv_t, N=2048, K=2048, m=32, k_tile=256)
+            gemv_q_npu(w_tensor, self.x_gemv_t, self.y_gemv_t, N=N, K=K, m=32, k_tile=256)
 
-                # Fetch result
-                res = np.array(self.y_gemv_t.numpy()).astype(np.float32)
-                y_sum[start_row:end_row] += res[:(end_row-start_row)]
-
-        return y_sum.astype(bfloat16)
+            res = np.array(self.y_gemv_t.numpy()).astype(np.float32)[:N]
+            return res.astype(bfloat16)
 
     def run_gemm_npu(self, W_combined, x_bf16):
         B = x_bf16.shape[0]
-        N = W_combined.shape[0]
-        K_blocks = W_combined.shape[1] // 20
-        K = K_blocks * 32
-
-        target_N = 2048
-        target_K = 2048
+        is_resident = hasattr(W_combined, "tensor")
+        if is_resident:
+            N = W_combined.shape[0]
+            K_blocks = W_combined.shape[1] // 20
+            K = K_blocks * 32
+            w_tensor = W_combined.tensor
+        else:
+            N = W_combined.shape[0]
+            K_blocks = W_combined.shape[1] // 20
+            K = K_blocks * 32
+            w_tensor = self.w_gemv_t
 
         y_out = np.zeros((B, N), dtype=np.float32)
 
@@ -296,39 +362,66 @@ class LlamaNPUModel:
             
             y_sum = np.zeros((self.MAX_BATCH_SIZE, N), dtype=np.float32)
 
-            # Loop over column chunks
-            for start_col in range(0, K, target_K):
-                end_col = min(start_col + target_K, K)
-                x_chunk = batch_chunk[:, start_col:end_col]
+            if N > self.MAX_N or K > self.MAX_K:
+                # Fallback to chunking
+                target_N = self.MAX_N
+                target_K = self.MAX_K
+                for start_col in range(0, K, target_K):
+                    end_col = min(start_col + target_K, K)
+                    x_chunk = batch_chunk[:, start_col:end_col]
 
-                # Pad activation chunk if it's smaller than target
-                if x_chunk.shape[1] < target_K or x_chunk.shape[0] < self.MAX_BATCH_SIZE:
-                    x_input = np.zeros((self.MAX_BATCH_SIZE, target_K), dtype=bfloat16)
-                    x_input[:x_chunk.shape[0], :x_chunk.shape[1]] = x_chunk
+                    pad_K = (end_col - start_col + 255) // 256 * 256
+                    if pad_K > x_chunk.shape[1] or x_chunk.shape[0] < self.MAX_BATCH_SIZE:
+                        x_input = np.zeros((self.MAX_BATCH_SIZE, pad_K), dtype=bfloat16)
+                        x_input[:x_chunk.shape[0], :x_chunk.shape[1]] = x_chunk
+                    else:
+                        x_input = x_chunk
+
+                    self.x_gemm_t.numpy()[:x_input.size] = x_input.reshape(-1)
+                    self.x_gemm_t._sync_to_device()
+
+                    b_start = start_col // 32
+                    b_end = end_col // 32
+                    W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
+
+                    for start_row in range(0, N, target_N):
+                        end_row = min(start_row + target_N, N)
+                        W_chunk = W_col_slice[start_row:end_row]
+                        
+                        pad_N = (end_row - start_row + 255) // 256 * 256
+                        if pad_N > W_chunk.shape[0]:
+                            W_padded = np.zeros((pad_N, W_chunk.shape[1]), dtype=np.uint8)
+                            W_padded[:W_chunk.shape[0], :] = W_chunk
+                            W_input = W_padded
+                        else:
+                            W_input = W_chunk
+
+                        self.w_gemv_t.numpy()[:W_input.size] = W_input.reshape(-1)
+                        self.w_gemv_t._sync_to_device()
+
+                        gemm_q_npu(self.w_gemv_t, self.x_gemm_t, self.y_gemm_t, B=self.MAX_BATCH_SIZE, N=pad_N, K=pad_K, m=32, k_tile=256)
+
+                        res = np.array(self.y_gemm_t.numpy()).astype(np.float32)[:self.MAX_BATCH_SIZE * pad_N].reshape(self.MAX_BATCH_SIZE, pad_N)
+                        y_sum[:, start_row:end_row] += res[:, :(end_row-start_row)]
+            else:
+                # Optimal fast path
+                if batch_chunk.shape[1] < K or batch_chunk.shape[0] < self.MAX_BATCH_SIZE:
+                    x_input = np.zeros((self.MAX_BATCH_SIZE, K), dtype=bfloat16)
+                    x_input[:batch_chunk.shape[0], :batch_chunk.shape[1]] = batch_chunk
                 else:
-                    x_input = x_chunk
-
-                self.x_gemm_t.numpy()[:] = x_input.reshape(-1)
+                    x_input = batch_chunk
+                    
+                self.x_gemm_t.numpy()[:x_input.size] = x_input.reshape(-1)
                 self.x_gemm_t._sync_to_device()
-
-                b_start = start_col // 32
-                b_end = end_col // 32
-                W_col_slice = W_combined[:, b_start * 20 : b_end * 20]
-
-                for start_row in range(0, N, target_N):
-                    end_row = min(start_row + target_N, N)
-                    W_chunk = W_col_slice[start_row:end_row]
-
-                    # Copy to resident NPU tensors
-                    self.w_gemv_t.numpy()[:] = W_chunk.reshape(-1)
+                
+                if not is_resident:
+                    self.w_gemv_t.numpy()[:W_combined.size] = W_combined.reshape(-1)
                     self.w_gemv_t._sync_to_device()
-
-                    # Execute JIT NPU kernel
-                    gemm_q_npu(self.w_gemv_t, self.x_gemm_t, self.y_gemm_t, B=self.MAX_BATCH_SIZE, N=2048, K=2048, m=32, k_tile=256)
-
-                    # Fetch result
-                    res = np.array(self.y_gemm_t.numpy()).astype(np.float32).reshape(self.MAX_BATCH_SIZE, 2048)
-                    y_sum[:, start_row:end_row] += res[:, :(end_row-start_row)]
+                
+                gemm_q_npu(w_tensor, self.x_gemm_t, self.y_gemm_t, B=self.MAX_BATCH_SIZE, N=N, K=K, m=32, k_tile=256)
+                
+                res = np.array(self.y_gemm_t.numpy()).astype(np.float32)[:self.MAX_BATCH_SIZE * N].reshape(self.MAX_BATCH_SIZE, N)
+                y_sum[:, :N] += res
 
             y_out[start_b:end_b] = y_sum[:(end_b-start_b)]
 
@@ -587,7 +680,12 @@ class LlamaNPUModel:
                 for proj in ["attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"]:
                     if proj == "attn_v" and not is_sliding:
                         continue
-                    layer_w_dequant[proj] = dequantize_combined(self.layer_weights[l][proj]).astype(bfloat16)
+                    w_obj = self.layer_weights[l][proj]
+                    if hasattr(w_obj, "tensor"):
+                        w_data = np.array(w_obj.tensor.numpy()[:w_obj.size]).reshape(w_obj.shape)
+                    else:
+                        w_data = w_obj
+                    layer_w_dequant[proj] = dequantize_combined(w_data).astype(bfloat16)
 
                 x_norm_pad = np.zeros(4096, dtype=np.float32)
                 x_norm_pad[:3840] = x_norm.astype(np.float32)
