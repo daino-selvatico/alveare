@@ -313,7 +313,7 @@ cmd_build_kernels() {
   echo "Output directory: $out_dir"
   echo "NOTE: This interrogates the XDNA2 compiler and can take a long time."
   echo "----------------------------------------------------------------------"
-  exec "$PY" "$ROOT/tools/build_kernels.py" "$weights_dir" "$out_dir" "$@"
+  exec "$PY" "$ROOT/tools/build_kernels.py" --weights-dir "$weights_dir" --out "$out_dir" "$@"
 }
 
 cmd_quantize() {
