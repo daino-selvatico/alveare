@@ -1,8 +1,18 @@
 from transformers import AutoTokenizer
 
 class TokenizerGlue:
-    def __init__(self, model_id: str = "unsloth/Llama-3.2-1B-Instruct"):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+    def __init__(self, model_id: str = "unsloth/Llama-3.2-1B-Instruct", weights_dir: str | None = None):
+        loaded_local = False
+        if weights_dir:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(weights_dir, local_files_only=True)
+                loaded_local = True
+            except Exception:
+                pass
+                
+        if not loaded_local:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            
         self.bos_token_id = self.tokenizer.bos_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
         

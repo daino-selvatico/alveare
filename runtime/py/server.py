@@ -53,7 +53,7 @@ def startup_event():
     print(f"Initializing model on NPU ({model_id}) from {weights_dir}...")
     model = LlamaNPUModel(weights_dir)
     print("Loading tokenizer...")
-    tokenizer = TokenizerGlue(model_id=hf_model_id)
+    tokenizer = TokenizerGlue(model_id=hf_model_id, weights_dir=str(weights_dir))
     print("Server ready.")
 
 class ChatCompletionMessage(BaseModel):
