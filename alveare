@@ -47,6 +47,7 @@ COMMANDS:
     list  (or: models)    List installed models (quantized weight directories).
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
     chat [opts]           Minimal terminal chat against a running server.
+    test                  Run the integration test suite (starts server and chat).
     help                  Show this help.
 
 QUANTIZE:
@@ -339,6 +340,10 @@ cmd_chat() {
   exec "$PY" "$ROOT/tools/chat.py" "$@"
 }
 
+cmd_test() {
+  exec "$PY" "$ROOT/tests/integration/test_server.py" "$@"
+}
+
 main() {
   local cmd="${1:-help}"
   [ "$#" -gt 0 ] && shift || true
@@ -350,6 +355,7 @@ main() {
     list|models)  cmd_list "$@" ;;
     serve)        cmd_serve "$@" ;;
     chat)         cmd_chat "$@" ;;
+    test)         cmd_test "$@" ;;
     help|-h|--help) usage ;;
     *) echo "error: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
   esac
