@@ -53,11 +53,12 @@ def ffn_fused_npu(
     I_div_n_cores = I // n_cores
     num_blocks_I = I_div_n_cores // m_I
 
-    # The output H is processed in N_PASSES passes so the fp32 output accumulator
-    # y_accum[H_out] fits the core .bss (a full fp32 y_accum[H] overflows). Each
-    # pass recomputes gate/up (they depend on the full input x) but only does the
-    # down projection for its H-output slice.
-    N_PASSES = 2
+    # gate/up/GELU are computed once for the whole intermediate slice and stored
+    # in act_all (DIM_IC = I/n_cores bf16). The down projection then runs in
+    # N_PASSES passes over the H output, so the fp32 output accumulator only needs
+    # y_accum[H/N_PASSES] and — together with act_all — fits the core .bss (a full
+    # fp32 y_accum[H] overflows). N_PASSES=4 keeps y_accum[H/4] fp32 within budget.
+    N_PASSES = 4
     H_out = H // N_PASSES
     down_tiles_per_pass = H_out // m_H  # down output-row tiles handled per pass
 
@@ -68,7 +69,7 @@ def ffn_fused_npu(
     y_ty = np.ndarray[(m_H,), np.dtype[bfloat16]]
 
     kernel_flags = [f"-DDIM_M={m_I}", f"-DDIM_K={k_tile}", f"-DDIM_H={H}",
-                    f"-DDIM_HOUT={H_out}", "-O3"]
+                    f"-DDIM_HOUT={H_out}", f"-DDIM_IC={I_div_n_cores}", "-O3"]
     if activation == "silu":
         kernel_flags.append("-DACTIVATION_SILU")
 
@@ -100,7 +101,7 @@ def ffn_fused_npu(
     compute_activation_kernel = ExternalFunction(
         "ffn_compute_activation",
         source_file=str(Path(__file__).parent / "ffn_compute_activation.cc"),
-        arg_types=[],
+        arg_types=[np.int32],  # ic_offset into act_all
         compile_flags=kernel_flags,
         include_dirs=[cxx_header_path()],
     )
@@ -108,7 +109,7 @@ def ffn_fused_npu(
     accumulate_down_kernel = ExternalFunction(
         "ffn_accumulate_down",
         source_file=str(Path(__file__).parent / "ffn_accumulate_down.cc"),
-        arg_types=[w_ty, np.int32],
+        arg_types=[w_ty, np.int32, np.int32],  # w_down, h_offset, ic_offset
         compile_flags=kernel_flags,
         include_dirs=[cxx_header_path()],
     )
@@ -130,49 +131,36 @@ def ffn_fused_npu(
 
     # AIE Core logic
     def core_fn(of_w, of_x, of_y, init_k, init_gu_k, comp_k, act_k, down_k, fin_k):
-        # Acquire the input activation vector x once and hold it across both passes.
+        # Acquire the input activation vector x once and hold it for phase 1.
         elem_x = of_x.acquire(1)
 
-        # Process the H output in N_PASSES passes so the fp32 y_accum[H_out] fits.
+        # --- Phase 1: gate/up/GELU for the whole intermediate slice, computed
+        # ONCE and stored in act_all (indexed by ic_offset = b_I * m_I). ---
+        for b_I in range_(num_blocks_I):
+            init_gu_k()
+            for h_blk in range_(H // k_tile):
+                # Acquire 2 weight tiles contiguously (1 for gate, 1 for up)
+                elem_w_both = of_w.acquire(2)
+                comp_k(elem_w_both[0], elem_w_both[1], elem_x, h_blk * k_tile)
+                of_w.release(2)
+            act_k(b_I * m_I)
+
+        of_x.release(1)
+
+        # --- Phase 2: down projection in N_PASSES passes over the H output,
+        # reusing the stored act_all (no gate/up recompute). y_accum is indexed
+        # relative to the pass's H-slice; the host streams the matching down rows. ---
         for _p in range_(N_PASSES):
-            # 1. Zero y_accum for this pass's H-output slice
-            init_k()
-
-            # Loop over this core's intermediate-dimension slice
-            for _ in range_(num_blocks_I):
-                # Reset gate/up accumulators
-                init_gu_k()
-
-                # Compute gate and up projections (full input H)
-                for h_blk in range_(H // k_tile):
-                    # Acquire 2 weight tiles contiguously (1 for gate, 1 for up)
-                    elem_w_both = of_w.acquire(2)
-                    elem_w_gate = elem_w_both[0]
-                    elem_w_up = elem_w_both[1]
-
-                    comp_k(elem_w_gate, elem_w_up, elem_x, h_blk * k_tile)
-
-                    of_w.release(2)
-
-                # Compute activation
-                act_k()
-
-                # Down projection for this pass's H-output slice only.
-                # y_accum is indexed relative to the slice ([0, H_out)); the host
-                # streams the correct global down-weight rows for this pass.
+            init_k()  # zero y_accum[H_out] for this pass
+            for b_I in range_(num_blocks_I):
                 for h_blk_down in range_(down_tiles_per_pass):
                     elem_w_down = of_w.acquire(1)
-                    down_k(elem_w_down, h_blk_down * m_H)
+                    down_k(elem_w_down, h_blk_down * m_H, b_I * m_I)
                     of_w.release(1)
-
-            # 3. Finalize: write this pass's y_accum slice to the output FIFO
             for h_blk_out in range_(down_tiles_per_pass):
                 elem_y = of_y.acquire(1)
                 fin_k(elem_y, h_blk_out * m_H)
                 of_y.release(1)
-
-        # Release x
-        of_x.release(1)
 
     # Configure per-core ObjectFifos and Workers
     for i in range(n_cores):
@@ -200,11 +188,12 @@ def ffn_fused_npu(
             )
         )
 
-    # Compute weight sequence size per core. Per pass, per I-block the core
-    # consumes gate + up (H//k_tile each) and the down tiles for this pass's
-    # H-output half (down_tiles_per_pass). gate/up are streamed once per pass.
-    per_pass_per_block = 2 * (H // k_tile) + down_tiles_per_pass
-    total_tiles_per_core = N_PASSES * num_blocks_I * per_pass_per_block
+    # Weight sequence per core: phase 1 streams gate + up once per I-block
+    # (2*(H//k_tile)); phase 2 streams the down tiles once (N_PASSES *
+    # down_tiles_per_pass == H//m_H per I-block). gate/up are streamed once total.
+    phase1_tiles = num_blocks_I * 2 * (H // k_tile)
+    phase2_tiles = num_blocks_I * (H // m_H)
+    total_tiles_per_core = phase1_tiles + phase2_tiles
     size_per_core_bytes = total_tiles_per_core * tile_size
     
     # DRAM/Host buffers shapes
@@ -288,28 +277,23 @@ def pack_ffn_fused_weights(w_gate, w_up, w_down, H, I, m_I, k_tile):
         
         core_bytes = []
 
-        # Two H-output passes (matches N_PASSES in the kernel). gate/up are
-        # streamed once per pass; the down tiles are split by H-output half.
-        n_passes = 2
+        n_passes = 4
         down_tiles_per_pass = (H // m_H) // n_passes
+
+        # Phase 1: gate + up tiles for every I-block (streamed once).
+        for b_I in range(num_blocks_I):
+            row_start = b_I * m_I
+            row_end = (b_I + 1) * m_I
+            for h_blk in range(H // k_tile):
+                col_start_bytes = h_blk * chunks_per_gate_up * 20
+                col_end_bytes = (h_blk + 1) * chunks_per_gate_up * 20
+                # Interleave Gate and Up to match of_w.acquire(2) in the core loop
+                core_bytes.append(w_gate_slice[row_start:row_end, col_start_bytes:col_end_bytes].tobytes())
+                core_bytes.append(w_up_slice[row_start:row_end, col_start_bytes:col_end_bytes].tobytes())
+
+        # Phase 2: down tiles, per H-output pass, per I-block (matches core loop).
         for p in range(n_passes):
             for b_I in range(num_blocks_I):
-                row_start = b_I * m_I
-                row_end = (b_I + 1) * m_I
-
-                # Interleave Gate and Up tiles to match of_w.acquire(2) in core loop
-                for h_blk in range(H // k_tile):
-                    # 1. Gate tile
-                    col_start_bytes = h_blk * chunks_per_gate_up * 20
-                    col_end_bytes = (h_blk + 1) * chunks_per_gate_up * 20
-                    tile_gate = w_gate_slice[row_start:row_end, col_start_bytes:col_end_bytes]
-                    core_bytes.append(tile_gate.tobytes())
-
-                    # 2. Up tile
-                    tile_up = w_up_slice[row_start:row_end, col_start_bytes:col_end_bytes]
-                    core_bytes.append(tile_up.tobytes())
-
-                # 3. Down tiles for this pass's H-output half
                 col_start_bytes = b_I * (m_I // 32) * 20
                 col_end_bytes = (b_I + 1) * (m_I // 32) * 20
                 for h_blk_down in range(p * down_tiles_per_pass, (p + 1) * down_tiles_per_pass):

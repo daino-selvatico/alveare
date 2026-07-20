@@ -6,9 +6,13 @@
 #define DIM_M 32
 #endif
 
+#ifndef DIM_IC
+#define DIM_IC 2048
+#endif
+
 extern float gate_accum[DIM_M];
 extern float up_accum[DIM_M];
-extern bfloat16 act[DIM_M];
+extern bfloat16 act_all[DIM_IC];
 
 // Stable fast exponential approximation
 inline float exp_approx(float z) {
@@ -47,14 +51,14 @@ inline float silu_approx(float x) {
 
 extern "C" {
 
-void ffn_compute_activation() {
+void ffn_compute_activation(int ic_offset) {
     for (int i = 0; i < DIM_M; ++i) {
         float g_val = (float)gate_accum[i];
         float u_val = (float)up_accum[i];
 #ifdef ACTIVATION_SILU
-        act[i] = (bfloat16)(silu_approx(g_val) * u_val);
+        act_all[ic_offset + i] = (bfloat16)(silu_approx(g_val) * u_val);
 #else
-        act[i] = (bfloat16)(gelu_approx(g_val) * u_val);
+        act_all[ic_offset + i] = (bfloat16)(gelu_approx(g_val) * u_val);
 #endif
     }
 }

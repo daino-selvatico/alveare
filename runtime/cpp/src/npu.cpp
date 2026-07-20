@@ -1,5 +1,6 @@
 #include "alveare/npu.h"
 
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -16,6 +17,30 @@
 #include <xrt/xrt_kernel.h>
 
 namespace alveare {
+
+// Lightweight profiling counters (single decode thread): wall time and call
+// count spent inside NPU kernel launches. Read via NpuRegistry::npu_seconds().
+namespace prof {
+double npu_seconds = 0.0;
+double ffn_seconds = 0.0;
+long npu_calls = 0;
+struct ScopedTimer {
+    double* target;
+    std::chrono::steady_clock::time_point t0{std::chrono::steady_clock::now()};
+    explicit ScopedTimer(double* t) : target(t) {}
+    ~ScopedTimer() {
+        double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        npu_seconds += dt;
+        if (target) *target += dt;
+        ++npu_calls;
+    }
+};
+}  // namespace prof
+
+double NpuRegistry::npu_seconds() const { return prof::npu_seconds; }
+double NpuRegistry::ffn_seconds() const { return prof::ffn_seconds; }
+long NpuRegistry::npu_calls() const { return prof::npu_calls; }
+void NpuRegistry::reset_profile() { prof::npu_seconds = 0.0; prof::ffn_seconds = 0.0; prof::npu_calls = 0; }
 
 namespace {
 
@@ -241,6 +266,7 @@ WeightHandle NpuRegistry::create_ffn_fused_weight(int H, int I, const std::strin
 
 void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
                            void* y_bf16) {
+    prof::ScopedTimer _prof_timer(nullptr);
     if (w >= impl_->weights.size())
         throw std::runtime_error("npu: invalid weight handle");
     const ResidentWeight& rw = impl_->weights[w];
@@ -262,6 +288,7 @@ void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
 
 void NpuRegistry::run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
                                 const void* x_bf16, void* y_bf16) {
+    prof::ScopedTimer _prof_timer(&prof::ffn_seconds);
     if (w >= impl_->weights.size())
         throw std::runtime_error("npu: invalid weight handle");
     const ResidentWeight& rw = impl_->weights[w];
