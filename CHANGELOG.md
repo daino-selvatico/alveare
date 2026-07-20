@@ -3,6 +3,14 @@
 All notable changes to Alveare are documented here. This project targets the
 AMD Ryzen AI (XDNA2) NPU on Linux.
 
+## [Unreleased]
+
+### Added
+- `quantize` now emits a `tokenizer.json` for **Gemma** models, reconstructed from
+  the GGUF's embedded tokenizer (`tools/convert/gguf_tokenizer.py`) — fully offline,
+  bit-exact vs the upstream HuggingFace tokenizer. The native C++ runtime works
+  out-of-the-box with no manual tokenizer copy.
+
 ## [1.0.0] — 2026-07-20
 
 First tagged release. Gemma-4-12B runs coherently end-to-end on the NPU through a

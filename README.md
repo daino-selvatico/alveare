@@ -28,7 +28,7 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 - **OpenAI-compatible HTTP server** (`/v1/models`, `/v1/chat/completions`, streaming SSE).
 - A hand-written, **MIT-licensed** vectorized multi-core AIE `gemv_q` kernel (quantized matrix-vector) and a **fused FFN kernel** (gate/up + GeGLU + down in one xclbin, fp32 accumulation across an H-output-split), plus rmsnorm / rope / attention kernels.
 
-> **Note (native C++ runtime):** it reads a HuggingFace `tokenizer.json` from the model's weights directory. `quantize` does not yet emit one — copy the model's `tokenizer.json` into the `quantized_weights_<alias>/` dir (or use `--legacy`, which fetches the tokenizer via `transformers`).
+> **Note (native C++ runtime):** it reads a `tokenizer.json` from the model's weights directory. For Gemma models `quantize` now **generates it automatically** from the GGUF's embedded tokenizer (fully offline — no HF download), bit-exact vs the upstream tokenizer. (Llama on the native runtime still needs its own tokenizer handling; use `--legacy` there for now.)
 
 ### Current limitations
 
