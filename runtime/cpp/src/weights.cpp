@@ -122,40 +122,37 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
         }
     };
 
-    // Two H-output passes (matches N_PASSES in the fused kernel): gate/up are
-    // streamed once per pass; the down tiles are split by H-output half so the
-    // kernel's fp32 y_accum only needs H/2 elements.
-    const int n_passes = 2;
+    // Matches the fused kernel: phase 1 streams gate/up once per I-block; phase 2
+    // streams the down tiles in N_PASSES H-output passes (the kernel stores the
+    // full activation vector so gate/up are computed once, not per pass).
+    const int n_passes = 4;
     int down_tiles_per_pass = (H / m_H) / n_passes;
 
     for (int c = 0; c < n_cores; ++c) {
         int start_I = c * I_div_n_cores;
 
+        // Phase 1: gate + up tiles for every I-block (interleaved, streamed once).
+        for (int b_I = 0; b_I < num_blocks_I; ++b_I) {
+            int row_start = start_I + b_I * m_I;
+            int row_end = start_I + (b_I + 1) * m_I;
+            for (int h_blk = 0; h_blk < H / k_tile; ++h_blk) {
+                int col_start_bytes = h_blk * chunks_per_gate_up * 20;
+                int col_end_bytes = (h_blk + 1) * chunks_per_gate_up * 20;
+                append_tile(w_gate, row_start, row_end, col_start_bytes, col_end_bytes, gate_up_stride);
+                append_tile(w_up, row_start, row_end, col_start_bytes, col_end_bytes, gate_up_stride);
+            }
+        }
+
+        // Phase 2: down tiles, per H-output pass, per I-block.
         for (int p = 0; p < n_passes; ++p) {
             for (int b_I = 0; b_I < num_blocks_I; ++b_I) {
-                int row_start = start_I + b_I * m_I;
-                int row_end = start_I + (b_I + 1) * m_I;
-
-                for (int h_blk = 0; h_blk < H / k_tile; ++h_blk) {
-                    int col_start_bytes = h_blk * chunks_per_gate_up * 20;
-                    int col_end_bytes = (h_blk + 1) * chunks_per_gate_up * 20;
-
-                    // Gate tile
-                    append_tile(w_gate, row_start, row_end, col_start_bytes, col_end_bytes, gate_up_stride);
-                    // Up tile
-                    append_tile(w_up, row_start, row_end, col_start_bytes, col_end_bytes, gate_up_stride);
-                }
-
                 int start_block = start_I / 32;
                 int col_start_bytes_down = start_block * 20 + b_I * (m_I / 32) * 20;
                 int col_end_bytes_down = start_block * 20 + (b_I + 1) * (m_I / 32) * 20;
-
-                // Down tiles for this pass's H-output half only.
                 for (int h_blk_down = p * down_tiles_per_pass;
                      h_blk_down < (p + 1) * down_tiles_per_pass; ++h_blk_down) {
                     int row_start_down = h_blk_down * m_H;
                     int row_end_down = (h_blk_down + 1) * m_H;
-
                     append_tile(w_down, row_start_down, row_end_down, col_start_bytes_down, col_end_bytes_down, down_stride);
                 }
             }

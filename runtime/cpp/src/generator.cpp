@@ -123,6 +123,8 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     std::vector<bf16> out(hidden_size);
     std::vector<float> logits;
 
+    double lm_head_ms = 0.0;  // profiling: last forward's LM-head wall time
+
     // Run one token through the embedding + all transformer layers. When
     // want_logits is set, also apply the final norm and LM head into `logits`.
     auto forward = [&](int token, int pos, bool want_logits) {
@@ -148,7 +150,9 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
             float w = weights_.output_norm.empty() ? 1.0f : weights_.output_norm[i];
             normed[i] = bf16(x[i].to_float() * inv_denom * w);
         }
+        auto t_lm = clock::now();
         run_lm_head(normed.data(), logits);
+        lm_head_ms = std::chrono::duration<double, std::milli>(clock::now() - t_lm).count();
     };
 
     // 1. Prefill: process every prompt token except the last (no logits needed).
@@ -164,13 +168,23 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     int current_token = input_tokens.back();
     int pos = num_prompt_tokens - 1;
     for (int i = 0; i < params.max_tokens; ++i) {
+        double npu_s0 = model_.registry().npu_seconds();
+        double ffn_s0 = model_.registry().ffn_seconds();
+        long npu_c0 = model_.registry().npu_calls();
         auto t0_step = clock::now();
         forward(current_token, pos, true);
         int next_token = sample(logits, params);
         double step_ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
+        double npu_ms = (model_.registry().npu_seconds() - npu_s0) * 1000.0;
+        double ffn_ms = (model_.registry().ffn_seconds() - ffn_s0) * 1000.0;
+        long npu_calls = model_.registry().npu_calls() - npu_c0;
+        double gemv_ms = npu_ms - lm_head_ms - ffn_ms;  // attention/proj GEMVs
+        double cpu_ms = step_ms - npu_ms;
         tag() << "Token " << (i + 1) << "/" << params.max_tokens
-              << " generated in " << std::fixed << std::setprecision(1) << step_ms
-              << "ms (id=" << next_token << ")\n" << std::flush;
+              << " in " << std::fixed << std::setprecision(1) << step_ms << "ms"
+              << " [ffn=" << ffn_ms << " gemv=" << gemv_ms << " lm_head=" << lm_head_ms
+              << " cpu=" << cpu_ms << " | " << npu_calls << " launches]"
+              << " (id=" << next_token << ")\n" << std::flush;
 
         if (tokenizer_.is_stop_token(next_token)) break;
         if (!on_token(tokenizer_.decode(next_token))) break;

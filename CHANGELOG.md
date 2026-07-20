@@ -3,6 +3,17 @@
 All notable changes to Alveare are documented here. This project targets the
 AMD Ryzen AI (XDNA2) NPU on Linux.
 
+## [Unreleased]
+
+### Changed
+- **Fused FFN: ~27% faster decode.** The kernel now computes gate/up/GELU once and
+  stores the whole activation vector (`act_all`), then runs the down projection in
+  N=4 H-output passes reusing it — instead of recomputing gate/up per pass. FFN
+  drops from ~2610 → ~1660 ms/token; decode ~3.6 → ~2.6 s/token, prefill ~28%
+  faster too. Output unchanged (verify PASSES, greedy tokens identical).
+- Added lightweight NPU profiling (`NpuRegistry::npu_seconds/ffn_seconds/npu_calls`)
+  and a per-token decode breakdown in the server log (ffn / gemv / lm_head / cpu).
+
 ## [1.0.0] — 2026-07-20
 
 First tagged release. Gemma-4-12B runs coherently end-to-end on the NPU through a

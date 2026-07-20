@@ -17,14 +17,20 @@
 #define DIM_HOUT DIM_H
 #endif
 
+#ifndef DIM_IC
+#define DIM_IC 2048
+#endif
+
+
 extern float y_accum[DIM_HOUT];
-extern bfloat16 act[DIM_M];
+extern bfloat16 act_all[DIM_IC];
 
 extern "C" {
 
 void ffn_accumulate_down(
     const uint8_t *restrict w_down,
-    int h_offset
+    int h_offset,
+    int ic_offset
 ) {
     for (int r = 0; r < DIM_K; ++r) {
         float sum = 0.0f;
@@ -46,7 +52,7 @@ void ffn_accumulate_down(
             aie::vector<bfloat16, 16> w0_down_bf16 = aie::mul(q0_down_bf16, scale_down_v).to_vector<bfloat16>();
             aie::vector<bfloat16, 16> w1_down_bf16 = aie::mul(q1_down_bf16, scale_down_v).to_vector<bfloat16>();
             
-            aie::vector<bfloat16, 32> act_bf16 = aie::load_v<32>(&act[b * 32]);
+            aie::vector<bfloat16, 32> act_bf16 = aie::load_v<32>(&act_all[ic_offset + b * 32]);
             aie::vector<bfloat16, 16> act0_bf16 = aie::filter_even(act_bf16, 1);
             aie::vector<bfloat16, 16> act1_bf16 = aie::filter_odd(act_bf16, 1);
             

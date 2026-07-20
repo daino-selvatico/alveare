@@ -89,6 +89,13 @@ public:
     // Number of hardware contexts currently loaded (for tests / diagnostics).
     int loaded_contexts() const;
 
+    // Profiling: cumulative wall time (seconds) and count of NPU kernel launches
+    // (run_gemv + run_ffn_fused). reset_profile() zeroes them.
+    double npu_seconds() const;
+    double ffn_seconds() const;
+    long npu_calls() const;
+    void reset_profile();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
