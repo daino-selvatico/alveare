@@ -1,7 +1,12 @@
 #include <iostream>
 #include <string>
 #include <memory>
+#include <vector>
+#include <cstdlib>
+#include <cmath>
+#include <algorithm>
 #include "alveare/config.h"
+#include "alveare/bf16.h"
 #include "alveare/weights.h"
 #include "alveare/npu.h"
 #include "alveare/model.h"
@@ -35,6 +40,30 @@ int main(int argc, char** argv) {
         ModelWeights mw = load_weights(model_dir, config, reg);
         
         Model model(config, mw, reg);
+
+        // Validation hook: check run_gemm (batched) against run_gemv on a resident
+        // weight. Confirms the gemv weight BO is usable by the gemm kernel.
+        if (std::getenv("ALVEARE_TEST_GEMM")) {
+            const int N = 4096, K = 4096, B = 16;  // layer 0 attn_q (sliding)
+            std::vector<bf16> x(K, bf16(0.02f));
+            std::vector<bf16> y_gemv(N);
+            reg.run_gemv(N, K, mw.layers[0].w_q, x.data(), y_gemv.data());
+            std::vector<bf16> xb(static_cast<size_t>(B) * K);
+            for (int b = 0; b < B; ++b)
+                for (int i = 0; i < K; ++i) xb[static_cast<size_t>(b) * K + i] = x[i];
+            std::vector<bf16> yb(static_cast<size_t>(B) * N);
+            reg.run_gemm(B, N, K, mw.layers[0].w_q, xb.data(), yb.data());
+            float d0 = 0.0f, d15 = 0.0f, mag = 0.0f;
+            for (int i = 0; i < N; ++i) {
+                float g = y_gemv[i].to_float();
+                mag = std::max(mag, std::fabs(g));
+                d0 = std::max(d0, std::fabs(yb[i].to_float() - g));
+                d15 = std::max(d15, std::fabs(yb[static_cast<size_t>(15) * N + i].to_float() - g));
+            }
+            std::cout << "GEMM-vs-GEMV: signal_max=" << mag
+                      << " row0_maxdiff=" << d0 << " row15_maxdiff=" << d15 << "\n" << std::flush;
+            return 0;
+        }
 
         std::unique_ptr<Tokenizer> tokenizer;
         std::string tok_path = model_dir + "/tokenizer.json";
