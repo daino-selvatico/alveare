@@ -4,7 +4,7 @@
 
 Alveare runs large language models on the AMD Ryzen AI NPU with a **fully open** stack — including the AIE kernels. It is a from-scratch alternative to the only other practical NPU runtime on Linux today, built so that anyone can bring their own model instead of waiting for closed, per-model kernel binaries.
 
-> **Status: working, correct, and slow.** Alveare runs **Gemma-4-12B end-to-end on the NPU**, and its greedy output matches `llama.cpp` (same Q4 GGUF) **token-for-token**. It also runs Llama-3.2-1B and Gemma-3-1B. Decode is ~4.6 s/token on the 12B — correctness came first, speed is the ongoing work. See [`ROADMAP.md`](ROADMAP.md).
+> **Status: working, correct, and slow.** Alveare runs **Gemma-4-12B end-to-end on the NPU**, and its greedy output matches `llama.cpp` (same Q4 GGUF) **token-for-token**. It also runs Llama-3.2-1B and Gemma-3-1B. The default server is now a **native C++ runtime** (no Python in the decode loop) with the full FFN — gate/up, GeGLU, and down — fused into a single open AIE kernel; it decodes Gemma-4-12B at ~3.6 s/token. A legacy Python server is still available via `--legacy`. Correctness came first, speed is the ongoing work. See [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
@@ -21,15 +21,18 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 
 ## What works today
 
-- **Gemma-4-12B-it** — full 48-layer forward on the NPU with per-layer weight streaming (~5.5 GB peak RAM). Greedy output matches `llama.cpp` token-for-token. ~4.6 s/token decode.
+- **Native C++ runtime** — the default `alveare serve` path. No Python in the decode loop: native XRT, a hand-ported CPU math path (RMSNorm / RoPE / attention / sampling), a self-contained byte-level BPE tokenizer that loads the model's `tokenizer.json`, and the Gemma chat template. Runs Gemma-4-12B coherently at ~3.6 s/token. (`--legacy` still starts the Python server.)
+- **Gemma-4-12B-it** — full 48-layer forward on the NPU with per-layer weight streaming (~5.5 GB peak RAM). Greedy output matches `llama.cpp` token-for-token.
 - **Gemma-3-1B-it** — end-to-end on the NPU, greedy continuation matches `llama.cpp`.
 - **Llama-3.2-1B-Instruct** — end-to-end on the NPU.
 - **OpenAI-compatible HTTP server** (`/v1/models`, `/v1/chat/completions`, streaming SSE).
-- A hand-written, **MIT-licensed** vectorized multi-core AIE `gemv_q` kernel (quantized matrix-vector), plus rmsnorm / rope / attention kernels.
+- A hand-written, **MIT-licensed** vectorized multi-core AIE `gemv_q` kernel (quantized matrix-vector) and a **fused FFN kernel** (gate/up + GeGLU + down in one xclbin, fp32 accumulation across an H-output-split), plus rmsnorm / rope / attention kernels.
+
+> **Note (native C++ runtime):** it reads a HuggingFace `tokenizer.json` from the model's weights directory. `quantize` does not yet emit one — copy the model's `tokenizer.json` into the `quantized_weights_<alias>/` dir (or use `--legacy`, which fetches the tokenizer via `transformers`).
 
 ### Current limitations
 
-- **Decode speed:** Decode is currently ~4.6 s/token on Gemma-4-12B. Correctness came first; speed optimization is the ongoing focus.
+- **Decode speed:** Decode is currently ~3.6 s/token on Gemma-4-12B with the native C++ runtime. Correctness came first; speed optimization is the ongoing focus (e.g. the fused-FFN H-split recomputes gate/up per pass — caching it back is a known follow-up).
 - **Experimental state:** Expect rough edges!
 - **Prompt batched prefill:** The initial prompt prefill phase is now successfully offloaded to the NPU with batched matrix multiplications, drastically improving Time-to-First-Token latency compared to the initial CPU-only implementation!
 

@@ -245,7 +245,7 @@ void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
         throw std::runtime_error("npu: invalid weight handle");
     const ResidentWeight& rw = impl_->weights[w];
     if (rw.N != N || rw.K != K)
-        throw std::runtime_error("npu: weight/shape mismatch in run_gemv");
+        throw std::runtime_error("npu: weight/shape mismatch in run_gemv: expected (" + std::to_string(rw.N) + ", " + std::to_string(rw.K) + "), got (" + std::to_string(N) + ", " + std::to_string(K) + ")");
 
     LoadedKernel& lk = impl_->ensure_loaded("gemv", N, K, 0);
 

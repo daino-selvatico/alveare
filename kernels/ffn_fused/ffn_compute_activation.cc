@@ -6,8 +6,8 @@
 #define DIM_M 32
 #endif
 
-extern bfloat16 gate_accum[DIM_M];
-extern bfloat16 up_accum[DIM_M];
+extern float gate_accum[DIM_M];
+extern float up_accum[DIM_M];
 extern bfloat16 act[DIM_M];
 
 // Stable fast exponential approximation

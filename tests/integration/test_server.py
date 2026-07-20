@@ -10,7 +10,7 @@ def wait_for_server(url, timeout=300):
     while time.time() - start < timeout:
         try:
             resp = requests.get(url)
-            if resp.status_code == 200:
+            if resp.status_code in [200, 404]:
                 return True
         except requests.exceptions.ConnectionError:
             pass

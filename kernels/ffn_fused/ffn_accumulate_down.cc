@@ -13,7 +13,11 @@
 #define DIM_H 2048
 #endif
 
-extern bfloat16 y_accum[DIM_H];
+#ifndef DIM_HOUT
+#define DIM_HOUT DIM_H
+#endif
+
+extern float y_accum[DIM_HOUT];
 extern bfloat16 act[DIM_M];
 
 extern "C" {
@@ -51,7 +55,7 @@ void ffn_accumulate_down(
             sum += aie::reduce_add(prod1.to_vector<float>());
         }
         
-        y_accum[h_offset + r] = (bfloat16)((float)y_accum[h_offset + r] + sum);
+        y_accum[h_offset + r] = y_accum[h_offset + r] + sum;
     }
 }
 

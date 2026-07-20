@@ -15,6 +15,9 @@ public:
     // Returns the model config
     const ModelConfig& get_config() const { return config_; }
 
+    // Access to the NPU registry (e.g. for the LM head gemv driven by Generator).
+    NpuRegistry& registry() { return reg_; }
+
     // Run a single layer decode natively.
     // Returns true on success.
     void run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16);
@@ -39,9 +42,9 @@ private:
     void init_kv_caches();
     void precompute_rope();
 
-    void run_rmsnorm_cpu(const bf16* x, const float* w, bf16* out);
-    void run_rope_cpu_llama(const bf16* x, int pos, bf16* out);
-    void run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, bf16* out);
+    void run_rmsnorm_cpu(const bf16* x, const float* w, bf16* out, int K = 0);
+    void run_rope_cpu_llama(const bf16* x, int pos, int num_heads, bf16* out);
+    void run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, int num_heads, bf16* out);
     void run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out);
 };
 

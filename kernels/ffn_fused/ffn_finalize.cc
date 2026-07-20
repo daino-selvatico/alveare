@@ -9,7 +9,11 @@
 #define DIM_H 2048
 #endif
 
-extern bfloat16 y_accum[DIM_H];
+#ifndef DIM_HOUT
+#define DIM_HOUT DIM_H
+#endif
+
+extern float y_accum[DIM_HOUT];
 
 extern "C" {
 
@@ -18,7 +22,7 @@ void ffn_finalize(
     int h_offset
 ) {
     for (int i = 0; i < DIM_K; ++i) {
-        y_out[i] = y_accum[h_offset + i];
+        y_out[i] = (bfloat16)y_accum[h_offset + i];
     }
 }
 

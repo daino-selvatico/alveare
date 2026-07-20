@@ -9,8 +9,8 @@
 #define DIM_K 256
 #endif
 
-extern bfloat16 gate_accum[DIM_M];
-extern bfloat16 up_accum[DIM_M];
+extern float gate_accum[DIM_M];
+extern float up_accum[DIM_M];
 
 extern "C" {
 
@@ -70,8 +70,8 @@ void ffn_compute_gate_up(
             sum_up += aie::reduce_add(prod1_up.to_vector<float>());
         }
         
-        gate_accum[r] = (bfloat16)((float)gate_accum[r] + sum_gate);
-        up_accum[r] = (bfloat16)((float)up_accum[r] + sum_up);
+        gate_accum[r] = gate_accum[r] + sum_gate;
+        up_accum[r] = up_accum[r] + sum_up;
     }
 }
 
