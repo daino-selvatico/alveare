@@ -1,5 +1,11 @@
 # Handoff — Alveare C++ runtime port (resume prompt)
 
+> **Status (v1.0.0, 2026-07-20): COMPLETED.** The C++ runtime runs Gemma-4-12B
+> coherently end-to-end on the NPU (native decode loop, NPU LM head, fused FFN
+> kernel, real BPE tokenizer + Gemma chat template), greedy-matching the Python
+> runtime token-for-token. This document is kept for historical context. See
+> `CHANGELOG.md`, `ROADMAP.md` (M11/M12), and the C++ sources under `runtime/cpp`.
+
 Paste the block below into Claude Code running at `/home/daino/progetti/alveare`.
 
 ---

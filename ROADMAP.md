@@ -109,6 +109,26 @@ Spec: [`docs/milestones/M7-gemma4-12b.md`](docs/milestones/M7-gemma4-12b.md)
 
 ---
 
+## M11 — Fused FFN NPU kernel
+
+**Status**: **Completed.**
+
+**Goal**: Collapse the FFN (gate + up + GeGLU + down) into a single AIE kernel instead of separate GEMVs + host-side activation, cutting launches and host round-trips.
+
+**Achieved**: an open `ffn_fused` kernel that does the whole FFN on-chip across `n_cores`, with **fp32 accumulation** for the gate/up and down projections (bf16 accumulation compounded to ~13% error over 48 layers and produced garbage). The fp32 output accumulator is made to fit tile memory via an **H-output split** (process the output hidden in 2 passes so `y_accum` is fp32 at half size). Weight packing is matched byte-for-byte between the Python design, the verify, and the C++ runtime.
+
+---
+
+## M12 — Native C++ runtime, Gemma-4-12B coherent end-to-end
+
+**Status**: **Completed.**
+
+**Goal**: Remove Python from the decode loop — a single native binary driving the NPU.
+
+**Achieved**: `runtime/cpp` decode loop + OpenAI server (cpp-httplib), native XRT kernel registry with a resident-weight context policy, a hand-ported CPU math path (RMSNorm / RoPE / sliding + global attention / sampling), the LM head tiled onto the NPU, and a self-contained byte-level BPE tokenizer that loads the model's `tokenizer.json` plus the Gemma chat template. Fixed the Gemma-4 per-layer output scale, float16 embedding decode, and embedding `sqrt(hidden)` scale. Greedy output matches the Python runtime token-for-token; Gemma-4-12B produces coherent text (`"Ciao! Sto bene, grazie mille. E tu come stai?..."`) at ~3.6 s/token.
+
+---
+
 ## Strategic shortcuts (evaluate before greenfielding)
 
 We do **not** want to hand-write every kernel from zero if there's leverage:

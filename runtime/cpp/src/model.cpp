@@ -124,8 +124,8 @@ void Model::precompute_rope() {
     }
 }
 
-void Model::run_rmsnorm_cpu(const bf16* x, const float* w, bf16* out) {
-    int K = config_.hidden_size;
+void Model::run_rmsnorm_cpu(const bf16* x, const float* w, bf16* out, int override_K) {
+    int K = override_K > 0 ? override_K : config_.hidden_size;
     float variance = 0.0f;
     for (int i = 0; i < K; ++i) {
         float val = x[i].to_float();
@@ -141,13 +141,12 @@ void Model::run_rmsnorm_cpu(const bf16* x, const float* w, bf16* out) {
     }
 }
 
-void Model::run_rope_cpu_llama(const bf16* x, int pos, bf16* out) {
+void Model::run_rope_cpu_llama(const bf16* x, int pos, int num_heads, bf16* out) {
     int K = config_.hidden_size;
     const bf16* cos_sin = &cos_sin_table_[pos * 128];
     const bf16* cos_ptr = cos_sin;
     const bf16* sin_ptr = cos_sin + 64;
 
-    int num_heads = K / 64;
     for (int h = 0; h < num_heads; ++h) {
         for (int i = 0; i < 32; ++i) {
             float x1 = x[h * 64 + i].to_float();
@@ -161,13 +160,11 @@ void Model::run_rope_cpu_llama(const bf16* x, int pos, bf16* out) {
     }
 }
 
-void Model::run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, bf16* out) {
-    int K = config_.hidden_size;
+void Model::run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, int num_heads, bf16* out) {
     int dim = 256;
     if (config_.model_type == "gemma4" && base_freq > 10000.0f) {
         dim = 512;
     }
-    int num_heads = K / dim;
     const bf16* cos_sin = nullptr;
     if (base_freq == 10000.0f) {
         cos_sin = &cos_sin_table_sliding_[pos * dim];
@@ -269,51 +266,59 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     int K = config_.hidden_size;
     const LayerWeights& lw = weights_.layers[layer];
     
+    int K_padded = config_.model_type == "gemma4" ? 4096 : K;
+    
     // 1. Input RMSNorm
-    std::vector<bf16> x_norm(K);
+    std::vector<bf16> x_norm(K_padded, bf16(0.0f));
     run_rmsnorm_cpu(x_bf16, lw.attn_norm.empty() ? nullptr : lw.attn_norm.data(), x_norm.data());
 
     // 2. QKV Projections (NPU)
     bool is_sliding = (config_.model_type == "gemma4" && (layer + 1) % 6 != 0);
     int N_q = config_.num_attention_heads * config_.head_dim;
     int N_kv = config_.num_key_value_heads * config_.head_dim;
+    
+    int n_q_heads = config_.num_attention_heads;
+    int n_kv_heads = config_.num_key_value_heads;
+    
     if (config_.model_type == "gemma4") {
         N_q = is_sliding ? 4096 : 8192;
-        N_kv = is_sliding ? 2048 : 512;
+        N_kv = 2048;
+        n_q_heads = 16;
+        n_kv_heads = is_sliding ? 8 : 1;
     }
     std::vector<bf16> q(N_q);
     std::vector<bf16> k(N_kv);
     std::vector<bf16> v(N_kv);
 
-    reg_.run_gemv(N_q, K, lw.w_q, x_norm.data(), q.data());
-    reg_.run_gemv(N_kv, K, lw.w_k, x_norm.data(), k.data());
+    reg_.run_gemv(N_q, K_padded, lw.w_q, x_norm.data(), q.data());
+    reg_.run_gemv(N_kv, K_padded, lw.w_k, x_norm.data(), k.data());
     if (config_.model_type != "gemma4" || is_sliding) {
-        reg_.run_gemv(N_kv, K, lw.w_v, x_norm.data(), v.data());
+        reg_.run_gemv(N_kv, K_padded, lw.w_v, x_norm.data(), v.data());
     } else {
         v = k; // Gemma4 global layers use K for V
     }
 
     // 3. QK-Norm & V-Norm (Gemma only)
     if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
-        for (int h = 0; h < config_.num_attention_heads; ++h) {
+        for (int h = 0; h < n_q_heads; ++h) {
             int h_dim = config_.head_dim;
             if (config_.model_type == "gemma4") h_dim = is_sliding ? 256 : 512;
             std::vector<bf16> q_h(h_dim);
-            run_rmsnorm_cpu(&q[h * h_dim], lw.q_norm.empty() ? nullptr : lw.q_norm.data(), q_h.data());
+            run_rmsnorm_cpu(&q[h * h_dim], lw.q_norm.empty() ? nullptr : lw.q_norm.data(), q_h.data(), h_dim);
             std::memcpy(&q[h * h_dim], q_h.data(), h_dim * sizeof(bf16));
         }
-        for (int h = 0; h < config_.num_key_value_heads; ++h) {
+        for (int h = 0; h < n_kv_heads; ++h) {
             int h_dim = config_.head_dim;
             if (config_.model_type == "gemma4") h_dim = is_sliding ? 256 : 512;
             std::vector<bf16> k_h(h_dim);
-            run_rmsnorm_cpu(&k[h * h_dim], lw.k_norm.empty() ? nullptr : lw.k_norm.data(), k_h.data());
+            run_rmsnorm_cpu(&k[h * h_dim], lw.k_norm.empty() ? nullptr : lw.k_norm.data(), k_h.data(), h_dim);
             std::memcpy(&k[h * h_dim], k_h.data(), h_dim * sizeof(bf16));
         }
         if (config_.model_type == "gemma4") {
-            for (int h = 0; h < config_.num_key_value_heads; ++h) {
+            for (int h = 0; h < n_kv_heads; ++h) {
                 int h_dim = is_sliding ? 256 : 512;
                 std::vector<bf16> v_h(h_dim);
-                run_rmsnorm_cpu(&v[h * h_dim], nullptr, v_h.data());
+                run_rmsnorm_cpu(&v[h * h_dim], nullptr, v_h.data(), h_dim);
                 std::memcpy(&v[h * h_dim], v_h.data(), h_dim * sizeof(bf16));
             }
         }
@@ -328,19 +333,17 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
             bool g3_sliding = ((layer + 1) % 6 != 0);
             base_freq = g3_sliding ? 10000.0f : 1000000.0f;
         }
-        run_rope_cpu_gemma(q.data(), pos, base_freq, q_rope.data());
-        run_rope_cpu_gemma(k.data(), pos, base_freq, k_rope.data());
+        run_rope_cpu_gemma(q.data(), pos, base_freq, n_q_heads, q_rope.data());
+        run_rope_cpu_gemma(k.data(), pos, base_freq, n_kv_heads, k_rope.data());
     } else {
-        run_rope_cpu_llama(q.data(), pos, q_rope.data());
-        run_rope_cpu_llama(k.data(), pos, k_rope.data());
+        run_rope_cpu_llama(q.data(), pos, n_q_heads, q_rope.data());
+        run_rope_cpu_llama(k.data(), pos, n_kv_heads, k_rope.data());
     }
 
     // 5. Update KV Cache
     int max_seq_len = 2048;
-    int n_kv_heads = config_.num_key_value_heads;
     int h_dim = config_.head_dim;
     if (config_.model_type == "gemma4") {
-        n_kv_heads = is_sliding ? 8 : 1;
         h_dim = is_sliding ? 256 : 512;
     }
     for (int h = 0; h < n_kv_heads; ++h) {
@@ -355,8 +358,9 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
 
     // 7. Output Projection
     int N_out = K;
-    std::vector<bf16> attn_proj(N_out);
-    reg_.run_gemv(N_out, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    int N_out_padded = config_.model_type == "gemma4" ? 4096 : N_out;
+    std::vector<bf16> attn_proj(N_out_padded, bf16(0.0f));
+    reg_.run_gemv(N_out_padded, N_q, lw.w_o, attn_out.data(), attn_proj.data());
 
     // 8. Post-attention norm and residual
     std::vector<bf16> x_post_attn(K);
@@ -373,20 +377,24 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     }
 
     // 9. Pre-FFN norm
-    std::vector<bf16> x_norm2(K);
+    std::vector<bf16> x_norm2(K_padded, bf16(0.0f));
     run_rmsnorm_cpu(x_post_attn.data(), lw.ffn_norm.empty() ? nullptr : lw.ffn_norm.data(), x_norm2.data());
 
     // 10. FFN Fused NPU
-    std::vector<bf16> down(K);
+    int H_padded = config_.model_type == "gemma4" ? 4096 : config_.hidden_size;
+    int I_padded = config_.model_type == "gemma4" ? 16384 : config_.intermediate_size;
+    std::vector<bf16> down(H_padded, bf16(0.0f));
     std::string act_type = (config_.model_type == "gemma3" || config_.model_type == "gemma4") ? "gelu" : "silu";
-    reg_.run_ffn_fused(K, config_.intermediate_size, act_type, lw.w_ffn_fused, x_norm2.data(), down.data());
+    reg_.run_ffn_fused(H_padded, I_padded, act_type, lw.w_ffn_fused, x_norm2.data(), down.data());
 
     // 11. Post-FFN norm and residual
     if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
         std::vector<bf16> down_normed(K);
         run_rmsnorm_cpu(down.data(), lw.post_ffw_norm.empty() ? nullptr : lw.post_ffw_norm.data(), down_normed.data());
+        // Gemma-4 scales the whole block output (residual included) by a per-layer scalar.
+        float oscale = (config_.model_type == "gemma4") ? lw.output_scale : 1.0f;
         for (int i = 0; i < K; ++i) {
-            out_bf16[i] = bf16(x_post_attn[i].to_float() + down_normed[i].to_float());
+            out_bf16[i] = bf16((x_post_attn[i].to_float() + down_normed[i].to_float()) * oscale);
         }
     } else {
         for (int i = 0; i < K; ++i) {

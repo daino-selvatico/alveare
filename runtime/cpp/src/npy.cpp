@@ -42,7 +42,18 @@ NpyArray load_npy(const std::string& path) {
     arr.data = static_cast<void*>(static_cast<char*>(arr.mapped_ptr) + 10 + header_len);
     arr.data_size = arr.mapped_size - (10 + header_len);
 
-    // Dict header parsing (shape, dtype) will be needed for P2/P3.
+    std::string header(ptr + 10, header_len);
+    size_t dtype_pos = header.find("'descr':");
+    if (dtype_pos != std::string::npos) {
+        size_t quote_start = header.find('\'', dtype_pos + 8);
+        if (quote_start != std::string::npos) {
+            size_t quote_end = header.find('\'', quote_start + 1);
+            if (quote_end != std::string::npos) {
+                arr.dtype = header.substr(quote_start + 1, quote_end - quote_start - 1);
+            }
+        }
+    }
+
     return arr;
 }
 

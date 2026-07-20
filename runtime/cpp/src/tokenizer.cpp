@@ -4,9 +4,9 @@ namespace alveare {
 
 std::vector<int> StubTokenizer::encode(const std::string& text) const {
     std::vector<int> tokens;
-    // For stub, just cast char to token
+    // For stub, cast char to unsigned char first to avoid negative tokens
     for (char c : text) {
-        tokens.push_back(static_cast<int>(c));
+        tokens.push_back(static_cast<int>(static_cast<unsigned char>(c)));
     }
     return tokens;
 }

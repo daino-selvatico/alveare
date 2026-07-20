@@ -35,6 +35,7 @@ set(ALVEARE_CORE_SRC
     src/weights.cpp
     src/model.cpp
     src/tokenizer.cpp
+    src/gemma_tokenizer.cpp
     src/generator.cpp
     src/server.cpp
 )

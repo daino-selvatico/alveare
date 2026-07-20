@@ -16,10 +16,11 @@ extern "C" {
 #define DIM_H 2048 // Full hidden dimension (H)
 #endif
 
-// Static L1 buffers
-static bfloat16 y_accum[DIM_H];
-static bfloat16 gate_accum[DIM_M];
-static bfloat16 up_accum[DIM_M];
+// Static L1 buffers. Running accumulators are fp32 (see ffn_init.cc rationale);
+// only `act` stays bf16 as a matmul operand.
+static float y_accum[DIM_H];
+static float gate_accum[DIM_M];
+static float up_accum[DIM_M];
 static bfloat16 act[DIM_M];
 
 // Stable fast exponential approximation
@@ -51,15 +52,15 @@ inline float gelu_approx(float x) {
 // 1. Initialize static y_accum to zero
 inline void ffn_init() {
     for (int i = 0; i < DIM_H; ++i) {
-        y_accum[i] = (bfloat16)0.0f;
+        y_accum[i] = 0.0f;
     }
 }
 
 // 2. Initialize static gate_accum and up_accum to zero
 inline void ffn_init_gate_up() {
     for (int i = 0; i < DIM_M; ++i) {
-        gate_accum[i] = (bfloat16)0.0f;
-        up_accum[i] = (bfloat16)0.0f;
+        gate_accum[i] = 0.0f;
+        up_accum[i] = 0.0f;
     }
 }
 
@@ -127,8 +128,8 @@ inline void ffn_compute_gate_up(
             sum_up += aie::reduce_add(prod1_up.to_vector<float>());
         }
         
-        gate_accum[r] = (bfloat16)((float)gate_accum[r] + sum_gate);
-        up_accum[r] = (bfloat16)((float)up_accum[r] + sum_up);
+        gate_accum[r] = gate_accum[r] + sum_gate;
+        up_accum[r] = up_accum[r] + sum_up;
     }
 }
 
@@ -182,7 +183,7 @@ inline void ffn_accumulate_down(
             sum += aie::reduce_add(prod1.to_vector<float>());
         }
         
-        y_accum[h_offset + r] = (bfloat16)((float)y_accum[h_offset + r] + sum);
+        y_accum[h_offset + r] = y_accum[h_offset + r] + sum;
     }
 }
 
@@ -192,7 +193,7 @@ inline void ffn_finalize(
     int h_offset
 ) {
     for (int i = 0; i < DIM_K; ++i) {
-        y_out[i] = y_accum[h_offset + i];
+        y_out[i] = (bfloat16)y_accum[h_offset + i];
     }
 }
 

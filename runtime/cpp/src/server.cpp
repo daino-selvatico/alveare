@@ -23,12 +23,27 @@ void ApiServer::start(int port) {
                 stream = j_req["stream"].get<bool>();
             }
 
-            // Simple extraction of prompt from messages
+            // Build the prompt. For Gemma we apply the model's chat template with
+            // its special turn/channel tokens (the tokenizer matches them atomically);
+            // other models just concatenate message contents.
+            const std::string& model_type = generator_.config().model_type;
+            bool is_gemma = (model_type == "gemma3" || model_type == "gemma4");
+
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
-                for (const auto& msg : j_req["messages"]) {
-                    if (msg.contains("content") && msg["content"].is_string()) {
-                        // Dummy chat template: just append content.
-                        prompt += msg["content"].get<std::string>() + "\n";
+                if (is_gemma) {
+                    prompt = "<bos>";
+                    for (const auto& msg : j_req["messages"]) {
+                        if (!msg.contains("content") || !msg["content"].is_string()) continue;
+                        std::string role = msg.value("role", "user");
+                        if (role == "assistant") role = "model";
+                        prompt += "<|turn>" + role + "\n" + msg["content"].get<std::string>() + "<turn|>\n";
+                    }
+                    prompt += "<|turn>model\n<|channel>thought\n<channel|>";
+                } else {
+                    for (const auto& msg : j_req["messages"]) {
+                        if (msg.contains("content") && msg["content"].is_string()) {
+                            prompt += msg["content"].get<std::string>() + "\n";
+                        }
                     }
                 }
             } else if (j_req.contains("prompt") && j_req["prompt"].is_string()) {

@@ -21,6 +21,9 @@ public:
     // Callback should return true to continue, false to stop.
     void generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token);
 
+    // Model config (used e.g. by the server to pick the chat template).
+    const ModelConfig& config() const { return model_.get_config(); }
+
 private:
     Model& model_;
     const ModelWeights& weights_;

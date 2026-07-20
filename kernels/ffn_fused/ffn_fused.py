@@ -53,13 +53,22 @@ def ffn_fused_npu(
     I_div_n_cores = I // n_cores
     num_blocks_I = I_div_n_cores // m_I
 
+    # The output H is processed in N_PASSES passes so the fp32 output accumulator
+    # y_accum[H_out] fits the core .bss (a full fp32 y_accum[H] overflows). Each
+    # pass recomputes gate/up (they depend on the full input x) but only does the
+    # down projection for its H-output slice.
+    N_PASSES = 2
+    H_out = H // N_PASSES
+    down_tiles_per_pass = H_out // m_H  # down output-row tiles handled per pass
+
     # Both gate/up tile and down tile are of size (m_I * (k_tile // 32) * 20) bytes.
     tile_size = m_I * (k_tile // 32) * 20
     w_ty = np.ndarray[(tile_size,), np.dtype[np.uint8]]
     x_ty = np.ndarray[(H,), np.dtype[bfloat16]]
     y_ty = np.ndarray[(m_H,), np.dtype[bfloat16]]
 
-    kernel_flags = [f"-DDIM_M={m_I}", f"-DDIM_K={k_tile}", f"-DDIM_H={H}", "-O3"]
+    kernel_flags = [f"-DDIM_M={m_I}", f"-DDIM_K={k_tile}", f"-DDIM_H={H}",
+                    f"-DDIM_HOUT={H_out}", "-O3"]
     if activation == "silu":
         kernel_flags.append("-DACTIVATION_SILU")
 
@@ -121,48 +130,49 @@ def ffn_fused_npu(
 
     # AIE Core logic
     def core_fn(of_w, of_x, of_y, init_k, init_gu_k, comp_k, act_k, down_k, fin_k):
-        # 1. Initialize static y_accum to zero
-        init_k()
-
-        # 2. Acquire activation vector x once and hold it
+        # Acquire the input activation vector x once and hold it across both passes.
         elem_x = of_x.acquire(1)
 
-        # Loop over intermediate dimension slice
-        for _ in range_(num_blocks_I):
-            # Reset gate/up accumulators
-            init_gu_k()
+        # Process the H output in N_PASSES passes so the fp32 y_accum[H_out] fits.
+        for _p in range_(N_PASSES):
+            # 1. Zero y_accum for this pass's H-output slice
+            init_k()
 
-            # Compute gate and up projections
-            for h_blk in range_(H // k_tile):
-                # Acquire 2 weight tiles contiguously (1 for gate, 1 for up)
-                elem_w_both = of_w.acquire(2)
-                elem_w_gate = elem_w_both[0]
-                elem_w_up = elem_w_both[1]
+            # Loop over this core's intermediate-dimension slice
+            for _ in range_(num_blocks_I):
+                # Reset gate/up accumulators
+                init_gu_k()
 
-                comp_k(elem_w_gate, elem_w_up, elem_x, h_blk * k_tile)
+                # Compute gate and up projections (full input H)
+                for h_blk in range_(H // k_tile):
+                    # Acquire 2 weight tiles contiguously (1 for gate, 1 for up)
+                    elem_w_both = of_w.acquire(2)
+                    elem_w_gate = elem_w_both[0]
+                    elem_w_up = elem_w_both[1]
 
-                of_w.release(2)
+                    comp_k(elem_w_gate, elem_w_up, elem_x, h_blk * k_tile)
 
-            # Compute activation
-            act_k()
+                    of_w.release(2)
 
-            # Multiply by W_down and accumulate into y_accum
-            for h_blk_down in range_(H // m_H):
-                # Acquire 1 tile for W_down
-                elem_w_down = of_w.acquire(1)
+                # Compute activation
+                act_k()
 
-                down_k(elem_w_down, h_blk_down * m_H)
+                # Down projection for this pass's H-output slice only.
+                # y_accum is indexed relative to the slice ([0, H_out)); the host
+                # streams the correct global down-weight rows for this pass.
+                for h_blk_down in range_(down_tiles_per_pass):
+                    elem_w_down = of_w.acquire(1)
+                    down_k(elem_w_down, h_blk_down * m_H)
+                    of_w.release(1)
 
-                of_w.release(1)
+            # 3. Finalize: write this pass's y_accum slice to the output FIFO
+            for h_blk_out in range_(down_tiles_per_pass):
+                elem_y = of_y.acquire(1)
+                fin_k(elem_y, h_blk_out * m_H)
+                of_y.release(1)
 
         # Release x
         of_x.release(1)
-
-        # 3. Finalize: write static y_accum to output FIFO
-        for h_blk_out in range_(H // m_H):
-            elem_y = of_y.acquire(1)
-            fin_k(elem_y, h_blk_out * m_H)
-            of_y.release(1)
 
     # Configure per-core ObjectFifos and Workers
     for i in range(n_cores):
@@ -190,9 +200,11 @@ def ffn_fused_npu(
             )
         )
 
-    # Compute weight sequence size per core
-    tiles_per_block = 3 * (H // k_tile)
-    total_tiles_per_core = num_blocks_I * tiles_per_block
+    # Compute weight sequence size per core. Per pass, per I-block the core
+    # consumes gate + up (H//k_tile each) and the down tiles for this pass's
+    # H-output half (down_tiles_per_pass). gate/up are streamed once per pass.
+    per_pass_per_block = 2 * (H // k_tile) + down_tiles_per_pass
+    total_tiles_per_core = N_PASSES * num_blocks_I * per_pass_per_block
     size_per_core_bytes = total_tiles_per_core * tile_size
     
     # DRAM/Host buffers shapes
@@ -275,36 +287,58 @@ def pack_ffn_fused_weights(w_gate, w_up, w_down, H, I, m_I, k_tile):
         w_down_slice = w_down[:, start_block * 20 : end_block * 20]
         
         core_bytes = []
-        
-        for b_I in range(num_blocks_I):
-            row_start = b_I * m_I
-            row_end = (b_I + 1) * m_I
-            
-            # Interleave Gate and Up tiles to match of_w.acquire(2) in core loop
-            for h_blk in range(H // k_tile):
-                # 1. Gate tile
-                col_start_bytes = h_blk * chunks_per_gate_up * 20
-                col_end_bytes = (h_blk + 1) * chunks_per_gate_up * 20
-                tile_gate = w_gate_slice[row_start:row_end, col_start_bytes:col_end_bytes]
-                core_bytes.append(tile_gate.tobytes())
-                
-                # 2. Up tile
-                tile_up = w_up_slice[row_start:row_end, col_start_bytes:col_end_bytes]
-                core_bytes.append(tile_up.tobytes())
-                
-            # 3. Down tiles
-            col_start_bytes = b_I * (m_I // 32) * 20
-            col_end_bytes = (b_I + 1) * (m_I // 32) * 20
-            for h_blk_down in range(H // m_H):
-                row_start_down = h_blk_down * m_H
-                row_end_down = (h_blk_down + 1) * m_H
-                tile = w_down_slice[row_start_down:row_end_down, col_start_bytes:col_end_bytes]
-                core_bytes.append(tile.tobytes())
-                
+
+        # Two H-output passes (matches N_PASSES in the kernel). gate/up are
+        # streamed once per pass; the down tiles are split by H-output half.
+        n_passes = 2
+        down_tiles_per_pass = (H // m_H) // n_passes
+        for p in range(n_passes):
+            for b_I in range(num_blocks_I):
+                row_start = b_I * m_I
+                row_end = (b_I + 1) * m_I
+
+                # Interleave Gate and Up tiles to match of_w.acquire(2) in core loop
+                for h_blk in range(H // k_tile):
+                    # 1. Gate tile
+                    col_start_bytes = h_blk * chunks_per_gate_up * 20
+                    col_end_bytes = (h_blk + 1) * chunks_per_gate_up * 20
+                    tile_gate = w_gate_slice[row_start:row_end, col_start_bytes:col_end_bytes]
+                    core_bytes.append(tile_gate.tobytes())
+
+                    # 2. Up tile
+                    tile_up = w_up_slice[row_start:row_end, col_start_bytes:col_end_bytes]
+                    core_bytes.append(tile_up.tobytes())
+
+                # 3. Down tiles for this pass's H-output half
+                col_start_bytes = b_I * (m_I // 32) * 20
+                col_end_bytes = (b_I + 1) * (m_I // 32) * 20
+                for h_blk_down in range(p * down_tiles_per_pass, (p + 1) * down_tiles_per_pass):
+                    row_start_down = h_blk_down * m_H
+                    row_end_down = (h_blk_down + 1) * m_H
+                    tile = w_down_slice[row_start_down:row_end_down, col_start_bytes:col_end_bytes]
+                    core_bytes.append(tile.tobytes())
+
         core_buf = np.frombuffer(b"".join(core_bytes), dtype=np.uint8)
         core_buffers.append(core_buf)
         
     return np.stack(core_buffers)
+
+def _resolve_full_device(opts):
+    """Resolve ``--dev`` to the max-column variant for its family.
+
+    ``aie.iron.device.from_name()`` defaults to ``n_cols=1`` (the
+    single-column variant) when called with just a family name — which is
+    exactly what ``run_design_cli``'s internal dispatch does when no
+    ``device=`` override is supplied. That silently caps this design to a
+    single column's worth of CoreTiles even when the attached NPU exposes
+    the full 8-column part, and placement then fails with "no available
+    compute tiles for placement" for this 8-core design. Force the
+    unrestricted device explicitly so placement always sees every physical
+    tile.
+    """
+    from aie.iron.device import from_name
+
+    return from_name(opts.dev, n_cols=None)
 
 def _make_argparser():
     p = argparse.ArgumentParser(prog="AIE Fused FFN")
@@ -451,6 +485,7 @@ def main():
         opts,
         compile_kwargs=compile_kwargs,
         run_and_verify=_run_and_verify,
+        device=_resolve_full_device,
     )
 
 if __name__ == "__main__":

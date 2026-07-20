@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <memory>
 #include "alveare/config.h"
 #include "alveare/weights.h"
 #include "alveare/npu.h"
@@ -34,9 +35,21 @@ int main(int argc, char** argv) {
         ModelWeights mw = load_weights(model_dir, config, reg);
         
         Model model(config, mw, reg);
-        StubTokenizer tokenizer;
-        Generator generator(model, mw, tokenizer);
-        
+
+        std::unique_ptr<Tokenizer> tokenizer;
+        std::string tok_path = model_dir + "/tokenizer.json";
+        try {
+            tokenizer = std::make_unique<GemmaTokenizer>(tok_path);
+            std::cout << "Loaded tokenizer from " << tok_path << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: no usable tokenizer (" << e.what()
+                      << "), falling back to byte StubTokenizer.\n";
+            tokenizer = std::make_unique<StubTokenizer>();
+        }
+
+        Generator generator(model, mw, *tokenizer);
+        std::cout << "Model ready.\n";
+
         ApiServer server(generator);
         server.start(port);
         

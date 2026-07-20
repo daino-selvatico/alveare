@@ -152,6 +152,23 @@ def gemv_q_npu(
 
     return Program(iron.get_current_device(), rt).resolve_program()
 
+def _resolve_full_device(opts):
+    """Resolve ``--dev`` to the max-column variant for its family.
+
+    ``aie.iron.device.from_name()`` defaults to ``n_cols=1`` (the
+    single-column variant) when called with just a family name — which is
+    exactly what ``run_design_cli``'s internal dispatch does when no
+    ``device=`` override is supplied. That silently caps this design to a
+    single column's worth of CoreTiles even when the attached NPU exposes
+    the full 8-column part, and placement then fails with "no available
+    compute tiles for placement" for any design (like this one) that needs
+    more cores than fit in one column. Force the unrestricted device
+    explicitly so placement always sees every physical tile.
+    """
+    from aie.iron.device import from_name
+
+    return from_name(opts.dev, n_cols=None)
+
 def _make_argparser():
     p = argparse.ArgumentParser(prog="AIE Quantized GEMV")
     add_compile_args(p, default_dev="npu2")
@@ -229,6 +246,7 @@ def main():
         opts,
         compile_kwargs=_compile_kwargs,
         run_and_verify=_run_and_verify,
+        device=_resolve_full_device,
     )
 
 if __name__ == "__main__":
