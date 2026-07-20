@@ -78,6 +78,12 @@ public:
     void run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
                   void* y_bf16);
 
+    // Batched matmul Y[B,N] = X[B,K] @ W^T, for prefill. w is a gemv weight of
+    // the same (N, K) (the Q4_0 packing is shared); this runs the gemm kernel of
+    // shape (B, N, K). x_bf16 points at B*K bf16 values, y_bf16 receives B*N.
+    void run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf16,
+                  void* y_bf16);
+
     void run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
                        const void* x_bf16, void* y_bf16);
 

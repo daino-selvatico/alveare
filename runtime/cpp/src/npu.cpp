@@ -286,6 +286,29 @@ void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
     std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(N) * sizeof(uint16_t));
 }
 
+void NpuRegistry::run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf16,
+                           void* y_bf16) {
+    prof::ScopedTimer _prof_timer(nullptr);
+    if (w >= impl_->weights.size())
+        throw std::runtime_error("npu: invalid weight handle");
+    const ResidentWeight& rw = impl_->weights[w];
+    if (rw.N != N || rw.K != K)
+        throw std::runtime_error("npu: weight/shape mismatch in run_gemm: expected (" +
+            std::to_string(rw.N) + ", " + std::to_string(rw.K) + "), got (" +
+            std::to_string(N) + ", " + std::to_string(K) + ")");
+
+    LoadedKernel& lk = impl_->ensure_loaded("gemm", N, K, B);
+
+    std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(B) * K * sizeof(uint16_t));
+    lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bo);
+    run.wait();
+
+    lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+}
+
 void NpuRegistry::run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
                                 const void* x_bf16, void* y_bf16) {
     prof::ScopedTimer _prof_timer(&prof::ffn_seconds);
