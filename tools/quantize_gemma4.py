@@ -98,6 +98,11 @@ def main(gguf_path=DEFAULT_GGUF, out_dir=DEFAULT_OUT):
     with open(out_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
     print(f"Saved config.json: {config}")
+
+    # Emit tokenizer.json (from the GGUF's embedded tokenizer) for the native
+    # C++ runtime — keeps the pipeline fully offline, no HF download needed.
+    from tools.convert.gguf_tokenizer import write_tokenizer_json
+    write_tokenizer_json(reader, out_dir)
     
     # Iterate through tensors and process them
     for tensor in reader.tensors:
