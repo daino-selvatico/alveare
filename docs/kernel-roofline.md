@@ -65,9 +65,33 @@ in-lane, reducing once at the end. This lifts the ~5 GMAC/s ceiling for the
 decode path (gemv + fused FFN), which is the dominant real-world cost
 (2.6 s/token). Bigger rewrite; needs care with the Q4_0 layout and revalidation.
 
-## Method
+## Experiments run (2026-07-21) — both null
 
-Prototype A first (contained, and it validates that the Q4_0 dequant is the
-bottleneck), measure with `alveare bench`, then tackle B. Every change is
-guarded by the bench trend table (`benchmarks/README.md`) and by output parity
-(the `ALVEARE_SELFTEST` greeting must stay coherent and greedy-identical).
+Both micro-optimizations were implemented, compiled (16384×4096 shape) and
+measured. **Neither changed the timing**, while output stayed bit-exact
+(`GEMM-vs-GEMV correctness: row0_maxdiff=0 row15_maxdiff=0`):
+
+- **A — hoist dequant out of gemm_q's batch loop**: `gemm(16)` = 205.1 ms
+  (was 205.3 ms). No change → the `-O3` AIE compiler already hoists the
+  loop-invariant dequant; it was never redundant work in the emitted code.
+- **B(partial) — one `reduce_add` per row instead of per K-block in gemv_q**:
+  `gemv` = 13.12 ms (was 13.08 ms). No change.
+
+So the ~5 GMAC/s ceiling is **not** a source-level compute inefficiency the
+compiler hasn't already handled. Reading the numbers instead:
+
+- **`gemv` is DMA-bound.** It reads 33.5 MB of Q4_0 weights in 13 ms =
+  **2.58 GB/s** — far below the fabric's capability, but that is the ceiling the
+  kernel hits, which is why touching the `.cc` compute does nothing. The lever
+  is the **dataflow** (ObjectFifo depths, DMA channels, weight tile layout /
+  burst) in `gemv_q.py` and `ffn_fused.py`, not the compute `.cc`.
+- **`gemm` is compute-bound** at 5 GMAC/s on the element-wise `aie::mul`/`mac`
+  formulation. The high-throughput path is the systolic matmul intrinsic
+  (`aie::mmul`); moving Q4_0 dequant → `mmul` operands is a **full kernel
+  rewrite**.
+
+Both remaining levers are substantial (dataflow tuning; or an `mmul` rewrite),
+with uncertain payoff and slow (~compile + 4-min load) iteration — a kernel
+research project, not a quick win. Every change must stay guarded by the bench
+trend table (`benchmarks/README.md`) and output parity (the `ALVEARE_SELFTEST`
+greeting must stay coherent and greedy-identical).
