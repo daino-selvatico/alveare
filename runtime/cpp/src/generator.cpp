@@ -1,5 +1,6 @@
 #include "alveare/generator.h"
 #include <cmath>
+#include <cstdlib>
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
@@ -161,7 +162,13 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     int prefill_count = num_prompt_tokens - 1;
     tag() << "Starting prefill of " << num_prompt_tokens << " tokens...\n" << std::flush;
     auto t0_prefill = clock::now();
-    if (cfg.model_type == "gemma4") {
+    // Batched (B=16 GEMM) prefill is CORRECT but not faster than the per-token
+    // fused path on this runtime: the NPU is already compute-bound per token
+    // (no interpreter overhead to amortize), and batching trades the efficient
+    // fused FFN kernel for separate streamed gate/up/down GEMMs. Kept behind a
+    // flag for experimentation; default is the per-token path.
+    bool use_batched = (cfg.model_type == "gemma4") && std::getenv("ALVEARE_BATCH_PREFILL");
+    if (use_batched) {
         const int PB = 16;
         std::vector<bf16> xb, ob;
         for (int start = 0; start < prefill_count; start += PB) {
