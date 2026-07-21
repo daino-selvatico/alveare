@@ -143,22 +143,51 @@ int main(int argc, char** argv) {
         // single foreground process (no server/curl). ALVEARE_SELFTEST may hold
         // the user message; defaults to a short greeting.
         if (const char* st = std::getenv("ALVEARE_SELFTEST")) {
-            std::string user_msg = (st[0] != '\0') ? st : "Ciao! Come stai? Raccontami una breve storia.";
-            std::string prompt;
+            std::string u1 = (st[0] != '\0') ? st : "Ciao! Come stai?";
             bool is_gemma = (config.model_type == "gemma3" || config.model_type == "gemma4");
-            if (is_gemma) {
-                prompt = "<bos><|turn>user\n" + user_msg + "<turn|>\n"
-                         "<|turn>model\n<|channel>thought\n<channel|>";
-            } else {
-                prompt = user_msg;
-            }
             GenerationParams gp;
-            gp.max_tokens = 32;
-            std::cout << "\n=== SELFTEST prompt: " << user_msg << " ===\nOUTPUT: " << std::flush;
-            generator.generate(prompt, gp, [](const std::string& tok) {
-                std::cout << tok << std::flush;
-                return true;
-            });
+            gp.max_tokens = 16;
+            auto run = [&](const std::string& prompt, std::string* capture) {
+                std::cout << std::flush;
+                generator.generate(prompt, gp, [&](const std::string& tok) {
+                    if (capture) *capture += tok;
+                    std::cout << tok << std::flush;
+                    return true;
+                });
+            };
+
+            if (!is_gemma) {
+                std::cout << "\n=== SELFTEST: " << u1 << " ===\nOUTPUT: " << std::flush;
+                run(u1, nullptr);
+                std::cout << "\n=== SELFTEST done ===\n" << std::flush;
+                return 0;
+            }
+
+            // Turn 1.
+            std::string p1 = "<bos><|turn>user\n" + u1 + "<turn|>\n"
+                             "<|turn>model\n<|channel>thought\n<channel|>";
+            std::string resp1;
+            std::cout << "\n=== TURN 1: " << u1 << " ===\nOUTPUT: " << std::flush;
+            run(p1, &resp1);
+
+            // Rerun the identical prompt: KV reuse must skip the whole prefill and
+            // reproduce resp1 exactly (correctness oracle for the cache reuse).
+            std::string resp1b;
+            std::cout << "\n=== RERUN (identical, expect full KV reuse) ===\nOUTPUT: " << std::flush;
+            run(p1, &resp1b);
+            std::cout << "\n[rerun matches turn 1: " << (resp1b == resp1 ? "YES" : "NO") << "]\n" << std::flush;
+
+            // Turn 2: real multi-turn follow-up. Replay the assistant turn WITH
+            // the generation-prompt suffix (<|channel>thought<channel|>) so the
+            // history tokens match what is already in the KV cache and the whole
+            // conversation prefix (through response 1) is reused.
+            std::string u2 = "E qual e' la capitale d'Italia?";
+            std::string p2 = "<bos><|turn>user\n" + u1 + "<turn|>\n"
+                             "<|turn>model\n<|channel>thought\n<channel|>" + resp1 + "<turn|>\n"
+                             "<|turn>user\n" + u2 + "<turn|>\n"
+                             "<|turn>model\n<|channel>thought\n<channel|>";
+            std::cout << "\n=== TURN 2: " << u2 << " ===\nOUTPUT: " << std::flush;
+            run(p2, nullptr);
             std::cout << "\n=== SELFTEST done ===\n" << std::flush;
             return 0;
         }

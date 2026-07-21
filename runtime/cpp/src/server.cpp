@@ -36,7 +36,13 @@ void ApiServer::start(int port) {
                         if (!msg.contains("content") || !msg["content"].is_string()) continue;
                         std::string role = msg.value("role", "user");
                         if (role == "assistant") role = "model";
-                        prompt += "<|turn>" + role + "\n" + msg["content"].get<std::string>() + "<turn|>\n";
+                        prompt += "<|turn>" + role + "\n";
+                        // Replay a completed assistant turn WITH the same
+                        // generation-prompt suffix the model saw when producing it,
+                        // so its tokens match what is already in the KV cache and the
+                        // whole conversation prefix is reused (no re-prefill).
+                        if (role == "model") prompt += "<|channel>thought\n<channel|>";
+                        prompt += msg["content"].get<std::string>() + "<turn|>\n";
                     }
                     prompt += "<|turn>model\n<|channel>thought\n<channel|>";
                 } else {
