@@ -3,6 +3,7 @@
 #include "alveare/tokenizer.h"
 #include <string>
 #include <functional>
+#include <mutex>
 #include <vector>
 
 namespace alveare {
@@ -28,6 +29,17 @@ private:
     Model& model_;
     const ModelWeights& weights_;
     const Tokenizer& tokenizer_;
+
+    // Token sequence currently represented in the model's KV cache (prompt +
+    // fed-back generated tokens of the previous request). The next request
+    // reuses the longest common prefix instead of re-prefilling it, so
+    // multi-turn chat does not re-prefill the whole conversation each turn.
+    std::vector<int> cached_tokens_;
+
+    // generate() mutates the single shared KV cache + cached_tokens_, so it is
+    // not reentrant; serialize concurrent server requests (the NPU runs one
+    // forward at a time anyway).
+    std::mutex gen_mutex_;
 
     int sample(const std::vector<float>& logits, const GenerationParams& params);
     void run_lm_head(const bf16* x, std::vector<float>& logits);

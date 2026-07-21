@@ -5,6 +5,16 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Added
+- **KV-cache reuse across requests** — the decode loop no longer resets the KV
+  cache every request. Instead it reuses the longest common prefix between the
+  new prompt and the previously cached token sequence and prefills only the new
+  tokens. An identical re-send (regeneration / retry) skips prefill entirely
+  (measured 40s → 0.00s), and a long system prompt / shared history is reused
+  every turn. Output is bit-identical (validated: a rerun reproduces the prior
+  response exactly). `generate()` is now serialized with a mutex, since it
+  mutates the single shared cache.
+
 ## [1.1.0] — 2026-07-21
 
 ### Added
