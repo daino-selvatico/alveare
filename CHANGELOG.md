@@ -5,6 +5,8 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-07-21
+
 ### Added
 - **KV-cache reuse across requests** — the decode loop no longer resets the KV
   cache every request. It reuses the longest common prefix between the new prompt
@@ -19,6 +21,11 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
   only the newest user turn is prefilled. End-to-end over the HTTP server: turn 2
   reused 33/58 tokens (all of turn 1 incl. its reply), prefilling only the 24 new
   ones; an identical re-send skips prefill entirely (40s → 0.00s).
+
+### Docs
+- `docs/kernel-roofline.md`: documented the core-count ceiling — npu2 has 32
+  compute tiles but the kernels use only 8 (one/column); using more fails shim-DMA
+  placement, and the fix is a per-column memtile split/join dataflow (future work).
 
 ## [1.1.0] — 2026-07-21
 
