@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <algorithm>
+#include <chrono>
 #include "alveare/config.h"
 #include "alveare/bf16.h"
 #include "alveare/weights.h"
@@ -41,27 +42,73 @@ int main(int argc, char** argv) {
         
         Model model(config, mw, reg);
 
-        // Validation hook: check run_gemm (batched) against run_gemv on a resident
-        // weight. Confirms the gemv weight BO is usable by the gemm kernel.
+        // Benchmark hook: is a gemm(B=16) bandwidth-bound (~= one gemv, so
+        // batching wins) or compute-bound (~= 16 gemv, so batching is futile)?
+        // Times the big FFN gate shape (16384x4096) with a RESIDENT weight, plus
+        // the streamed variant to isolate the host->device upload cost.
         if (std::getenv("ALVEARE_TEST_GEMM")) {
-            const int N = 4096, K = 4096, B = 16;  // layer 0 attn_q (sliding)
-            std::vector<bf16> x(K, bf16(0.02f));
-            std::vector<bf16> y_gemv(N);
-            reg.run_gemv(N, K, mw.layers[0].w_q, x.data(), y_gemv.data());
-            std::vector<bf16> xb(static_cast<size_t>(B) * K);
-            for (int b = 0; b < B; ++b)
-                for (int i = 0; i < K; ++i) xb[static_cast<size_t>(b) * K + i] = x[i];
+            using clk = std::chrono::steady_clock;
+            const int N = 16384, K = 4096, B = 16;  // FFN gate
+            auto& gate = mw.layers[0].ffn_gate_bytes;
+            WeightHandle wg = reg.create_gemv_weight(N, K, gate.data(), gate.size());
+            std::vector<bf16> x(K, bf16(0.02f)), y_gemv(N);
+            std::vector<bf16> xb(static_cast<size_t>(B) * K, bf16(0.02f));
             std::vector<bf16> yb(static_cast<size_t>(B) * N);
-            reg.run_gemm(B, N, K, mw.layers[0].w_q, xb.data(), yb.data());
-            float d0 = 0.0f, d15 = 0.0f, mag = 0.0f;
-            for (int i = 0; i < N; ++i) {
-                float g = y_gemv[i].to_float();
-                mag = std::max(mag, std::fabs(g));
-                d0 = std::max(d0, std::fabs(yb[i].to_float() - g));
-                d15 = std::max(d15, std::fabs(yb[static_cast<size_t>(15) * N + i].to_float() - g));
-            }
-            std::cout << "GEMM-vs-GEMV: signal_max=" << mag
-                      << " row0_maxdiff=" << d0 << " row15_maxdiff=" << d15 << "\n" << std::flush;
+            auto ms = [](clk::time_point a, clk::time_point b, int n) {
+                return std::chrono::duration<double, std::milli>(b - a).count() / n;
+            };
+            const int IT = 20;
+            reg.run_gemv(N, K, wg, x.data(), y_gemv.data());        // warmup
+            auto t0 = clk::now();
+            for (int i = 0; i < IT; ++i) reg.run_gemv(N, K, wg, x.data(), y_gemv.data());
+            double gemv_ms = ms(t0, clk::now(), IT);
+
+            reg.run_gemm(B, N, K, wg, xb.data(), yb.data());        // warmup
+            t0 = clk::now();
+            for (int i = 0; i < IT; ++i) reg.run_gemm(B, N, K, wg, xb.data(), yb.data());
+            double gemm_ms = ms(t0, clk::now(), IT);
+
+            reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
+            t0 = clk::now();
+            for (int i = 0; i < IT; ++i)
+                reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
+            double gemm_str_ms = ms(t0, clk::now(), IT);
+
+            // Fused FFN (whole gate+up+gelu+down) in isolation, vs the isolated
+            // gemvs it replaces. If fused >> ~3x gemv, decode should switch to
+            // separate gemvs.
+            const int H = 4096, I = 16384;
+            std::vector<bf16> xh(H, bf16(0.02f)), yh(H);
+            reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, xh.data(), yh.data());
+            t0 = clk::now();
+            for (int i = 0; i < IT; ++i)
+                reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, xh.data(), yh.data());
+            double fused_ms = ms(t0, clk::now(), IT);
+
+            // up gemv (same 16384x4096 shape as gate) for the separate estimate.
+            auto& up = mw.layers[0].ffn_up_bytes;
+            WeightHandle wu = reg.create_gemv_weight(N, K, up.data(), up.size());
+            reg.run_gemv(N, K, wu, x.data(), y_gemv.data());
+            t0 = clk::now();
+            for (int i = 0; i < IT; ++i) reg.run_gemv(N, K, wu, x.data(), y_gemv.data());
+            double up_ms = ms(t0, clk::now(), IT);
+
+            std::cout << "\nFFN gate 16384x4096 timing (avg over " << IT << "):\n"
+                      << "  gemv(1 tok)         = " << gemv_ms << " ms\n"
+                      << "  gemm(16) resident   = " << gemm_ms << " ms  (per-tok "
+                      << gemm_ms / B << " ms)\n"
+                      << "  gemm(16) streamed   = " << gemm_str_ms << " ms  (per-tok "
+                      << gemm_str_ms / B << " ms)\n"
+                      << "  => batch speedup vs gemv (resident): "
+                      << (gemv_ms * B) / gemm_ms << "x\n\n"
+                      << "Decode FFN, fused vs separate (per token):\n"
+                      << "  fused (gate+up+gelu+down) = " << fused_ms << " ms\n"
+                      << "  gate gemv                 = " << gemv_ms << " ms\n"
+                      << "  up gemv                   = " << up_ms << " ms\n"
+                      << "  (down gemv ~ gate; +CPU gelu) est separate ~ "
+                      << (gemv_ms + up_ms + gemv_ms) << " ms\n"
+                      << "  => fused / separate est   = "
+                      << fused_ms / (gemv_ms + up_ms + gemv_ms) << "x\n" << std::flush;
             return 0;
         }
 
