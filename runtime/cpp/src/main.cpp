@@ -68,6 +68,18 @@ int main(int argc, char** argv) {
             for (int i = 0; i < IT; ++i) reg.run_gemm(B, N, K, wg, xb.data(), yb.data());
             double gemm_ms = ms(t0, clk::now(), IT);
 
+            // Correctness: xb rows all equal x, so every gemm output row must
+            // match the gemv output.
+            float d0 = 0.0f, d15 = 0.0f, mag = 0.0f;
+            for (int i = 0; i < N; ++i) {
+                float g = y_gemv[i].to_float();
+                mag = std::max(mag, std::fabs(g));
+                d0 = std::max(d0, std::fabs(yb[i].to_float() - g));
+                d15 = std::max(d15, std::fabs(yb[size_t(15) * N + i].to_float() - g));
+            }
+            std::cout << "GEMM-vs-GEMV correctness: signal_max=" << mag
+                      << " row0_maxdiff=" << d0 << " row15_maxdiff=" << d15 << "\n" << std::flush;
+
             reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
             t0 = clk::now();
             for (int i = 0; i < IT; ++i)
