@@ -20,13 +20,19 @@
 #define DIM_HOUT DIM_H
 #endif
 
+#ifndef DIM_IC
+#define DIM_IC 2048
+#endif
+
 // All running accumulators are fp32 so the down projection (summing hundreds of
 // intermediate blocks) and gate/up (H//k_tile chunks feeding the nonlinear GELU)
-// don't lose ~13% to bf16 rounding. `act` is a matmul operand, stays bf16.
+// don't lose ~13% to bf16 rounding. DIM_IC = this core's intermediate slice
+// (I/n_cores): gate/up/GELU are computed once and the whole activation vector is
+// stored in act_all, so the N-pass down loop reuses it instead of recomputing.
 alignas(64) float y_accum[DIM_HOUT];
 alignas(64) float gate_accum[DIM_M];
 alignas(64) float up_accum[DIM_M];
-alignas(64) bfloat16 act[DIM_M];
+alignas(64) bfloat16 act_all[DIM_IC];
 
 extern "C" {
 

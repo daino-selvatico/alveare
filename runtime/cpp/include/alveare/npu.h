@@ -78,6 +78,19 @@ public:
     void run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
                   void* y_bf16);
 
+    // Batched matmul Y[B,N] = X[B,K] @ W^T, for prefill. w is a gemv weight of
+    // the same (N, K) (the Q4_0 packing is shared); this runs the gemm kernel of
+    // shape (B, N, K). x_bf16 points at B*K bf16 values, y_bf16 receives B*N.
+    void run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf16,
+                  void* y_bf16);
+
+    // Batched matmul like run_gemm, but the (N, K) Q4_0 weight is streamed from
+    // host `packed` (nbytes) into a reused scratch device BO instead of coming
+    // from a resident handle. For prefill of weights we keep host-resident (the
+    // FFN gate/up/down, which stay device-resident only in fused form for decode).
+    void run_gemm_streamed(int B, int N, int K, const void* packed, size_t nbytes,
+                           const void* x_bf16, void* y_bf16);
+
     void run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
                        const void* x_bf16, void* y_bf16);
 
@@ -88,6 +101,13 @@ public:
 
     // Number of hardware contexts currently loaded (for tests / diagnostics).
     int loaded_contexts() const;
+
+    // Profiling: cumulative wall time (seconds) and count of NPU kernel launches
+    // (run_gemv + run_ffn_fused). reset_profile() zeroes them.
+    double npu_seconds() const;
+    double ffn_seconds() const;
+    long npu_calls() const;
+    void reset_profile();
 
 private:
     struct Impl;

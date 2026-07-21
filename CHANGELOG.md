@@ -5,11 +5,38 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-07-21
+
 ### Added
 - `quantize` now emits a `tokenizer.json` for **Gemma** models, reconstructed from
   the GGUF's embedded tokenizer (`tools/convert/gguf_tokenizer.py`) — fully offline,
   bit-exact vs the upstream HuggingFace tokenizer. The native C++ runtime works
   out-of-the-box with no manual tokenizer copy.
+- **NPU benchmark suite** (`alveare bench` → `tests/bench/run_bench.py`): times every
+  distinct kernel shape (ms + GMAC/s) and an end-to-end prefill/decode, then writes a
+  timestamped Markdown report under `benchmarks/` and prepends a row to the trend
+  table (`benchmarks/README.md`) so perf changes and regressions are tracked.
+- Batched GEMM prefill infrastructure — `NpuRegistry::run_gemm` / `run_gemm_streamed`
+  and `Model::run_layer_batch`, gated behind `ALVEARE_BATCH_PREFILL` — plus the
+  `ALVEARE_SELFTEST` in-process generation hook (fixed prompt → stdout, no server).
+- `docs/kernel-roofline.md` — analysis of the ~5 GMAC/s kernel ceiling.
+
+### Changed
+- **Fused FFN: ~27% faster decode.** The kernel now computes gate/up/GELU once and
+  stores the whole activation vector (`act_all`), then runs the down projection in
+  N=4 H-output passes reusing it — instead of recomputing gate/up per pass. FFN
+  drops from ~2610 → ~1660 ms/token; decode ~3.6 → ~2.6 s/token, prefill ~28%
+  faster too. Output unchanged (verify PASSES, greedy tokens identical).
+- Added lightweight NPU profiling (`NpuRegistry::npu_seconds/ffn_seconds/npu_calls`)
+  and a per-token decode breakdown in the server log (ffn / gemv / lm_head / cpu).
+
+### Notes
+- Batched prefill is correct but **not faster** than the per-token fused path (the
+  NPU is compute-bound, so a `gemm(B=16)` costs the same as 16 `gemv`); the default
+  stays per-token. Two kernel micro-optimizations (hoisting the Q4_0 dequant, and one
+  `reduce_add` per row instead of per K-block) were measured to give **no** speedup —
+  `gemv` is DMA/dataflow-bound and `gemm` compute-bound on the element-wise mul/mac
+  path. See `docs/kernel-roofline.md`.
 
 ## [1.0.0] — 2026-07-20
 

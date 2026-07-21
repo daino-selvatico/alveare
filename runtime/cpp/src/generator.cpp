@@ -1,5 +1,6 @@
 #include "alveare/generator.h"
 #include <cmath>
+#include <cstdlib>
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
@@ -123,6 +124,8 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     std::vector<bf16> out(hidden_size);
     std::vector<float> logits;
 
+    double lm_head_ms = 0.0;  // profiling: last forward's LM-head wall time
+
     // Run one token through the embedding + all transformer layers. When
     // want_logits is set, also apply the final norm and LM head into `logits`.
     auto forward = [&](int token, int pos, bool want_logits) {
@@ -148,14 +151,47 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
             float w = weights_.output_norm.empty() ? 1.0f : weights_.output_norm[i];
             normed[i] = bf16(x[i].to_float() * inv_denom * w);
         }
+        auto t_lm = clock::now();
         run_lm_head(normed.data(), logits);
+        lm_head_ms = std::chrono::duration<double, std::milli>(clock::now() - t_lm).count();
     };
 
     // 1. Prefill: process every prompt token except the last (no logits needed).
+    // gemma4 uses the batched GEMM path (B=16 chunks); other models fall back to
+    // the per-token decode path.
+    int prefill_count = num_prompt_tokens - 1;
     tag() << "Starting prefill of " << num_prompt_tokens << " tokens...\n" << std::flush;
     auto t0_prefill = clock::now();
-    for (int pos = 0; pos < num_prompt_tokens - 1; ++pos) {
-        forward(input_tokens[pos], pos, false);
+    // Batched (B=16 GEMM) prefill is CORRECT but not faster than the per-token
+    // fused path on this runtime: the NPU is already compute-bound per token
+    // (no interpreter overhead to amortize), and batching trades the efficient
+    // fused FFN kernel for separate streamed gate/up/down GEMMs. Kept behind a
+    // flag for experimentation; default is the per-token path.
+    bool use_batched = (cfg.model_type == "gemma4") && std::getenv("ALVEARE_BATCH_PREFILL");
+    if (use_batched) {
+        const int PB = 16;
+        std::vector<bf16> xb, ob;
+        for (int start = 0; start < prefill_count; start += PB) {
+            int nrows = std::min(PB, prefill_count - start);
+            xb.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
+            ob.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
+            for (int b = 0; b < nrows; ++b) {
+                int token = input_tokens[start + b];
+                for (int i = 0; i < hidden_size; ++i)
+                    xb[static_cast<size_t>(b) * hidden_size + i] =
+                        bf16(weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale);
+            }
+            for (int l = 0; l < cfg.num_hidden_layers; ++l) {
+                model_.run_layer_batch(xb.data(), nrows, start, l, ob.data());
+                std::swap(xb, ob);
+            }
+            tag() << "  prefill chunk " << (start / PB + 1) << " ["
+                  << start << ".." << (start + nrows - 1) << "] done\n" << std::flush;
+        }
+    } else {
+        for (int pos = 0; pos < prefill_count; ++pos) {
+            forward(input_tokens[pos], pos, false);
+        }
     }
     double prefill_s = std::chrono::duration<double>(clock::now() - t0_prefill).count();
     tag() << "Prefill completed in " << std::fixed << std::setprecision(2) << prefill_s << "s\n" << std::flush;
@@ -164,13 +200,23 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     int current_token = input_tokens.back();
     int pos = num_prompt_tokens - 1;
     for (int i = 0; i < params.max_tokens; ++i) {
+        double npu_s0 = model_.registry().npu_seconds();
+        double ffn_s0 = model_.registry().ffn_seconds();
+        long npu_c0 = model_.registry().npu_calls();
         auto t0_step = clock::now();
         forward(current_token, pos, true);
         int next_token = sample(logits, params);
         double step_ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
+        double npu_ms = (model_.registry().npu_seconds() - npu_s0) * 1000.0;
+        double ffn_ms = (model_.registry().ffn_seconds() - ffn_s0) * 1000.0;
+        long npu_calls = model_.registry().npu_calls() - npu_c0;
+        double gemv_ms = npu_ms - lm_head_ms - ffn_ms;  // attention/proj GEMVs
+        double cpu_ms = step_ms - npu_ms;
         tag() << "Token " << (i + 1) << "/" << params.max_tokens
-              << " generated in " << std::fixed << std::setprecision(1) << step_ms
-              << "ms (id=" << next_token << ")\n" << std::flush;
+              << " in " << std::fixed << std::setprecision(1) << step_ms << "ms"
+              << " [ffn=" << ffn_ms << " gemv=" << gemv_ms << " lm_head=" << lm_head_ms
+              << " cpu=" << cpu_ms << " | " << npu_calls << " launches]"
+              << " (id=" << next_token << ")\n" << std::flush;
 
         if (tokenizer_.is_stop_token(next_token)) break;
         if (!on_token(tokenizer_.decode(next_token))) break;
