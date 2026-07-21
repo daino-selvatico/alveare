@@ -115,6 +115,27 @@ that is ~2 DMA/column (fits); beyond 8 the per-column shim NOC tile runs out of
 DMA channels. So the ceiling is the **output/weight gathering topology**, not the
 tiles.
 
+### Update (2026-07-21): GEMV done at 16 cores; FFN blocked at the DMA layer
+
+Implemented the per-column memtile funnel for **gemv** (`gemv_q.py`): N split
+across **16 cores** (2 rows × 8 cols), with the 2 rows' output tiles interleaved
+so each round is a contiguous `(2, tile)` DRAM block funneled through the column
+memtile (`ObjectFifo.split`/`join`, `x` `forward`-broadcast). Validated bit-exact
+on the full model:
+- gemv 16384×4096: 13.6 → 7.0 ms (~1.9×); lm_head 213 → 110 ms (2×); decode
+  ~2580 → ~2360 ms (~8.5% — the attention GEMVs are small and parallelize less).
+- **32 cores (4 rows) place but fail routing** ("Unable to find a legal
+  routing"); 16 (2 rows) is the sweet spot.
+
+The **fused FFN (64% of decode) is the real prize but blocked**: the same 16-core
+memtile rewrite compiles the tiles but the long fused weight stream (~1536 tiles/
+core) exhausts the memtile DMA descriptors — "Allocator exhausted available BD IDs
+(max 24/channel)", then BD size-range errors. Making the per-column weight fill
+contiguous (an **interleaved repack** so a column's 2 cores' tiles alternate in
+DRAM, avoiding the 2-row stride) would cut the BD count — but that is a
+coordinated change to `pack_ffn_fused_weights` (weights.cpp), the manifest
+`n_cores` (→16, read by `run_ffn_fused`), and a rebuild. Substantial, deferred.
+
 **The fix (scoped future work):** adopt the 3-layer ObjectFifo dataflow from
 `mlir-aie/programming_examples/basic/matrix_multiplication/whole_array` — DRAM
 (L3) → **memtile (L2)** → compute (L1). Per column, one memtile `.split()`s the
