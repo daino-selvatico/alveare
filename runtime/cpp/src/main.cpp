@@ -177,10 +177,13 @@ int main(int argc, char** argv) {
             run(p1, &resp1b);
             std::cout << "\n[rerun matches turn 1: " << (resp1b == resp1 ? "YES" : "NO") << "]\n" << std::flush;
 
-            // Turn 2: real multi-turn follow-up (partial KV reuse of the history).
+            // Turn 2: real multi-turn follow-up. Replay the assistant turn WITH
+            // the generation-prompt suffix (<|channel>thought<channel|>) so the
+            // history tokens match what is already in the KV cache and the whole
+            // conversation prefix (through response 1) is reused.
             std::string u2 = "E qual e' la capitale d'Italia?";
             std::string p2 = "<bos><|turn>user\n" + u1 + "<turn|>\n"
-                             "<|turn>model\n" + resp1 + "<turn|>\n"
+                             "<|turn>model\n<|channel>thought\n<channel|>" + resp1 + "<turn|>\n"
                              "<|turn>user\n" + u2 + "<turn|>\n"
                              "<|turn>model\n<|channel>thought\n<channel|>";
             std::cout << "\n=== TURN 2: " << u2 << " ===\nOUTPUT: " << std::flush;
