@@ -79,6 +79,31 @@ int main(int argc, char** argv) {
         Generator generator(model, mw, *tokenizer);
         std::cout << "Model ready.\n";
 
+        // In-process self-test: run generate() on a fixed prompt and print the
+        // decoded text, then exit. Lets us validate the batched prefill in a
+        // single foreground process (no server/curl). ALVEARE_SELFTEST may hold
+        // the user message; defaults to a short greeting.
+        if (const char* st = std::getenv("ALVEARE_SELFTEST")) {
+            std::string user_msg = (st[0] != '\0') ? st : "Ciao! Come stai? Raccontami una breve storia.";
+            std::string prompt;
+            bool is_gemma = (config.model_type == "gemma3" || config.model_type == "gemma4");
+            if (is_gemma) {
+                prompt = "<bos><|turn>user\n" + user_msg + "<turn|>\n"
+                         "<|turn>model\n<|channel>thought\n<channel|>";
+            } else {
+                prompt = user_msg;
+            }
+            GenerationParams gp;
+            gp.max_tokens = 32;
+            std::cout << "\n=== SELFTEST prompt: " << user_msg << " ===\nOUTPUT: " << std::flush;
+            generator.generate(prompt, gp, [](const std::string& tok) {
+                std::cout << tok << std::flush;
+                return true;
+            });
+            std::cout << "\n=== SELFTEST done ===\n" << std::flush;
+            return 0;
+        }
+
         ApiServer server(generator);
         server.start(port);
         

@@ -293,8 +293,16 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
 
             int k_tile = (config.hidden_size == 1152) ? 128 : 256;
             auto fused = pack_ffn_fused_weights(w_gate, w_up, w_down, H_padded, I_padded, 32, k_tile);
-            
+
             lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, fused.data(), fused.size());
+
+            // Keep the separate packed gate/up/down for the batched-prefill GEMM
+            // path (streamed to the device per call; decode uses the fused weight).
+            if (config.model_type == "gemma4") {
+                lw.ffn_gate_bytes = std::move(w_gate);
+                lw.ffn_up_bytes = std::move(w_up);
+                lw.ffn_down_bytes = std::move(w_down);
+            }
         }
 
         mw.layers.push_back(lw);

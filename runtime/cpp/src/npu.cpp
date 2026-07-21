@@ -65,6 +65,8 @@ struct LoadedKernel {
     uint32_t ninstr = 0;
     xrt::bo x_bo;   // pinned bf16 activation buffer
     xrt::bo y_bo;   // pinned bf16 output buffer
+    xrt::bo w_scratch;          // streamed (non-resident) weight, for run_gemm_streamed
+    size_t w_scratch_bytes = 0; // current allocation of w_scratch
     bool pinned = false;
     uint64_t last_used = 0;
 };
@@ -303,6 +305,32 @@ void NpuRegistry::run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf
     lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bo);
+    run.wait();
+
+    lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+}
+
+void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
+                                    size_t nbytes, const void* x_bf16, void* y_bf16) {
+    prof::ScopedTimer _prof_timer(nullptr);
+    LoadedKernel& lk = impl_->ensure_loaded("gemm", N, K, B);
+
+    // Upload the (non-resident) weight into a per-kernel scratch BO. Grown on
+    // demand and reused across calls of the same gemm shape; this is the prefill
+    // path only, so the per-chunk re-upload cost is acceptable.
+    if (lk.w_scratch_bytes < nbytes) {
+        lk.w_scratch = xrt::bo(impl_->device, nbytes, XRT_BO_FLAGS_HOST_ONLY,
+                               lk.kernel.group_id(3));
+        lk.w_scratch_bytes = nbytes;
+    }
+    std::memcpy(lk.w_scratch.map<void*>(), packed, nbytes);
+    lk.w_scratch.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(B) * K * sizeof(uint16_t));
+    lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, lk.w_scratch, lk.x_bo, lk.y_bo);
     run.wait();
 
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
