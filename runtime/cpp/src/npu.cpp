@@ -1,5 +1,6 @@
 #include "alveare/npu.h"
 
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -16,6 +17,30 @@
 #include <xrt/xrt_kernel.h>
 
 namespace alveare {
+
+// Lightweight profiling counters (single decode thread): wall time and call
+// count spent inside NPU kernel launches. Read via NpuRegistry::npu_seconds().
+namespace prof {
+double npu_seconds = 0.0;
+double ffn_seconds = 0.0;
+long npu_calls = 0;
+struct ScopedTimer {
+    double* target;
+    std::chrono::steady_clock::time_point t0{std::chrono::steady_clock::now()};
+    explicit ScopedTimer(double* t) : target(t) {}
+    ~ScopedTimer() {
+        double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        npu_seconds += dt;
+        if (target) *target += dt;
+        ++npu_calls;
+    }
+};
+}  // namespace prof
+
+double NpuRegistry::npu_seconds() const { return prof::npu_seconds; }
+double NpuRegistry::ffn_seconds() const { return prof::ffn_seconds; }
+long NpuRegistry::npu_calls() const { return prof::npu_calls; }
+void NpuRegistry::reset_profile() { prof::npu_seconds = 0.0; prof::ffn_seconds = 0.0; prof::npu_calls = 0; }
 
 namespace {
 
@@ -40,6 +65,8 @@ struct LoadedKernel {
     uint32_t ninstr = 0;
     xrt::bo x_bo;   // pinned bf16 activation buffer
     xrt::bo y_bo;   // pinned bf16 output buffer
+    xrt::bo w_scratch;          // streamed (non-resident) weight, for run_gemm_streamed
+    size_t w_scratch_bytes = 0; // current allocation of w_scratch
     bool pinned = false;
     uint64_t last_used = 0;
 };
@@ -241,6 +268,7 @@ WeightHandle NpuRegistry::create_ffn_fused_weight(int H, int I, const std::strin
 
 void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
                            void* y_bf16) {
+    prof::ScopedTimer _prof_timer(nullptr);
     if (w >= impl_->weights.size())
         throw std::runtime_error("npu: invalid weight handle");
     const ResidentWeight& rw = impl_->weights[w];
@@ -260,8 +288,58 @@ void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
     std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(N) * sizeof(uint16_t));
 }
 
+void NpuRegistry::run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf16,
+                           void* y_bf16) {
+    prof::ScopedTimer _prof_timer(nullptr);
+    if (w >= impl_->weights.size())
+        throw std::runtime_error("npu: invalid weight handle");
+    const ResidentWeight& rw = impl_->weights[w];
+    if (rw.N != N || rw.K != K)
+        throw std::runtime_error("npu: weight/shape mismatch in run_gemm: expected (" +
+            std::to_string(rw.N) + ", " + std::to_string(rw.K) + "), got (" +
+            std::to_string(N) + ", " + std::to_string(K) + ")");
+
+    LoadedKernel& lk = impl_->ensure_loaded("gemm", N, K, B);
+
+    std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(B) * K * sizeof(uint16_t));
+    lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bo);
+    run.wait();
+
+    lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+}
+
+void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
+                                    size_t nbytes, const void* x_bf16, void* y_bf16) {
+    prof::ScopedTimer _prof_timer(nullptr);
+    LoadedKernel& lk = impl_->ensure_loaded("gemm", N, K, B);
+
+    // Upload the (non-resident) weight into a per-kernel scratch BO. Grown on
+    // demand and reused across calls of the same gemm shape; this is the prefill
+    // path only, so the per-chunk re-upload cost is acceptable.
+    if (lk.w_scratch_bytes < nbytes) {
+        lk.w_scratch = xrt::bo(impl_->device, nbytes, XRT_BO_FLAGS_HOST_ONLY,
+                               lk.kernel.group_id(3));
+        lk.w_scratch_bytes = nbytes;
+    }
+    std::memcpy(lk.w_scratch.map<void*>(), packed, nbytes);
+    lk.w_scratch.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(B) * K * sizeof(uint16_t));
+    lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, lk.w_scratch, lk.x_bo, lk.y_bo);
+    run.wait();
+
+    lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+}
+
 void NpuRegistry::run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
                                 const void* x_bf16, void* y_bf16) {
+    prof::ScopedTimer _prof_timer(&prof::ffn_seconds);
     if (w >= impl_->weights.size())
         throw std::runtime_error("npu: invalid weight handle");
     const ResidentWeight& rw = impl_->weights[w];

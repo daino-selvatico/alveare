@@ -49,6 +49,8 @@ COMMANDS:
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
     chat [opts]           Minimal terminal chat against a running server.
     test                  Run the integration test suite (starts server and chat).
+    bench [model]         Benchmark every NPU kernel + end-to-end prefill/decode;
+                          writes a timestamped report under benchmarks/.
     help                  Show this help.
 
 QUANTIZE:
@@ -401,6 +403,15 @@ cmd_test() {
   exec "$PY" "$ROOT/tests/integration/test_server.py" "$@"
 }
 
+cmd_bench() {
+  # Time every NPU kernel shape + an end-to-end prefill/decode, and write a
+  # timestamped Markdown report under benchmarks/. Optional first arg is a
+  # model / weights dir (defaults to quantized_weights_gemma4).
+  local weights_dir="$ROOT/quantized_weights_gemma4"
+  if [ "$#" -ge 1 ]; then weights_dir="$(resolve_weights_dir "$1")"; fi
+  exec "$PY" "$ROOT/tests/bench/run_bench.py" "$weights_dir"
+}
+
 main() {
   local cmd="${1:-help}"
   [ "$#" -gt 0 ] && shift || true
@@ -414,6 +425,7 @@ main() {
     serve)        cmd_serve "$@" ;;
     chat)         cmd_chat "$@" ;;
     test)         cmd_test "$@" ;;
+    bench)        cmd_bench "$@" ;;
     help|-h|--help) usage ;;
     *) echo "error: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
   esac

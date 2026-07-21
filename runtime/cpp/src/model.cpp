@@ -403,4 +403,155 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     }
 }
 
+void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
+                            int layer, bf16* out_batch) {
+    // gemma4-only batched prefill. Mirrors run_layer but over `nrows` positions,
+    // padding the GEMM batch to B=16 and running QKV/O on resident weights and
+    // FFN gate/up/down on streamed weights.
+    const int K = config_.hidden_size;      // 3840
+    const int K_padded = 4096;
+    const int B = 16;
+    const LayerWeights& lw = weights_.layers[layer];
+
+    const bool is_sliding = ((layer + 1) % 6 != 0);
+    const int N_q = is_sliding ? 4096 : 8192;
+    const int N_kv = 2048;
+    const int h_dim = is_sliding ? 256 : 512;
+    const int n_heads = 16;
+    const int n_kv_heads = is_sliding ? 8 : 1;
+
+    const float* attn_norm_w = lw.attn_norm.empty() ? nullptr : lw.attn_norm.data();
+    const float* q_norm_w = lw.q_norm.empty() ? nullptr : lw.q_norm.data();
+    const float* k_norm_w = lw.k_norm.empty() ? nullptr : lw.k_norm.data();
+    const float* post_attn_w = lw.post_attention_norm.empty() ? nullptr : lw.post_attention_norm.data();
+    const float* ffn_norm_w = lw.ffn_norm.empty() ? nullptr : lw.ffn_norm.data();
+    const float* post_ffw_w = lw.post_ffw_norm.empty() ? nullptr : lw.post_ffw_norm.data();
+
+    // 1. Input RMSNorm, padded to K_padded (unused rows/cols stay zero).
+    std::vector<bf16> x_norm_pad(size_t(B) * K_padded, bf16(0.0f));
+    for (int b = 0; b < nrows; ++b)
+        run_rmsnorm_cpu(&x_batch[size_t(b) * K], attn_norm_w, &x_norm_pad[size_t(b) * K_padded], K);
+
+    // 2. QKV projections (batched GEMM on resident weights).
+    std::vector<bf16> q(size_t(B) * N_q), k(size_t(B) * N_kv), v(size_t(B) * N_kv);
+    reg_.run_gemm(B, N_q, K_padded, lw.w_q, x_norm_pad.data(), q.data());
+    reg_.run_gemm(B, N_kv, K_padded, lw.w_k, x_norm_pad.data(), k.data());
+    if (is_sliding)
+        reg_.run_gemm(B, N_kv, K_padded, lw.w_v, x_norm_pad.data(), v.data());
+    else
+        v = k;  // gemma4 global layers reuse K for V (before per-head norm)
+
+    // 3. QK-norm and V-norm (per head, per row).
+    std::vector<bf16> tmp(h_dim);
+    for (int b = 0; b < nrows; ++b) {
+        for (int h = 0; h < n_heads; ++h) {
+            run_rmsnorm_cpu(&q[size_t(b) * N_q + h * h_dim], q_norm_w, tmp.data(), h_dim);
+            std::memcpy(&q[size_t(b) * N_q + h * h_dim], tmp.data(), h_dim * sizeof(bf16));
+        }
+        for (int h = 0; h < n_kv_heads; ++h) {
+            run_rmsnorm_cpu(&k[size_t(b) * N_kv + h * h_dim], k_norm_w, tmp.data(), h_dim);
+            std::memcpy(&k[size_t(b) * N_kv + h * h_dim], tmp.data(), h_dim * sizeof(bf16));
+        }
+        for (int h = 0; h < n_kv_heads; ++h) {
+            run_rmsnorm_cpu(&v[size_t(b) * N_kv + h * h_dim], nullptr, tmp.data(), h_dim);
+            std::memcpy(&v[size_t(b) * N_kv + h * h_dim], tmp.data(), h_dim * sizeof(bf16));
+        }
+    }
+
+    // 4. RoPE (q, k).
+    const float base_freq = is_sliding ? 10000.0f : 1000000.0f;
+    std::vector<bf16> q_rope(size_t(B) * N_q), k_rope(size_t(B) * N_kv);
+    for (int b = 0; b < nrows; ++b) {
+        run_rope_cpu_gemma(&q[size_t(b) * N_q], pos_start + b, base_freq, n_heads, &q_rope[size_t(b) * N_q]);
+        run_rope_cpu_gemma(&k[size_t(b) * N_kv], pos_start + b, base_freq, n_kv_heads, &k_rope[size_t(b) * N_kv]);
+    }
+
+    // 5. Write KV cache for all rows first, so later positions in the chunk
+    // attend causally to earlier ones.
+    const int max_seq_len = 2048;
+    for (int b = 0; b < nrows; ++b) {
+        for (int h = 0; h < n_kv_heads; ++h) {
+            int kv_idx = (h * max_seq_len + pos_start + b) * h_dim;
+            std::memcpy(&k_caches_[layer][kv_idx], &k_rope[size_t(b) * N_kv + h * h_dim], h_dim * sizeof(bf16));
+            std::memcpy(&v_caches_[layer][kv_idx], &v[size_t(b) * N_kv + h * h_dim], h_dim * sizeof(bf16));
+        }
+    }
+
+    // 6. Attention (per row, causal against the cache).
+    std::vector<bf16> attn_out(size_t(B) * N_q, bf16(0.0f));
+    for (int b = 0; b < nrows; ++b)
+        run_attention_host(&q_rope[size_t(b) * N_q], pos_start + b, layer, &attn_out[size_t(b) * N_q]);
+
+    // 7. Output projection (batched GEMM on resident weight).
+    std::vector<bf16> attn_proj(size_t(B) * K_padded);
+    reg_.run_gemm(B, K_padded, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+
+    // 8. Post-attention norm + residual.
+    std::vector<bf16> x_post_attn(size_t(nrows) * K);
+    std::vector<bf16> normed(K);
+    for (int b = 0; b < nrows; ++b) {
+        run_rmsnorm_cpu(&attn_proj[size_t(b) * K_padded], post_attn_w, normed.data(), K);
+        for (int i = 0; i < K; ++i)
+            x_post_attn[size_t(b) * K + i] = bf16(x_batch[size_t(b) * K + i].to_float() + normed[i].to_float());
+    }
+
+    // 9. Pre-FFN norm, padded to K_padded.
+    std::vector<bf16> x_norm2_pad(size_t(B) * K_padded, bf16(0.0f));
+    for (int b = 0; b < nrows; ++b)
+        run_rmsnorm_cpu(&x_post_attn[size_t(b) * K], ffn_norm_w, &x_norm2_pad[size_t(b) * K_padded], K);
+
+    // 10. FFN: gate/up GEMM (streamed) -> GeGLU (CPU) -> down GEMM (2 K-chunks).
+    const int I = 16384, I_real = 15360;
+    std::vector<bf16> gate(size_t(B) * I), up(size_t(B) * I);
+    reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_gate_bytes.data(), lw.ffn_gate_bytes.size(),
+                           x_norm2_pad.data(), gate.data());
+    reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_up_bytes.data(), lw.ffn_up_bytes.size(),
+                           x_norm2_pad.data(), up.data());
+
+    std::vector<bf16> geglu(size_t(B) * I, bf16(0.0f));
+    const float kGeluC = std::sqrt(2.0f / static_cast<float>(M_PI));
+    for (int b = 0; b < nrows; ++b) {
+        for (int i = 0; i < I_real; ++i) {
+            float g = gate[size_t(b) * I + i].to_float();
+            float gelu = 0.5f * g * (1.0f + std::tanh(kGeluC * (g + 0.044715f * g * g * g)));
+            geglu[size_t(b) * I + i] = bf16(gelu * up[size_t(b) * I + i].to_float());
+        }
+    }
+
+    // down: (N=4096, K=16384). The manifest tops out at K=8192, so split K into
+    // two 8192 chunks over the 4096x8192 GEMM and sum the partials in fp32.
+    const int Nd = 4096;
+    const int chunkK = 8192;
+    const int row_bytes = I / 32 * 20;          // 10240
+    const int chunk_row_bytes = chunkK / 32 * 20;  // 5120
+    std::vector<float> down_acc(size_t(nrows) * K, 0.0f);
+    std::vector<uint8_t> wchunk(size_t(Nd) * chunk_row_bytes);
+    std::vector<bf16> xchunk(size_t(B) * chunkK), ychunk(size_t(B) * Nd);
+    for (int c = 0; c < 2; ++c) {
+        for (int r = 0; r < Nd; ++r)
+            std::memcpy(&wchunk[size_t(r) * chunk_row_bytes],
+                        &lw.ffn_down_bytes[size_t(r) * row_bytes + size_t(c) * chunk_row_bytes],
+                        chunk_row_bytes);
+        for (int b = 0; b < B; ++b)
+            for (int i = 0; i < chunkK; ++i)
+                xchunk[size_t(b) * chunkK + i] = geglu[size_t(b) * I + size_t(c) * chunkK + i];
+        reg_.run_gemm_streamed(B, Nd, chunkK, wchunk.data(), wchunk.size(),
+                               xchunk.data(), ychunk.data());
+        for (int b = 0; b < nrows; ++b)
+            for (int i = 0; i < K; ++i)
+                down_acc[size_t(b) * K + i] += ychunk[size_t(b) * Nd + i].to_float();
+    }
+
+    // 11. Post-FFN norm + residual + per-layer output scale.
+    const float oscale = lw.output_scale;
+    std::vector<bf16> down_bf(K), down_normed(K);
+    for (int b = 0; b < nrows; ++b) {
+        for (int i = 0; i < K; ++i) down_bf[i] = bf16(down_acc[size_t(b) * K + i]);
+        run_rmsnorm_cpu(down_bf.data(), post_ffw_w, down_normed.data(), K);
+        for (int i = 0; i < K; ++i)
+            out_batch[size_t(b) * K + i] =
+                bf16((x_post_attn[size_t(b) * K + i].to_float() + down_normed[i].to_float()) * oscale);
+    }
+}
+
 } // namespace alveare
