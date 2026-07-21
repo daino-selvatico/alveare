@@ -102,6 +102,7 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
 }
 
 void Generator::generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token) {
+    std::lock_guard<std::mutex> gen_lock(gen_mutex_);
     using clock = std::chrono::steady_clock;
     static std::atomic<int> req_counter{0};
     int req = ++req_counter;
@@ -112,13 +113,26 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     bool is_gemma = (cfg.model_type == "gemma3" || cfg.model_type == "gemma4");
     float embed_scale = is_gemma ? std::sqrt(static_cast<float>(hidden_size)) : 1.0f;
 
-    model_.reset_caches();
     std::vector<int> input_tokens = tokenizer_.encode(prompt);
     int num_prompt_tokens = static_cast<int>(input_tokens.size());
     if (num_prompt_tokens == 0) {
         tag() << "empty prompt, nothing to generate\n" << std::flush;
         return;
     }
+
+    // KV-cache reuse: the model's cache already holds valid state for the tokens
+    // of the previous request (cached_tokens_). Reuse the longest common prefix
+    // and only prefill from there — for multi-turn chat this skips re-prefilling
+    // the whole conversation history. We never need the last prompt token in the
+    // reused prefix (the decode loop processes it), so cap at num_prompt-1.
+    int reuse = 0;
+    {
+        int maxP = std::min(static_cast<int>(cached_tokens_.size()), num_prompt_tokens - 1);
+        while (reuse < maxP && input_tokens[reuse] == cached_tokens_[reuse]) ++reuse;
+    }
+    // Rebuild the cached sequence for this request; the decode loop appends the
+    // fed-back generated tokens as their KV is written.
+    cached_tokens_ = input_tokens;
 
     std::vector<bf16> x(hidden_size);
     std::vector<bf16> out(hidden_size);
@@ -160,7 +174,12 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     // gemma4 uses the batched GEMM path (B=16 chunks); other models fall back to
     // the per-token decode path.
     int prefill_count = num_prompt_tokens - 1;
-    tag() << "Starting prefill of " << num_prompt_tokens << " tokens...\n" << std::flush;
+    if (reuse > 0)
+        tag() << "Reusing " << reuse << " cached tokens; ";
+    else
+        tag();
+    std::cout << "prefilling " << (prefill_count - reuse) << " new of "
+              << num_prompt_tokens << " prompt tokens...\n" << std::flush;
     auto t0_prefill = clock::now();
     // Batched (B=16 GEMM) prefill is CORRECT but not faster than the per-token
     // fused path on this runtime: the NPU is already compute-bound per token
@@ -171,7 +190,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     if (use_batched) {
         const int PB = 16;
         std::vector<bf16> xb, ob;
-        for (int start = 0; start < prefill_count; start += PB) {
+        for (int start = reuse; start < prefill_count; start += PB) {
             int nrows = std::min(PB, prefill_count - start);
             xb.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
             ob.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
@@ -189,7 +208,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
                   << start << ".." << (start + nrows - 1) << "] done\n" << std::flush;
         }
     } else {
-        for (int pos = 0; pos < prefill_count; ++pos) {
+        for (int pos = reuse; pos < prefill_count; ++pos) {
             forward(input_tokens[pos], pos, false);
         }
     }
@@ -205,6 +224,10 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
         long npu_c0 = model_.registry().npu_calls();
         auto t0_step = clock::now();
         forward(current_token, pos, true);
+        // current_token's KV is now in the cache at position `pos`. Positions
+        // [0, num_prompt) are already in cached_tokens_ (== input_tokens); record
+        // the fed-back generated tokens that extend the cache beyond the prompt.
+        if (pos >= num_prompt_tokens) cached_tokens_.push_back(current_token);
         int next_token = sample(logits, params);
         double step_ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
         double npu_ms = (model_.registry().npu_seconds() - npu_s0) * 1000.0;

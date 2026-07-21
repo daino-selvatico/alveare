@@ -95,3 +95,34 @@ with uncertain payoff and slow (~compile + 4-min load) iteration — a kernel
 research project, not a quick win. Every change must stay guarded by the bench
 trend table (`benchmarks/README.md`) and output parity (the `ALVEARE_SELFTEST`
 greeting must stay coherent and greedy-identical).
+
+## Core-count experiment (2026-07-21): 4× tiles idle, but shim-DMA capped
+
+npu2 (Strix) is **8 columns × 6 rows = 32 compute tiles** (rows 0/1 are
+shim/memtile, rows 2–5 are the 4 compute tiles per column). Every kernel uses
+`n_cores = 8` — **one compute tile per column**, leaving **3/4 of the array
+idle**. Since decode is compute-bound, using all 32 could give up to ~4×.
+
+Bumping the `gemv_q.py` heuristic to `n_cores = 16` and `32` **fails placement**:
+
+```
+no ShimNOCTile has sufficient DMA capacity for 0 input/1 output channels
+```
+
+The current dataflow gives every core its **own** shim DMA for weight-in
+(`rt.fill(memW_fifos[i]…)`) and y-out (`rt.drain(outY_fifos[i]…)`). With 8 cores
+that is ~2 DMA/column (fits); beyond 8 the per-column shim NOC tile runs out of
+DMA channels. So the ceiling is the **output/weight gathering topology**, not the
+tiles.
+
+**The fix (scoped future work):** adopt the 3-layer ObjectFifo dataflow from
+`mlir-aie/programming_examples/basic/matrix_multiplication/whole_array` — DRAM
+(L3) → **memtile (L2)** → compute (L1). Per column, one memtile `.split()`s the
+weight rows to its 4 cores and `.join()`s their outputs back, and `x` is
+broadcast; the shim then does one weight-in + one y-out DMA **per column**
+(≤2/shim) regardless of core count. This unlocks 16–32 cores (and likely more
+effective bandwidth). It is a substantial rewrite of `gemv_q.py` **and**
+`ffn_fused.py` (the FFN is 64% of decode, so both are needed for real impact),
+with Q4_0-packed tiling through the split/join and slow iteration — a
+multi-session kernel task, not a quick win. Reference: `whole_array.py`
+(`Worker.grid`, `.split`/`.join`/`.forward`, per-column memtile fifos).

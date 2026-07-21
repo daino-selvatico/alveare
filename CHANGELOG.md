@@ -5,6 +5,21 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Added
+- **KV-cache reuse across requests** — the decode loop no longer resets the KV
+  cache every request. It reuses the longest common prefix between the new prompt
+  and the previously cached token sequence and prefills only the new tokens.
+  Output is bit-identical (validated: a rerun reproduces the prior response
+  exactly). `generate()` is serialized with a mutex, since it mutates the single
+  shared cache.
+- **Full multi-turn reuse** — the Gemma chat template now replays a completed
+  assistant turn with the same generation-prompt suffix the model saw when
+  producing it (`<|channel>thought<channel|>`), so the history tokens match what
+  is already cached and the **entire conversation prefix is reused** each turn —
+  only the newest user turn is prefilled. End-to-end over the HTTP server: turn 2
+  reused 33/58 tokens (all of turn 1 incl. its reply), prefilling only the 24 new
+  ones; an identical re-send skips prefill entirely (40s → 0.00s).
+
 ## [1.1.0] — 2026-07-21
 
 ### Added
