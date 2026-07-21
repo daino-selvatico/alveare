@@ -151,6 +151,78 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        // Benchmark mode: time each distinct kernel shape (ms + GMAC/s, the
+        // roofline data) then run a real generation for end-to-end prefill/decode
+        // timing via the existing per-token log. Emits machine-parseable lines
+        // for tests/bench/run_bench.py. gemma4-focused.
+        if (std::getenv("ALVEARE_BENCH")) {
+            using clk = std::chrono::steady_clock;
+            const int IT = 20;
+            auto avg_ms = [](clk::time_point a, clk::time_point b, int n) {
+                return std::chrono::duration<double, std::milli>(b - a).count() / n;
+            };
+            std::cout << "=== ALVEARE BENCH START ===\n"
+                      << "BENCH_META model_type=" << config.model_type
+                      << " layers=" << config.num_hidden_layers << "\n" << std::flush;
+
+            auto bench_gemv = [&](const char* label, int N, int K, WeightHandle w) {
+                std::vector<bf16> x(K, bf16(0.02f)), y(N);
+                reg.run_gemv(N, K, w, x.data(), y.data());  // warmup
+                auto t0 = clk::now();
+                for (int i = 0; i < IT; ++i) reg.run_gemv(N, K, w, x.data(), y.data());
+                double ms = avg_ms(t0, clk::now(), IT);
+                double gmacs = double(N) * K / (ms / 1000.0) / 1e9;
+                std::cout << "KERNEL gemv " << label << " " << N << " " << K << " "
+                          << ms << " " << gmacs << "\n" << std::flush;
+            };
+            // Distinct decode gemv shapes (sliding=layer0, global=layer5).
+            bench_gemv("q_sliding", 4096, 4096, mw.layers[0].w_q);
+            bench_gemv("kv_sliding", 2048, 4096, mw.layers[0].w_k);
+            bench_gemv("q_global", 8192, 4096, mw.layers[5].w_q);
+            bench_gemv("o_global", 4096, 8192, mw.layers[5].w_o);
+            if (!mw.lm_head_chunks.empty())
+                bench_gemv("lm_head", mw.lm_head_chunk_N, mw.lm_head_K, mw.lm_head_chunks[0]);
+
+            {   // fused FFN
+                int H = 4096, I = 16384;
+                std::vector<bf16> x(H, bf16(0.02f)), y(H);
+                reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, x.data(), y.data());
+                auto t0 = clk::now();
+                for (int i = 0; i < IT; ++i)
+                    reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, x.data(), y.data());
+                double ms = avg_ms(t0, clk::now(), IT);
+                double gmacs = 3.0 * H * I / (ms / 1000.0) / 1e9;
+                std::cout << "KERNEL ffn_fused ffn " << H << " " << I << " " << ms
+                          << " " << gmacs << "\n" << std::flush;
+            }
+            {   // batched gemm on the FFN gate shape (for the batch-vs-gemv record)
+                int N = 16384, K = 4096, B = 16;
+                auto& gate = mw.layers[0].ffn_gate_bytes;
+                WeightHandle wg = reg.create_gemv_weight(N, K, gate.data(), gate.size());
+                std::vector<bf16> xb(size_t(B) * K, bf16(0.02f)), yb(size_t(B) * N);
+                reg.run_gemm(B, N, K, wg, xb.data(), yb.data());
+                auto t0 = clk::now();
+                for (int i = 0; i < IT; ++i) reg.run_gemm(B, N, K, wg, xb.data(), yb.data());
+                double ms = avg_ms(t0, clk::now(), IT);
+                double gmacs = double(B) * N * K / (ms / 1000.0) / 1e9;
+                std::cout << "KERNEL gemm16 gate " << N << " " << K << " " << ms
+                          << " " << gmacs << "\n" << std::flush;
+            }
+            std::cout << "=== ALVEARE BENCH KERNELS DONE ===\n" << std::flush;
+
+            // End-to-end: a real generation. generate() logs "Prefill completed
+            // in Xs" and per-token "Token n/m in Xms [ffn=.. gemv=.. lm_head=..
+            // cpu=..]" which the driver parses.
+            std::string prompt =
+                "<bos><|turn>user\nCiao! Come stai?<turn|>\n"
+                "<|turn>model\n<|channel>thought\n<channel|>";
+            GenerationParams gp;
+            gp.max_tokens = 8;
+            generator.generate(prompt, gp, [](const std::string&) { return true; });
+            std::cout << "=== ALVEARE BENCH END ===\n" << std::flush;
+            return 0;
+        }
+
         ApiServer server(generator);
         server.start(port);
         
