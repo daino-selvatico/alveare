@@ -84,6 +84,13 @@ public:
     void run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf16,
                   void* y_bf16);
 
+    // Batched matmul like run_gemm, but the (N, K) Q4_0 weight is streamed from
+    // host `packed` (nbytes) into a reused scratch device BO instead of coming
+    // from a resident handle. For prefill of weights we keep host-resident (the
+    // FFN gate/up/down, which stay device-resident only in fused form for decode).
+    void run_gemm_streamed(int B, int N, int K, const void* packed, size_t nbytes,
+                           const void* x_bf16, void* y_bf16);
+
     void run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
                        const void* x_bf16, void* y_bf16);
 

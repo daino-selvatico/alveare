@@ -24,6 +24,13 @@ struct LayerWeights {
     // Gemma-4 only: scalar applied to the whole layer output (residual included)
     // at the end of the block. 1.0 for models without a per-layer output scale.
     float output_scale = 1.0f;
+
+    // Host-resident Q4_0 packed FFN weights, kept for batched prefill (GEMM):
+    // gate/up are (I=16384, K=4096), down is (H=4096, I=16384). The decode path
+    // uses only the fused device weight above; these feed run_gemm_streamed.
+    std::vector<uint8_t> ffn_gate_bytes;
+    std::vector<uint8_t> ffn_up_bytes;
+    std::vector<uint8_t> ffn_down_bytes;
 };
 
 struct ModelWeights {

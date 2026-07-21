@@ -22,6 +22,13 @@ public:
     // Returns true on success.
     void run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16);
 
+    // Batched prefill of one layer over `nrows` (<= 16) consecutive positions
+    // starting at pos_start. x_batch/out_batch are (nrows, hidden_size) row-major.
+    // Uses the GEMM kernels (resident attn weights, streamed FFN weights) with
+    // CPU RMSNorm/RoPE/causal attention. gemma4 only.
+    void run_layer_batch(const bf16* x_batch, int nrows, int pos_start, int layer,
+                         bf16* out_batch);
+
     void reset_caches();
 
 private:

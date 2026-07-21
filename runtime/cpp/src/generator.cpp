@@ -156,10 +156,35 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     };
 
     // 1. Prefill: process every prompt token except the last (no logits needed).
+    // gemma4 uses the batched GEMM path (B=16 chunks); other models fall back to
+    // the per-token decode path.
+    int prefill_count = num_prompt_tokens - 1;
     tag() << "Starting prefill of " << num_prompt_tokens << " tokens...\n" << std::flush;
     auto t0_prefill = clock::now();
-    for (int pos = 0; pos < num_prompt_tokens - 1; ++pos) {
-        forward(input_tokens[pos], pos, false);
+    if (cfg.model_type == "gemma4") {
+        const int PB = 16;
+        std::vector<bf16> xb, ob;
+        for (int start = 0; start < prefill_count; start += PB) {
+            int nrows = std::min(PB, prefill_count - start);
+            xb.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
+            ob.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
+            for (int b = 0; b < nrows; ++b) {
+                int token = input_tokens[start + b];
+                for (int i = 0; i < hidden_size; ++i)
+                    xb[static_cast<size_t>(b) * hidden_size + i] =
+                        bf16(weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale);
+            }
+            for (int l = 0; l < cfg.num_hidden_layers; ++l) {
+                model_.run_layer_batch(xb.data(), nrows, start, l, ob.data());
+                std::swap(xb, ob);
+            }
+            tag() << "  prefill chunk " << (start / PB + 1) << " ["
+                  << start << ".." << (start + nrows - 1) << "] done\n" << std::flush;
+        }
+    } else {
+        for (int pos = 0; pos < prefill_count; ++pos) {
+            forward(input_tokens[pos], pos, false);
+        }
     }
     double prefill_s = std::chrono::duration<double>(clock::now() - t0_prefill).count();
     tag() << "Prefill completed in " << std::fixed << std::setprecision(2) << prefill_s << "s\n" << std::flush;
