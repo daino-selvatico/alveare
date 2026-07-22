@@ -243,10 +243,11 @@ int main(int argc, char** argv) {
                 std::cout << "KERNEL gemv " << label << " " << N << " " << K << " "
                           << ms << " " << gmacs << "\n" << std::flush;
             };
-            // Distinct decode gemv shapes (sliding=layer0, global=layer5).
-            bench_gemv("q_sliding", 4096, 4096, mw.layers[0].w_q);
-            bench_gemv("kv_sliding", 2048, 4096, mw.layers[0].w_k);
-            bench_gemv("q_global", 8192, 4096, mw.layers[5].w_q);
+            // Distinct decode gemv shapes (sliding=layer0, global=layer5). Q/K/V
+            // are fused into one w_qkv gemv (8192 sliding / 10240 global).
+            bench_gemv("qkv_sliding", mw.layers[0].n_qkv, 4096, mw.layers[0].w_qkv);
+            bench_gemv("o_sliding", 4096, 4096, mw.layers[0].w_o);
+            bench_gemv("qkv_global", mw.layers[5].n_qkv, 4096, mw.layers[5].w_qkv);
             bench_gemv("o_global", 4096, 8192, mw.layers[5].w_o);
             if (!mw.lm_head_chunks.empty())
                 bench_gemv("lm_head", mw.lm_head_chunk_N, mw.lm_head_K, mw.lm_head_chunks[0]);
