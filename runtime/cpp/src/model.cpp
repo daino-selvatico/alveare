@@ -290,12 +290,25 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     std::vector<bf16> k(N_kv);
     std::vector<bf16> v(N_kv);
 
-    reg_.run_gemv(N_q, K_padded, lw.w_q, x_norm.data(), q.data());
-    reg_.run_gemv(N_kv, K_padded, lw.w_k, x_norm.data(), k.data());
-    if (config_.model_type != "gemma4" || is_sliding) {
-        reg_.run_gemv(N_kv, K_padded, lw.w_v, x_norm.data(), v.data());
+    if (lw.w_qkv != kInvalidWeight) {
+        // Fused Q/K/V: one gemv (one launch, one kernel-shape context) producing
+        // [q | k | v] (or [q | k] for global, where v == k), then sliced.
+        std::vector<bf16> qkv(lw.n_qkv);
+        reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
+        std::memcpy(q.data(), qkv.data(), size_t(N_q) * sizeof(bf16));
+        std::memcpy(k.data(), qkv.data() + N_q, size_t(N_kv) * sizeof(bf16));
+        if (is_sliding)
+            std::memcpy(v.data(), qkv.data() + N_q + N_kv, size_t(N_kv) * sizeof(bf16));
+        else
+            v = k; // Gemma4 global layers use K for V
     } else {
-        v = k; // Gemma4 global layers use K for V
+        reg_.run_gemv(N_q, K_padded, lw.w_q, x_norm.data(), q.data());
+        reg_.run_gemv(N_kv, K_padded, lw.w_k, x_norm.data(), k.data());
+        if (config_.model_type != "gemma4" || is_sliding) {
+            reg_.run_gemv(N_kv, K_padded, lw.w_v, x_norm.data(), v.data());
+        } else {
+            v = k; // Gemma4 global layers use K for V
+        }
     }
 
     // 3. QK-Norm & V-Norm (Gemma only)
