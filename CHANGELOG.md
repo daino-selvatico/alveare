@@ -6,6 +6,16 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 ## [Unreleased]
 
 ### Changed
+- **Fused Q/K/V projection: fewer NPU launches, ~10% faster decode.** The three
+  attention input projections share the same input, so their weights are
+  concatenated into one resident weight and run as a **single gemv** — 160 NPU
+  launches/token instead of 248. The win is avoiding kernel context switches: a
+  micro-benchmark shows switching gemv shapes costs **~2.6 ms/call** (vs ~0.9 ms
+  for a same-shape call), so each removed launch removes a switch. Bit-exact
+  (greedy tokens identical, rerun matches). Decode **~1236 → ~1123 ms/token**
+  (~0.89 tok/s). This is the floor for per-shape kernels (3 shapes/layer =
+  QKV, O, FFN → 3 switches/layer); crossing 1 tok/s needs a shared-context
+  (runtime-shape) kernel to remove the remaining switches.
 - **Decode ~2× faster again: all 32 compute tiles.** The GEMV and fused-FFN
   kernels now run across **32 cores** (4 rows × 8 columns) instead of 16. Two
   things unlocked the 4th-row routing: broadcasting the activation through a

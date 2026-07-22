@@ -82,7 +82,25 @@ def enumerate_shapes(weights_dir: Path, num_layers: int) -> tuple[set[tuple[int,
             p = weights_dir / f"blk.{l}.{proj}.weight_packed.npy"
             if p.exists():
                 gemv_shapes.add(packed_shape_to_logical(p))
-                
+
+        # gemma4 fuses Q/K/V into one gemv at runtime, so the concatenated
+        # output shape (N_q + N_k + N_v, K) also needs a kernel. gemma marker:
+        # per-head q-norm. Sliding layers ((l+1)%6 != 0) use q++k++v; global
+        # layers reuse k for v, so q++k.
+        pq = weights_dir / f"blk.{l}.attn_q.weight_packed.npy"
+        pk = weights_dir / f"blk.{l}.attn_k.weight_packed.npy"
+        pv = weights_dir / f"blk.{l}.attn_v.weight_packed.npy"
+        p_qnorm = weights_dir / f"blk.{l}.attn_q_norm.weight.npy"
+        if p_qnorm.exists() and pq.exists() and pk.exists():
+            nq, K = packed_shape_to_logical(pq)
+            nk, _ = packed_shape_to_logical(pk)
+            is_sliding = (l + 1) % 6 != 0
+            if is_sliding and pv.exists():
+                nv, _ = packed_shape_to_logical(pv)
+                gemv_shapes.add((nq + nk + nv, K))
+            else:
+                gemv_shapes.add((nq + nk, K))
+
         # Handle FFN shapes for fusion. We read the gate projection to get (I, H).
         p_gate = weights_dir / f"blk.{l}.ffn_gate.weight_packed.npy"
         if p_gate.exists():
