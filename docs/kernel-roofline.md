@@ -103,6 +103,10 @@ shim/memtile, rows 2–5 are the 4 compute tiles per column). Every kernel uses
 `n_cores = 8` — **one compute tile per column**, leaving **3/4 of the array
 idle**. Since decode is compute-bound, using all 32 could give up to ~4×.
 
+> **Resolved (2026-07-22): both GEMV and FFN now run on all 32 cores.** See the
+> "32-core" update at the end of this section. The account below is the original
+> diagnosis.
+
 Bumping the `gemv_q.py` heuristic to `n_cores = 16` and `32` **fails placement**:
 
 ```
@@ -151,3 +155,35 @@ effective bandwidth). It is a substantial rewrite of `gemv_q.py` **and**
 with Q4_0-packed tiling through the split/join and slow iteration — a
 multi-session kernel task, not a quick win. Reference: `whole_array.py`
 (`Worker.grid`, `.split`/`.join`/`.forward`, per-column memtile fifos).
+
+## 32-core: all compute tiles (2026-07-22) — decode ~2580 → ~1236 ms/token
+
+Both GEMV and the fused FFN now run on **all 32 compute tiles** (4 rows × 8
+columns). Two problems had to be solved past the 16-core (2-row) design:
+
+1. **Memtile DMA channel exhaustion at 4 rows.** A per-column memtile driving 4
+   cores needs W-split (4 out) + x-forward (1 out) + y-to-shim (1 out) = 6 out,
+   and W-in (1) + y-join (4 in) + x-in (1) = 6 in — exactly the memtile's DMA
+   channel limit, and routing fails. **Fix: broadcast x through a single global
+   ObjectFifo** (not a per-column memtile forward), keeping x off the memtiles.
+   That drops each column memtile to 5 out / 5 in and it routes. (`--alloc-scheme=
+   basic-sequential` is also required for the 4-row routing.)
+2. **Weight-fill descriptor blow-up** — already solved for the FFN by the
+   per-column interleaved packing (now generalized to N rows/column:
+   `col = [c0.t0, c1.t0, c2.t0, c3.t0, c0.t1, …]`).
+
+Measured, bit-exact on gemma-4-12B (greedy tokens identical, rerun matches):
+
+| kernel | 8-core | 16-core | 32-core |
+|---|---:|---:|---:|
+| GEMV 16384×4096 | 13.6 ms | 7.0 ms | **3.35 ms (~4×)** |
+| fused FFN | ~1650 ms | ~900 ms | **~570 ms** |
+| lm_head (in decode) | 213 ms | 110 ms | **~59 ms** |
+| **decode / token** | ~2580 ms | ~1560 ms | **~1236 ms (2.09×)** |
+
+Now at **~0.81 tok/s**. The kernels are no longer the whole story: at 32 cores the
+per-token attention GEMVs (~527 ms) are dominated by **host dispatch overhead**
+(192 gemv launches/token × fixed per-call cost), not compute — the next lever is
+fewer/fused launches (e.g. one fused Q/K/V GEMV) rather than more cores. 32 is
+also the physical tile ceiling; beyond it needs a faster per-core kernel
+(systolic `aie::mmul` instead of the element-wise dequant+MAC path).
