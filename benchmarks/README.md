@@ -4,6 +4,7 @@ Newest first. Each row is one `run_bench.py` execution; see the linked report fo
 
 | date | commit | decode ms/tok | prefill s/tok | FFN GMAC/s | lm_head GMAC/s | report |
 |---|---|---:|---:|---:|---:|---|
+| 2026-07-22 22:34 | `7c67e12` | 1006 | 0.90 | 20.9 | 19.9 | [report](reports/20260722-223400-7c67e12.md) |
 | 2026-07-22 17:57 | `4fa58b8` | 1109 | 0.98 | 21.3 | 20.1 | [report](reports/20260722-175703-4fa58b8.md) |
 | 2026-07-22 11:35 | `c4d6ec8` | 1219 | 1.09 | 21.7 | 20.2 | [report](reports/20260722-113503-c4d6ec8.md) |
 | 2026-07-22 10:19 | `ab97a58` | 1561 | 1.35 | 11.2 | 10.2 | [report](reports/20260722-101911-ab97a58.md) |
