@@ -127,14 +127,18 @@ on the full model:
 - **32 cores (4 rows) place but fail routing** ("Unable to find a legal
   routing"); 16 (2 rows) is the sweet spot.
 
-The **fused FFN (64% of decode) is the real prize but blocked**: the same 16-core
-memtile rewrite compiles the tiles but the long fused weight stream (~1536 tiles/
-core) exhausts the memtile DMA descriptors — "Allocator exhausted available BD IDs
-(max 24/channel)", then BD size-range errors. Making the per-column weight fill
-contiguous (an **interleaved repack** so a column's 2 cores' tiles alternate in
-DRAM, avoiding the 2-row stride) would cut the BD count — but that is a
-coordinated change to `pack_ffn_fused_weights` (weights.cpp), the manifest
-`n_cores` (→16, read by `run_ffn_fused`), and a rebuild. Substantial, deferred.
+The **fused FFN (64% of decode) is now also 16-core — DONE.** The first attempt
+(strided 2-row weight read) exhausted the memtile DMA descriptors ("Allocator
+exhausted available BD IDs, max 24/channel"). The fix: pack the weights
+**interleaved per column** so a column's two cores' tiles alternate in DRAM
+(`col = [c0.t0, c1.t0, c0.t1, c1.t1, …]`), making the per-column weight fill a
+single **contiguous** stream (one trivial BD) that the memtile splits to its 2
+cores. This is a coordinated change across `pack_ffn_fused_weights` (weights.cpp,
+16-core interleave branch), `ffn_fused.py` (memtile split/join dataflow), the
+manifest `n_cores`→16 (read by `run_ffn_fused`, which sums the partials
+order-independently), and `build_kernels.py`. Validated bit-exact on the full
+model: **FFN 1650 → 899 ms/token (~1.84×)**, decode **~2580 → ~1560 ms/token
+(~40%)**, output token-identical.
 
 **The fix (scoped future work):** adopt the 3-layer ObjectFifo dataflow from
 `mlir-aie/programming_examples/basic/matrix_multiplication/whole_array` — DRAM
