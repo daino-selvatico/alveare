@@ -25,7 +25,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from tools.convert.gemv_q_convert import quantize_to_q4_0, pack_to_combined
 
-@iron.jit(aiecc_flags=["--dynamic-objFifos"])
+@iron.jit(aiecc_flags=["--dynamic-objFifos", "--alloc-scheme=basic-sequential"])
 def ffn_fused_npu(
     W_fused: In,
     X: In,
@@ -41,9 +41,11 @@ def ffn_fused_npu(
     m_H = k_tile
 
     # Dynamically select n_cores based on intermediate size I and m_I. npu2 has
-    # 32 compute tiles (8 cols x 4 rows); use 16 (2 rows/column) via a per-column
-    # memtile funnel when I splits evenly, else the original one-core-per-column.
-    if I % (16 * m_I) == 0:
+    # 32 compute tiles (8 cols x 4 rows); use up to 32 (4 rows/column) via a
+    # per-column memtile funnel when I splits evenly, else fewer.
+    if I % (32 * m_I) == 0:
+        n_cores = 32
+    elif I % (16 * m_I) == 0:
         n_cores = 16
     elif I % (8 * m_I) == 0:
         n_cores = 8
@@ -170,17 +172,19 @@ def ffn_fused_npu(
                 fin_k(elem_y, h_blk_out * m_H)
                 of_y.release(1)
 
-    # --- 16-core memtile dataflow (npu2: 2 rows x 8 cols) -----------------------
-    # I is split across 16 cores; each produces a full-H partial that the host
-    # sums (order-independent). The weights are packed INTERLEAVED per column:
-    # for a column's two cores the tiles alternate in DRAM
-    # (col block = [c0.t0, c1.t0, c0.t1, c1.t1, ...]), so the per-column weight
-    # fill is a single CONTIGUOUS stream (one trivial BD) instead of the strided
-    # 2-row read that exhausted the memtile DMA descriptors. The column memtile
-    # splits each (2*tile) object to its 2 cores; x is broadcast; y partials are
-    # joined back. See pack_ffn_fused_weights (n_cores==16 branch) for the layout.
-    if n_cores == 16:
-        n_aie_rows, n_aie_cols = 2, 8
+    # --- 16/32-core memtile dataflow (npu2: 2 or 4 rows x 8 cols) ---------------
+    # I is split across n_cores; each produces a full-H partial that the host sums
+    # (order-independent). The weights are packed INTERLEAVED per column: a
+    # column's n_rows cores' tiles alternate in DRAM
+    # (col block = [c0.t0, c1.t0, ..., c0.t1, c1.t1, ...]), so the per-column
+    # weight fill is a single CONTIGUOUS stream (one trivial BD) instead of a
+    # strided multi-row read that exhausts the memtile DMA descriptors. The column
+    # memtile splits each (n_rows*tile) object to its cores; y partials are joined
+    # back; x is broadcast through a single ObjectFifo (kept off the memtile so its
+    # DMA channels don't exhaust at 4 rows). See pack_ffn_fused_weights.
+    if n_cores in (16, 32):
+        n_aie_cols = 8
+        n_aie_rows = n_cores // n_aie_cols   # 2 or 4
         col_bytes = n_aie_rows * size_per_core_bytes
         w_l2_ty = np.ndarray[(n_aie_rows * tile_size,), np.dtype[np.uint8]]
         y_l2_ty = np.ndarray[(n_aie_rows * m_H,), np.dtype[bfloat16]]
@@ -189,11 +193,15 @@ def ffn_fused_npu(
         X_ty = np.ndarray[(H,), np.dtype[bfloat16]]
         Y_ty = np.ndarray[(n_cores, H), np.dtype[bfloat16]]
 
+        # x is broadcast to ALL cores through a single ObjectFifo (not a per-column
+        # memtile forward): with 4 rows/column, keeping x off the memtile is what
+        # lets it route — the memtile's DMA channels are the bottleneck, and
+        # W-split(rows) + y-join(rows) already use most of them.
+        of_x = ObjectFifo(x_ty, name="of_x", depth=2)
+
         W_l2l1 = [[None] * n_aie_cols for _ in range(n_aie_rows)]
         Y_l1l2 = [[None] * n_aie_cols for _ in range(n_aie_rows)]
-        X_l2l1 = [None] * n_aie_cols
         W_l3l2 = [None] * n_aie_cols
-        X_l3l2 = [None] * n_aie_cols
         Y_l2l3 = [None] * n_aie_cols
 
         for col in range(n_aie_cols):
@@ -206,9 +214,6 @@ def ffn_fused_npu(
             )
             for r in range(n_aie_rows):
                 W_l2l1[r][col] = wsub[r]
-
-            X_l3l2[col] = ObjectFifo(x_ty, name=f"X_L3L2_{col}", depth=2)
-            X_l2l1[col] = X_l3l2[col].cons().forward(obj_type=x_ty, name=f"X_L2L1_{col}")
 
             Y_l2l3[col] = ObjectFifo(y_l2_ty, name=f"Y_L2L3_{col}", depth=2)
             ysub = Y_l2l3[col].prod().join(
@@ -227,7 +232,7 @@ def ffn_fused_npu(
                 core_fn,
                 [
                     W_l2l1[row][col].cons(),
-                    X_l2l1[col].cons(),
+                    of_x.cons(),
                     Y_l1l2[row][col].prod(),
                     init_kernel,
                     init_gate_up_kernel,
@@ -240,13 +245,13 @@ def ffn_fused_npu(
             ),
         )
 
-        # Per-column weight fill: contiguous stream of (2*tile) objects.
+        # Per-column weight fill: contiguous stream of (n_aie_rows*tile) objects.
         w_col_taps = TensorTiler2D.group_tiler(
             (n_aie_cols, col_bytes), (1, n_aie_rows * tile_size),
             (1, total_tiles_per_core), prune_step=False,
         )
         x_tap = TensorTiler2D.group_tiler((1, H), (1, H), (1, 1), prune_step=False)[0]
-        # Per-column output drain: (2, m_H) blocks into adjacent rows [2col, 2col+1].
+        # Per-column output drain: (n_aie_rows, m_H) into rows [rows*col : +rows].
         y_col_taps = TensorTiler2D.group_tiler(
             (n_cores, H), (n_aie_rows, m_H), (1, H // m_H), prune_step=False,
         )
@@ -255,8 +260,8 @@ def ffn_fused_npu(
         with rt.sequence(W_fused_ty, X_ty, Y_ty) as (w_fused_in, x_in, y_out):
             rt.start(*[w for row in workers for w in row])
             tg = rt.task_group()
+            rt.fill(of_x.prod(), x_in, x_tap, task_group=tg)
             for col in range(n_aie_cols):
-                rt.fill(X_l3l2[col].prod(), x_in, x_tap, task_group=tg)
                 rt.fill(W_l3l2[col].prod(), w_fused_in, w_col_taps[col], task_group=tg)
                 rt.drain(Y_l2l3[col].cons(), y_out, y_col_taps[col], wait=True, task_group=tg)
             rt.finish_task_group(tg)
