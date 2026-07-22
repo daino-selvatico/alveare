@@ -40,8 +40,12 @@ def ffn_fused_npu(
     # Enforce m_H = k_tile for perfectly aligned homogenous weight tile sizing (zero padding)
     m_H = k_tile
 
-    # Dynamically select n_cores based on intermediate size I and m_I
-    if I % (8 * m_I) == 0:
+    # Dynamically select n_cores based on intermediate size I and m_I. npu2 has
+    # 32 compute tiles (8 cols x 4 rows); use 16 (2 rows/column) via a per-column
+    # memtile funnel when I splits evenly, else the original one-core-per-column.
+    if I % (16 * m_I) == 0:
+        n_cores = 16
+    elif I % (8 * m_I) == 0:
         n_cores = 8
     elif I % (4 * m_I) == 0:
         n_cores = 4
@@ -122,8 +126,12 @@ def ffn_fused_npu(
         include_dirs=[cxx_header_path()],
     )
 
-    # Input activation FIFO (depth 1, size H, broadcasted to all cores)
-    of_x = ObjectFifo(x_ty, name="of_x")
+    # Weight-stream length per core: phase 1 streams gate + up once per I-block
+    # (2*(H//k_tile)); phase 2 streams the down tiles (num_blocks_I * H//m_H).
+    phase1_tiles = num_blocks_I * 2 * (H // k_tile)
+    phase2_tiles = num_blocks_I * (H // m_H)
+    total_tiles_per_core = phase1_tiles + phase2_tiles
+    size_per_core_bytes = total_tiles_per_core * tile_size
 
     memW_fifos = []
     outY_fifos = []
@@ -162,7 +170,100 @@ def ffn_fused_npu(
                 fin_k(elem_y, h_blk_out * m_H)
                 of_y.release(1)
 
-    # Configure per-core ObjectFifos and Workers
+    # --- 16-core memtile dataflow (npu2: 2 rows x 8 cols) -----------------------
+    # I is split across 16 cores; each produces a full-H partial that the host
+    # sums (order-independent). The weights are packed INTERLEAVED per column:
+    # for a column's two cores the tiles alternate in DRAM
+    # (col block = [c0.t0, c1.t0, c0.t1, c1.t1, ...]), so the per-column weight
+    # fill is a single CONTIGUOUS stream (one trivial BD) instead of the strided
+    # 2-row read that exhausted the memtile DMA descriptors. The column memtile
+    # splits each (2*tile) object to its 2 cores; x is broadcast; y partials are
+    # joined back. See pack_ffn_fused_weights (n_cores==16 branch) for the layout.
+    if n_cores == 16:
+        n_aie_rows, n_aie_cols = 2, 8
+        col_bytes = n_aie_rows * size_per_core_bytes
+        w_l2_ty = np.ndarray[(n_aie_rows * tile_size,), np.dtype[np.uint8]]
+        y_l2_ty = np.ndarray[(n_aie_rows * m_H,), np.dtype[bfloat16]]
+
+        W_fused_ty = np.ndarray[(n_aie_cols, col_bytes), np.dtype[np.uint8]]
+        X_ty = np.ndarray[(H,), np.dtype[bfloat16]]
+        Y_ty = np.ndarray[(n_cores, H), np.dtype[bfloat16]]
+
+        W_l2l1 = [[None] * n_aie_cols for _ in range(n_aie_rows)]
+        Y_l1l2 = [[None] * n_aie_cols for _ in range(n_aie_rows)]
+        X_l2l1 = [None] * n_aie_cols
+        W_l3l2 = [None] * n_aie_cols
+        X_l3l2 = [None] * n_aie_cols
+        Y_l2l3 = [None] * n_aie_cols
+
+        for col in range(n_aie_cols):
+            W_l3l2[col] = ObjectFifo(w_l2_ty, name=f"W_L3L2_{col}", depth=2)
+            wsub = W_l3l2[col].cons().split(
+                [tile_size * r for r in range(n_aie_rows)],
+                obj_types=[w_ty] * n_aie_rows,
+                names=[f"W_L2L1_{col}_{r}" for r in range(n_aie_rows)],
+                depths=[4] * n_aie_rows,
+            )
+            for r in range(n_aie_rows):
+                W_l2l1[r][col] = wsub[r]
+
+            X_l3l2[col] = ObjectFifo(x_ty, name=f"X_L3L2_{col}", depth=2)
+            X_l2l1[col] = X_l3l2[col].cons().forward(obj_type=x_ty, name=f"X_L2L1_{col}")
+
+            Y_l2l3[col] = ObjectFifo(y_l2_ty, name=f"Y_L2L3_{col}", depth=2)
+            ysub = Y_l2l3[col].prod().join(
+                [m_H * r for r in range(n_aie_rows)],
+                obj_types=[y_ty] * n_aie_rows,
+                names=[f"Y_L1L2_{col}_{r}" for r in range(n_aie_rows)],
+                depths=[2] * n_aie_rows,
+            )
+            for r in range(n_aie_rows):
+                Y_l1l2[r][col] = ysub[r]
+
+        workers = Worker.grid(
+            n_aie_rows,
+            n_aie_cols,
+            lambda row, col: Worker(
+                core_fn,
+                [
+                    W_l2l1[row][col].cons(),
+                    X_l2l1[col].cons(),
+                    Y_l1l2[row][col].prod(),
+                    init_kernel,
+                    init_gate_up_kernel,
+                    compute_gate_up_kernel,
+                    compute_activation_kernel,
+                    accumulate_down_kernel,
+                    finalize_kernel,
+                ],
+                stack_size=0xF00,
+            ),
+        )
+
+        # Per-column weight fill: contiguous stream of (2*tile) objects.
+        w_col_taps = TensorTiler2D.group_tiler(
+            (n_aie_cols, col_bytes), (1, n_aie_rows * tile_size),
+            (1, total_tiles_per_core), prune_step=False,
+        )
+        x_tap = TensorTiler2D.group_tiler((1, H), (1, H), (1, 1), prune_step=False)[0]
+        # Per-column output drain: (2, m_H) blocks into adjacent rows [2col, 2col+1].
+        y_col_taps = TensorTiler2D.group_tiler(
+            (n_cores, H), (n_aie_rows, m_H), (1, H // m_H), prune_step=False,
+        )
+
+        rt = Runtime()
+        with rt.sequence(W_fused_ty, X_ty, Y_ty) as (w_fused_in, x_in, y_out):
+            rt.start(*[w for row in workers for w in row])
+            tg = rt.task_group()
+            for col in range(n_aie_cols):
+                rt.fill(X_l3l2[col].prod(), x_in, x_tap, task_group=tg)
+                rt.fill(W_l3l2[col].prod(), w_fused_in, w_col_taps[col], task_group=tg)
+                rt.drain(Y_l2l3[col].cons(), y_out, y_col_taps[col], wait=True, task_group=tg)
+            rt.finish_task_group(tg)
+        return Program(iron.get_current_device(), rt).resolve_program()
+
+    # --- Fallback: original one-core-per-column dataflow ------------------------
+    of_x = ObjectFifo(x_ty, name="of_x")
     for i in range(n_cores):
         w_fifo = ObjectFifo(w_ty, depth=4, name=f"of_w_{i}")
         y_fifo = ObjectFifo(y_ty, name=f"of_y_{i}")
@@ -188,31 +289,17 @@ def ffn_fused_npu(
             )
         )
 
-    # Weight sequence per core: phase 1 streams gate + up once per I-block
-    # (2*(H//k_tile)); phase 2 streams the down tiles once (N_PASSES *
-    # down_tiles_per_pass == H//m_H per I-block). gate/up are streamed once total.
-    phase1_tiles = num_blocks_I * 2 * (H // k_tile)
-    phase2_tiles = num_blocks_I * (H // m_H)
-    total_tiles_per_core = phase1_tiles + phase2_tiles
-    size_per_core_bytes = total_tiles_per_core * tile_size
-    
-    # DRAM/Host buffers shapes
     W_fused_ty = np.ndarray[(n_cores, size_per_core_bytes), np.dtype[np.uint8]]
     X_ty = np.ndarray[(H,), np.dtype[bfloat16]]
     Y_ty = np.ndarray[(n_cores, H), np.dtype[bfloat16]]
 
-    # Setup DRAM-to-L1 weight tiling sequence (linear stream of tiles per core)
     w_taps = TensorTiler2D.group_tiler(
         (n_cores, size_per_core_bytes),
         (1, tile_size),
         (1, total_tiles_per_core),
         prune_step=False
     )
-
-    # Activation broadcast tiler
     x_tap = TensorTiler2D.group_tiler((1, H), (1, H), (1, 1), prune_step=False)[0]
-
-    # Output drain tilers (one row of Y_partial per core)
     y_taps = TensorTiler2D.group_tiler(
         (n_cores, H),
         (1, m_H),
@@ -225,14 +312,9 @@ def ffn_fused_npu(
         rt.start(*workers)
 
         tg = rt.task_group()
-        # Fill activation vector once (broadcasted to all worker cores)
         rt.fill(of_x.prod(), x_in, x_tap, task_group=tg)
-
-        # Fill fused weight FIFO for each core
         for i in range(n_cores):
             rt.fill(memW_fifos[i].prod(), w_fused_in, w_taps[i], task_group=tg)
-
-        # Drain output partial vectors from each core
         for i in range(n_cores):
             rt.drain(outY_fifos[i].cons(), y_out, y_taps[i], wait=True, task_group=tg)
 

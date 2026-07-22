@@ -99,7 +99,8 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
 
     int m_H = k_tile;
     int n_cores = 1;
-    if (I % (8 * m_I) == 0) n_cores = 8;
+    if (I % (16 * m_I) == 0) n_cores = 16;
+    else if (I % (8 * m_I) == 0) n_cores = 8;
     else if (I % (4 * m_I) == 0) n_cores = 4;
     else if (I % (2 * m_I) == 0) n_cores = 2;
 
@@ -107,29 +108,28 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
     int num_blocks_I = I_div_n_cores / m_I;
     int chunks_per_gate_up = k_tile / 32;
 
-    std::vector<uint8_t> fused;
-    // Pre-allocate to avoid reallocations
-    size_t total_size = w_gate.size() + w_up.size() + w_down.size();
-    fused.reserve(total_size);
-
     int gate_up_stride = (H / 32) * 20;
     int down_stride = (I / 32) * 20;
 
-    auto append_tile = [&](const std::vector<uint8_t>& w, int r_start, int r_end, int c_start_bytes, int c_end_bytes, int stride) {
-        for (int r = r_start; r < r_end; ++r) {
-            const uint8_t* ptr = w.data() + r * stride + c_start_bytes;
-            fused.insert(fused.end(), ptr, ptr + (c_end_bytes - c_start_bytes));
-        }
-    };
+    // Build each core's tile stream separately so we can lay them out either
+    // sequentially (<=8 cores) or interleaved per column (16-core memtile path).
+    const int tile_size = m_I * (k_tile / 32) * 20;
+    std::vector<std::vector<uint8_t>> per_core(n_cores);
+    for (auto& v : per_core) v.reserve(size_t((w_gate.size() + w_up.size() + w_down.size()) / n_cores + tile_size));
 
-    // Matches the fused kernel: phase 1 streams gate/up once per I-block; phase 2
-    // streams the down tiles in N_PASSES H-output passes (the kernel stores the
-    // full activation vector so gate/up are computed once, not per pass).
     const int n_passes = 4;
     int down_tiles_per_pass = (H / m_H) / n_passes;
 
     for (int c = 0; c < n_cores; ++c) {
+        std::vector<uint8_t>& stream = per_core[c];
         int start_I = c * I_div_n_cores;
+        auto append_tile = [&](const std::vector<uint8_t>& w, int r_start, int r_end,
+                               int c_start_bytes, int c_end_bytes, int stride) {
+            for (int r = r_start; r < r_end; ++r) {
+                const uint8_t* ptr = w.data() + r * stride + c_start_bytes;
+                stream.insert(stream.end(), ptr, ptr + (c_end_bytes - c_start_bytes));
+            }
+        };
 
         // Phase 1: gate + up tiles for every I-block (interleaved, streamed once).
         for (int b_I = 0; b_I < num_blocks_I; ++b_I) {
@@ -157,6 +157,31 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
                 }
             }
         }
+    }
+
+    std::vector<uint8_t> fused;
+    fused.reserve(w_gate.size() + w_up.size() + w_down.size());
+
+    if (n_cores == 16) {
+        // Interleave the two cores of each column tile-by-tile so the kernel's
+        // per-column weight fill is contiguous:
+        //   col block = [c0.t0, c1.t0, c0.t1, c1.t1, ...]
+        // Matches the kernel's split([0, tile_size]) into the column's 2 rows.
+        const int n_cols = 8;
+        size_t per_core_bytes = per_core[0].size();
+        int n_tiles = static_cast<int>(per_core_bytes / tile_size);
+        for (int col = 0; col < n_cols; ++col) {
+            const std::vector<uint8_t>& a = per_core[2 * col];
+            const std::vector<uint8_t>& b = per_core[2 * col + 1];
+            for (int t = 0; t < n_tiles; ++t) {
+                size_t off = size_t(t) * tile_size;
+                fused.insert(fused.end(), a.begin() + off, a.begin() + off + tile_size);
+                fused.insert(fused.end(), b.begin() + off, b.begin() + off + tile_size);
+            }
+        }
+    } else {
+        for (int c = 0; c < n_cores; ++c)
+            fused.insert(fused.end(), per_core[c].begin(), per_core[c].end());
     }
 
     return fused;
