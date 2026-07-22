@@ -315,7 +315,20 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         }
 
         NpyArray o_arr = load_npy(o_path);
-        lw.w_o = reg.create_gemv_weight(K_attn_padded, l_N_q, o_arr.data, o_arr.data_size);
+        // gemma4 sliding: pad O's output dim from 4096 to 8192 so it reuses the
+        // w_qkv (8192, 4096) kernel context — no shape switch between them. The
+        // extra 4096 output rows are zero weights (unused). Global layers keep
+        // their natural (4096, 8192) shape (different K, can't share).
+        if (config.model_type == "gemma4" && is_sliding && lw.n_qkv == 8192) {
+            int row_bytes = o_arr.data_size / K_attn_padded;   // K_attn/32*20
+            lw.o_gemv_n = 8192;
+            std::vector<uint8_t> o_pad(size_t(8192) * row_bytes, 0);
+            std::memcpy(o_pad.data(), o_arr.data, o_arr.data_size);
+            lw.w_o = reg.create_gemv_weight(8192, l_N_q, o_pad.data(), o_pad.size());
+        } else {
+            lw.o_gemv_n = K_attn_padded;
+            lw.w_o = reg.create_gemv_weight(K_attn_padded, l_N_q, o_arr.data, o_arr.data_size);
+        }
         free_npy(o_arr);
 
         // FFN Fused

@@ -25,6 +25,13 @@ struct LayerWeights {
     int n_q = 0;
     int n_kv = 0;
 
+    // Output-projection gemv width. For gemma4 sliding layers w_o is zero-padded
+    // in N so it shares the SAME (8192, 4096) kernel shape as w_qkv — the two run
+    // back-to-back with no kernel context switch between them (~2.6 ms saved per
+    // layer). 0 means "use the natural output width" (no padding). The real
+    // output slice is the first hidden_size (padded) rows.
+    int o_gemv_n = 0;
+
     std::vector<float> attn_norm;
     std::vector<float> ffn_norm;
     std::vector<float> post_attention_norm;
