@@ -369,11 +369,14 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     std::vector<bf16> attn_out(N_q);
     run_attention_host(q_rope.data(), pos, layer, attn_out.data());
 
-    // 7. Output Projection
+    // 7. Output Projection. o_gemv_n may be padded (gemma4 sliding: 8192) so O
+    // reuses the w_qkv kernel context and avoids a shape switch; only the first
+    // N_out_padded outputs are the real projection.
     int N_out = K;
     int N_out_padded = config_.model_type == "gemma4" ? 4096 : N_out;
-    std::vector<bf16> attn_proj(N_out_padded, bf16(0.0f));
-    reg_.run_gemv(N_out_padded, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : N_out_padded;
+    std::vector<bf16> attn_proj(o_n, bf16(0.0f));
+    reg_.run_gemv(o_n, N_q, lw.w_o, attn_out.data(), attn_proj.data());
 
     // 8. Post-attention norm and residual
     std::vector<bf16> x_post_attn(K);
