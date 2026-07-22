@@ -99,7 +99,8 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
 
     int m_H = k_tile;
     int n_cores = 1;
-    if (I % (16 * m_I) == 0) n_cores = 16;
+    if (I % (32 * m_I) == 0) n_cores = 32;
+    else if (I % (16 * m_I) == 0) n_cores = 16;
     else if (I % (8 * m_I) == 0) n_cores = 8;
     else if (I % (4 * m_I) == 0) n_cores = 4;
     else if (I % (2 * m_I) == 0) n_cores = 2;
@@ -162,21 +163,22 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
     std::vector<uint8_t> fused;
     fused.reserve(w_gate.size() + w_up.size() + w_down.size());
 
-    if (n_cores == 16) {
-        // Interleave the two cores of each column tile-by-tile so the kernel's
-        // per-column weight fill is contiguous:
-        //   col block = [c0.t0, c1.t0, c0.t1, c1.t1, ...]
-        // Matches the kernel's split([0, tile_size]) into the column's 2 rows.
+    if (n_cores == 16 || n_cores == 32) {
+        // Interleave the rows_per_col cores of each column tile-by-tile so the
+        // kernel's per-column weight fill is contiguous:
+        //   col block = [c0.t0, c1.t0, ..., c0.t1, c1.t1, ...]
+        // Matches the kernel's split([0, tile_size, ...]) into the column's rows.
         const int n_cols = 8;
+        const int rows_per_col = n_cores / n_cols;  // 2 or 4
         size_t per_core_bytes = per_core[0].size();
         int n_tiles = static_cast<int>(per_core_bytes / tile_size);
         for (int col = 0; col < n_cols; ++col) {
-            const std::vector<uint8_t>& a = per_core[2 * col];
-            const std::vector<uint8_t>& b = per_core[2 * col + 1];
             for (int t = 0; t < n_tiles; ++t) {
                 size_t off = size_t(t) * tile_size;
-                fused.insert(fused.end(), a.begin() + off, a.begin() + off + tile_size);
-                fused.insert(fused.end(), b.begin() + off, b.begin() + off + tile_size);
+                for (int r = 0; r < rows_per_col; ++r) {
+                    const std::vector<uint8_t>& s = per_core[rows_per_col * col + r];
+                    fused.insert(fused.end(), s.begin() + off, s.begin() + off + tile_size);
+                }
             }
         }
     } else {

@@ -27,7 +27,10 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from tools.ref.gemv_q import gemv_q_combined as ref_gemv_q
 from tools.convert.gemv_q_convert import quantize_to_q4_0, pack_to_combined
 
-@iron.jit(aiecc_flags=["--dynamic-objFifos"])
+# basic-sequential DMA allocation is required for the 32-core (4-row) memtile
+# routing to succeed; it also benchmarks slightly faster than --dynamic-objFifos
+# for these shapes. Fallback (<=8-core) paths for other models use it too.
+@iron.jit(aiecc_flags=["--alloc-scheme=basic-sequential"])
 def gemv_q_npu(
     W_combined: In,
     X: In,
@@ -76,14 +79,15 @@ def gemv_q_npu(
     X_ty = np.ndarray[(K,), np.dtype[bfloat16]]
     Y_ty = np.ndarray[(N,), np.dtype[bfloat16]]
 
-    # --- 16-core dataflow (npu2: 2 compute rows x 8 columns) ---------------------
-    # N (output rows) is split across all 16 cores. Within a column the 2 rows'
-    # output tiles are INTERLEAVED (core r owns column-tiles r, r+4, r+8, ...), so
-    # each per-round block of 4 tiles is contiguous in DRAM: the shim streams one
-    # (4*m, ktb) weight block and one (4*m) output block per column through the
-    # per-column memtile (split / join), instead of one shim DMA per core.
-    if N % (16 * m) == 0:
-        n_aie_rows, n_aie_cols = 2, 8
+    # --- 32-core dataflow (npu2: 4 compute rows x 8 columns) ---------------------
+    # N (output rows) is split across all 32 cores. Per column the memtile streams
+    # one contiguous (n_rows*m, ktb) weight block and splits it to the column's 4
+    # rows, and joins their (n_rows*m) outputs back — one shim weight-in + one
+    # output DMA per column instead of one per core. x is broadcast to all cores
+    # through a single ObjectFifo (kept off the memtile so its DMA channels don't
+    # exhaust at 4 rows; see the of_x comment below).
+    if N % (32 * m) == 0:
+        n_aie_rows, n_aie_cols = 4, 8
         n_cores = n_aie_rows * n_aie_cols
         kt = K // k_tile                 # k-chunks per output row
         rpc = N // n_cores               # output rows per core
@@ -91,11 +95,17 @@ def gemv_q_npu(
         w_l2_ty = np.ndarray[(n_aie_rows * m * ktb,), np.dtype[np.uint8]]
         y_l2_ty = np.ndarray[(n_aie_rows * m,), np.dtype[bfloat16]]
 
+        # x is broadcast to ALL cores through a single ObjectFifo (like the 8-core
+        # path) instead of a per-column memtile forward. This keeps x off the
+        # column memtiles, whose DMA channels are the 4-row bottleneck: with x on
+        # the memtile a column needs W-split(4) + x(1) + y-to-shim(1) = 6 out and
+        # W-in(1) + y-join(4) + x-in(1) = 6 in (the memtile's exact limit, which
+        # fails routing). Removing x drops it to 5+5, leaving headroom.
+        of_x = ObjectFifo(x_ty, name="of_x", depth=2)
+
         W_l2l1 = [[None] * n_aie_cols for _ in range(n_aie_rows)]
         Y_l1l2 = [[None] * n_aie_cols for _ in range(n_aie_rows)]
-        X_l2l1 = [None] * n_aie_cols
         W_l3l2 = [None] * n_aie_cols
-        X_l3l2 = [None] * n_aie_cols
         Y_l2l3 = [None] * n_aie_cols
 
         for col in range(n_aie_cols):
@@ -108,9 +118,6 @@ def gemv_q_npu(
             )
             for r in range(n_aie_rows):
                 W_l2l1[r][col] = wsub[r]
-
-            X_l3l2[col] = ObjectFifo(x_ty, name=f"X_L3L2_{col}", depth=2)
-            X_l2l1[col] = X_l3l2[col].cons().forward(obj_type=x_ty, name=f"X_L2L1_{col}")
 
             Y_l2l3[col] = ObjectFifo(y_l2_ty, name=f"Y_L2L3_{col}", depth=2)
             ysub = Y_l2l3[col].prod().join(
@@ -129,7 +136,7 @@ def gemv_q_npu(
                 core_fn,
                 [
                     W_l2l1[row][col].cons(),
-                    X_l2l1[col].cons(),
+                    of_x.cons(),
                     Y_l1l2[row][col].prod(),
                     zero_kernel,
                     gemv_kernel,
@@ -144,7 +151,7 @@ def gemv_q_npu(
         w_col_taps = TensorTiler2D.group_tiler(
             (N, (K // 32) * 20), (n_aie_rows * m, ktb), (tpc, kt), prune_step=False
         )
-        # x: one round of k-chunks, replayed tpc times (same x for every column).
+        # x: one round of k-chunks, replayed tpc times (broadcast to all cores).
         x_tap = TensorTiler2D.group_tiler(
             (1, K), (1, k_tile), (1, kt), pattern_repeat=tpc, prune_step=False
         )[0]
@@ -157,8 +164,8 @@ def gemv_q_npu(
         with rt.sequence(W_ty, X_ty, Y_ty) as (w_in, x_in, y_out):
             rt.start(*[w for row in workers for w in row])
             tg = rt.task_group()
+            rt.fill(of_x.prod(), x_in, x_tap, task_group=tg)
             for col in range(n_aie_cols):
-                rt.fill(X_l3l2[col].prod(), x_in, x_tap, task_group=tg)
                 rt.fill(W_l3l2[col].prod(), w_in, w_col_taps[col], task_group=tg)
                 rt.drain(Y_l2l3[col].cons(), y_out, y_col_taps[col], wait=True, task_group=tg)
             rt.finish_task_group(tg)
