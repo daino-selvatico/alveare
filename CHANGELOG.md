@@ -5,6 +5,8 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-07-22
+
 ### Changed
 - **Decode ~40% faster: 16-core NPU kernels.** npu2 (Strix) has 32 compute tiles
   (8 cols × 4 rows) but the GEMV and fused-FFN kernels used only 8 (one per
