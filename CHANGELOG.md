@@ -5,6 +5,22 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-07-22
+
+### Changed
+- **Decode ~40% faster: 16-core NPU kernels.** npu2 (Strix) has 32 compute tiles
+  (8 cols × 4 rows) but the GEMV and fused-FFN kernels used only 8 (one per
+  column). Both now split their work across **16 cores** (2 rows/column) via a
+  per-column **memtile funnel** (ObjectFifo split/join, activation broadcast), so
+  the shim does one weight-in + one output DMA per column instead of one per core
+  (which capped the old design at 8). The FFN weights are packed **interleaved per
+  column** so each column's fill is contiguous (avoids exhausting the memtile DMA
+  descriptors). Bit-exact (greedy tokens identical, rerun reproduces output):
+  - fused FFN: ~1650 → ~900 ms/token (~1.84×)
+  - lm_head GEMV: ~213 → ~110 ms (2×)
+  - **decode: ~2580 → ~1560 ms/token (~40% faster)**
+  - 32 cores (4 rows) place but fail routing; 16 is the sweet spot.
+
 ## [1.2.0] — 2026-07-21
 
 ### Added
