@@ -127,7 +127,9 @@ def compile_ffn_fused(H: int, I: int, activation: str, out: Path) -> dict:
     ffn_fused_npu.specialize(H=H, I=I, m_I=M, k_tile=K_TILE, activation=activation).compile(
         xclbin_path=str(xclbin), inst_path=str(insts))
     # n_cores logic matches ffn_fused.py
-    if I % (16 * M) == 0:
+    if I % (32 * M) == 0:
+        n_cores = 32
+    elif I % (16 * M) == 0:
         n_cores = 16
     elif I % (8 * M) == 0:
         n_cores = 8

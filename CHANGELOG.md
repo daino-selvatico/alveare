@@ -5,6 +5,21 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Changed
+- **Decode ~2× faster again: all 32 compute tiles.** The GEMV and fused-FFN
+  kernels now run across **32 cores** (4 rows × 8 columns) instead of 16. Two
+  things unlocked the 4th-row routing: broadcasting the activation through a
+  single global ObjectFifo (keeping it off the per-column memtiles, whose DMA
+  channels are the bottleneck at 4 rows) and the `basic-sequential` DMA
+  allocation scheme; the FFN weight interleave was generalized to 4 cores/column.
+  Bit-exact (greedy tokens identical, rerun reproduces output):
+  - GEMV 16384×4096: ~13.6 → **~3.35 ms (~4× vs the original 8-core)**
+  - fused FFN: ~900 → **~570 ms/token**
+  - lm_head: ~110 → **~59 ms**
+  - **decode: ~1560 → ~1236 ms/token** (~2580 → ~1236 overall, **2.09×**; ~0.81 tok/s)
+  - 32 is the physical tile ceiling; the attention GEMVs are now host-dispatch-
+    bound (fewer/fused launches is the next lever, not more cores).
+
 ## [1.3.0] — 2026-07-22
 
 ### Changed
