@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
             // Distinct decode gemv shapes (sliding=layer0, global=layer5). Q/K/V
             // are fused into one w_qkv gemv (8192 sliding / 10240 global).
             bench_gemv("qkv_sliding", mw.layers[0].n_qkv, 4096, mw.layers[0].w_qkv);
-            bench_gemv("o_sliding", 4096, 4096, mw.layers[0].w_o);
+            bench_gemv("o_sliding", mw.layers[0].o_gemv_n, 4096, mw.layers[0].w_o);
             bench_gemv("qkv_global", mw.layers[5].n_qkv, 4096, mw.layers[5].w_qkv);
             bench_gemv("o_global", 4096, 8192, mw.layers[5].w_o);
             if (!mw.lm_head_chunks.empty())
