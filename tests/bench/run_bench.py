@@ -64,7 +64,10 @@ def parse(out):
         meta["model_type"], meta["layers"] = mm.group(1), int(mm.group(2))
 
     e2e = {}
-    m = re.search(r"Starting prefill of (\d+) tokens", out)
+    # New log ("prefilling N new of M prompt tokens") or the older
+    # ("Starting prefill of M tokens"); use the total prompt-token count M.
+    m = (re.search(r"prefilling \d+ new of (\d+) prompt tokens", out)
+         or re.search(r"Starting prefill of (\d+) tokens", out))
     if m:
         e2e["prefill_tokens"] = int(m.group(1))
     m = re.search(r"Prefill completed in ([\d.]+)s", out)
@@ -134,10 +137,10 @@ def write_report(meta, kernels, e2e):
     dec = e2e.get("decode_step_ms")
     pt = e2e.get("prefill_tokens")
     pptok = (e2e["prefill_s"] / pt) if (pt and "prefill_s" in e2e) else None
+    fmt = lambda v, p: (f"{v:.{p}f}" if v is not None else "?")
     row = (f"| {now.strftime('%Y-%m-%d %H:%M')} | `{sha}` | "
-           f"{dec:.0f} | {pptok:.2f} | {fused:.1f} | {lmh:.1f} | "
-           f"[report]({report_path.relative_to(ROOT.joinpath('benchmarks'))}) |"
-           .replace("None", "?"))
+           f"{fmt(dec, 0)} | {fmt(pptok, 2)} | {fmt(fused, 1)} | {fmt(lmh, 1)} | "
+           f"[report]({report_path.relative_to(ROOT.joinpath('benchmarks'))}) |")
 
     header = [
         "# Benchmark history",
