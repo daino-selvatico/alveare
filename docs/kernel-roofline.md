@@ -211,3 +211,51 @@ cores: a single **runtime-shape** gemv context that serves all N/K without
 reconfiguring the array (so QKV, O and lm_head stop switching), leaving only the
 gemv↔FFN boundary. That is a kernel/runtime change (runtime-configured DMA taps),
 the clear next lever.
+
+## Real-time diagnosis (2026-07-23): why decode is at ~1 tok/s, and what it takes to go faster
+
+Goal: real-time (~5-10 tok/s). Decode is ~1006 ms/token, split (isolated `alveare
+bench` kernel times + model breakdown):
+
+- **~683 ms real kernel compute** — 48 × (qkv 1.73 + o 1.73 + ffn 9.65) + lm_head 54.
+- **~250 ms kernel context switches** (per forward pass, not per token).
+- **~70 ms CPU** (RMSNorm/RoPE/attention/sampling).
+
+### The kernel is NOT micro-optimizable at the source level
+Removing the per-block `aie::reduce_add` (keep a live 16-lane accumulator, reduce
+once per row) is a **real 1.47× device speedup** (16384×4096: 3393 → 2300 µs in the
+standalone `run_iters` harness) **but gives ZERO end-to-end improvement** in the C++
+runtime — three such null results now. Beware: the standalone harness reports
+*device* time; the C++ `run_gemv` wall time is dominated by per-launch overhead
+(context switch + host memcpy/sync), so a faster kernel doesn't move it. Also
+beware the AOT compile cache (`~/.npu/cache`): `.compile()` can cache-hit and leave
+`build/` stale — clear it to force a real recompile.
+
+### Ablation: where the gemv device time goes (16384×4096, 3393 µs baseline)
+Replacing the whole Q4_0 dequant (unpack + 2 shifts + 2 `to_float` + 2 scale-mul)
+**and** the weight load with a constant weight vector:
+
+- **dequant + weight-load ≈ 1302 µs (38%)** — optimizable (e.g. an int4→bf16 LUT).
+- **MAC + reduce + x-load + loop/DMA floor ≈ 2091 µs (62%)** — the hard floor.
+
+So even a *perfect* dequant caps gemv at ~1.6×. The 62% floor is the **batch=1
+matrix-vector structure itself** (~20 GMAC/s), which the element-wise
+`aie::mul`/`aie::mac` path can't beat.
+
+### The real lever: batch + systolic mmul
+Breaking the ~20 GMAC/s floor needs the AIE2P **`aie::mmul`** systolic intrinsic
+(4×8×8 bf16 tiles) instead of element-wise MACs — but mmul needs a **batch** (≥4-8
+rows of A). Single-stream decode is **batch=1**, which fundamentally underutilizes
+the array. (The existing `gemm_q` is *also* element-wise, so batched prefill was
+16× a gemv — no win; it would need the mmul rewrite too.)
+
+**Path to real-time (multi-session):**
+1. **Speculative decoding** — a small draft model (e.g. Gemma-3-1B) proposes K
+   tokens; the 12B verifies all K in one **batch=K** forward. This both amortizes
+   the ~250 ms/forward switch cost over K tokens **and** makes the matmuls GEMM.
+2. **mmul-based GEMM kernels** (rewrite `gemm_q` + the FFN with `aie::mmul`) so the
+   batch=K verify is actually fast per token (not K× a gemv).
+3. Optional: int4→bf16 LUT dequant (~1.6× on the gemv/ffn matmuls regardless).
+
+Together these are the credible route from ~1 tok/s to interactive speeds; each is
+a substantial kernel/architecture effort, not a micro-optimization.
