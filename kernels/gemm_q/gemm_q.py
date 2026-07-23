@@ -50,7 +50,9 @@ def gemm_q_npu(
 
     w_ty = np.ndarray[(m * (k_tile // 32) * 20,), np.dtype[np.uint8]]
     x_ty = np.ndarray[(B * k_tile,), np.dtype[bfloat16]]
-    y_ty = np.ndarray[(B * m,), np.dtype[bfloat16]]
+    # y accumulates in fp32 across the K//k_tile kernel calls (the fp32 mmul
+    # accumulator must persist between calls; full-K per call would not fit L1).
+    y_ty = np.ndarray[(B * m,), np.dtype[np.float32]]
 
     kernel_flags = [f"-DDIM_M={m}", f"-DDIM_K={k_tile}", f"-DDIM_B={B}", "-O3"]
 
@@ -110,7 +112,7 @@ def gemm_q_npu(
 
     W_ty = np.ndarray[(N, (K // 32) * 20), np.dtype[np.uint8]]
     X_ty = np.ndarray[(B, K), np.dtype[bfloat16]]
-    Y_ty = np.ndarray[(B, N), np.dtype[bfloat16]]
+    Y_ty = np.ndarray[(B, N), np.dtype[np.float32]]
 
     w_taps = TensorTiler2D.group_tiler(
         (N, (K // 32) * 20),
@@ -166,7 +168,7 @@ def _run_and_verify(opts):
     
     w_combined_t = iron.tensor(w_combined_np.reshape(-1), dtype=np.uint8, device="npu")
     X_t = iron.tensor(X_np.astype(bfloat16).reshape(-1), dtype=bfloat16, device="npu")
-    Y_t = iron.zeros(opts.B * opts.N, dtype=bfloat16, device="npu")
+    Y_t = iron.zeros(opts.B * opts.N, dtype=np.float32, device="npu")
     
     bench = run_iters(
         gemm_q_npu,
@@ -205,6 +207,13 @@ def _compile_kwargs(opts):
         k_tile=opts.k,
     )
 
+def _resolve_full_device(opts):
+    """Resolve ``--dev`` to the max-column variant (n_cols=None), else
+    ``from_name`` defaults to n_cols=1 and placement fails with "no available
+    compute tiles". Mirrors gemv_q.py."""
+    from aie.iron.device import from_name
+    return from_name(opts.dev, n_cols=None)
+
 def main():
     opts = _make_argparser().parse_args()
     run_design_cli(
@@ -212,6 +221,7 @@ def main():
         opts,
         compile_kwargs=_compile_kwargs,
         run_and_verify=_run_and_verify,
+        device=_resolve_full_device,
     )
 
 if __name__ == "__main__":
