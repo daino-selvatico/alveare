@@ -42,6 +42,33 @@ int main(int argc, char** argv) {
         
         Model model(config, mw, reg);
 
+        // Launch-overhead probe: time gemv calls that stay on ONE shape vs calls
+        // that ALTERNATE between two resident shapes. If alternating is much
+        // slower, per-launch cost is dominated by kernel context switching (the
+        // decode attention gemvs cycle Q/K/V/O shapes every call).
+        if (std::getenv("ALVEARE_TEST_LAUNCH")) {
+            using clk = std::chrono::steady_clock;
+            const int IT = 200;
+            const auto& L0 = mw.layers[0];   // sliding: w_q 4096x4096, w_k 2048x4096
+            std::vector<bf16> x4(4096, bf16(0.02f)), yq(4096), yk(2048);
+            reg.run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
+            reg.run_gemv(2048, 4096, L0.w_k, x4.data(), yk.data());
+            auto t0 = clk::now();
+            for (int i = 0; i < IT; ++i) reg.run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
+            double same_ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count() / IT;
+            t0 = clk::now();
+            for (int i = 0; i < IT; ++i) {
+                reg.run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
+                reg.run_gemv(2048, 4096, L0.w_k, x4.data(), yk.data());
+            }
+            double alt_ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count() / IT;
+            std::cout << "\nLAUNCH probe (per gemv call):\n"
+                      << "  same-shape (4096x4096 x" << IT << ")   = " << same_ms << " ms\n"
+                      << "  alternating (q4096 + k2048)/2      = " << alt_ms / 2.0 << " ms\n"
+                      << "  => switch penalty ~ " << (alt_ms / 2.0 - same_ms) << " ms/call\n" << std::flush;
+            return 0;
+        }
+
         // Benchmark hook: is a gemm(B=16) bandwidth-bound (~= one gemv, so
         // batching wins) or compute-bound (~= 16 gemv, so batching is futile)?
         // Times the big FFN gate shape (16384x4096) with a RESIDENT weight, plus
@@ -216,10 +243,11 @@ int main(int argc, char** argv) {
                 std::cout << "KERNEL gemv " << label << " " << N << " " << K << " "
                           << ms << " " << gmacs << "\n" << std::flush;
             };
-            // Distinct decode gemv shapes (sliding=layer0, global=layer5).
-            bench_gemv("q_sliding", 4096, 4096, mw.layers[0].w_q);
-            bench_gemv("kv_sliding", 2048, 4096, mw.layers[0].w_k);
-            bench_gemv("q_global", 8192, 4096, mw.layers[5].w_q);
+            // Distinct decode gemv shapes (sliding=layer0, global=layer5). Q/K/V
+            // are fused into one w_qkv gemv (8192 sliding / 10240 global).
+            bench_gemv("qkv_sliding", mw.layers[0].n_qkv, 4096, mw.layers[0].w_qkv);
+            bench_gemv("o_sliding", mw.layers[0].o_gemv_n, 4096, mw.layers[0].w_o);
+            bench_gemv("qkv_global", mw.layers[5].n_qkv, 4096, mw.layers[5].w_qkv);
             bench_gemv("o_global", 4096, 8192, mw.layers[5].w_o);
             if (!mw.lm_head_chunks.empty())
                 bench_gemv("lm_head", mw.lm_head_chunk_N, mw.lm_head_K, mw.lm_head_chunks[0]);
