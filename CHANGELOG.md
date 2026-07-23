@@ -5,6 +5,14 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-07-23
+
+_Decode on Gemma-4-12B goes from ~2.6 s/token to **~1 s/token** — a **2.6×**
+speedup — by using all 32 NPU compute tiles and eliminating kernel context-switch
+overhead. All changes are bit-exact (greedy tokens identical, an identical re-send
+reproduces the output). Session progression: 2596 → 1561 → 1219 → 1109 → **1006
+ms/token** (`benchmarks/README.md`)._
+
 ### Changed
 - **~1 token/s on Gemma-4-12B.** The output projection (`w_o`) is zero-padded in
   its output dim for gemma4 sliding layers so it reuses the **same** `(8192, 4096)`
