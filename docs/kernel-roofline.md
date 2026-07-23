@@ -275,3 +275,37 @@ the matmuls can run vastly faster per token. Even at modest batch and with Q4
 dequant overhead (amortized over the batch), there is large headroom over ~20
 GMAC/s. Next: build a Q4_0 mmul GEMM kernel (dequant the weight tile to bf16 into
 the mmul B operand), wire it into the batched path, and add speculative decoding.
+
+## Working Q4_0 mmul GEMM (2026-07-23): 10.7× the element-wise kernel
+
+Built and validated on-NPU a batched Q4_0 GEMM using `aie::mmul<4,8,8>`
+(`kernels/gemm_q/gemm_q.cc`). It dequantizes each output-row tile (8 rows) of
+Q4_0 weights to bf16 once — amortized over the batch — then runs the systolic
+mmul; `y` is fp32 so the accumulator persists across the per-k-tile calls.
+
+Measured (N=4096, K=4096), bit-accurate (max_diff vs fp32 CPU ref = **0.33**,
+*better* than the element-wise 3.5 because it accumulates in fp32):
+
+| kernel | B=16 | B=8 |
+|---|---:|---:|
+| element-wise gemm_q | 51.5 ms (~5 GMAC/s) | — |
+| **mmul gemm_q** | **4.8 ms (~56 GMAC/s)** | 3.4 ms (~39 GMAC/s) |
+
+→ **10.7× at B=16**; per token (÷B) the mmul GEMM is ~2× the decode gemv even at
+B=8. Bigger batch = higher throughput (the dequant amortizes). Bugs fixed:
+device n_cols=1 (added `_resolve_full_device`), the dequant buffer must be
+tile-memory `.bss` not the 3.8 KB worker stack, and only T rows at a time (whole
+tile overflows tile memory). `aie::mmul<8,8,8>` (C=64 fp32) exceeds one
+accumulator register → needs the 2×2 register blocking of the reference; R=4
+(C=32) is the working single-accumulator config.
+
+### Realistic real-time projection
+Single-stream decode is batch=1, so this kernel helps only with a **batch** →
+speculative decoding (draft proposes K, target verifies K in one batch=K
+forward). At K≈8 the mmul GEMM is ~2× the gemv per token, and the ~250 ms/token
+of context switches amortize over K. Net: roughly **2–3 tok/s** (interactive),
+bounded by speculative acceptance rate and small-batch mmul efficiency — a real
+step up from 1 tok/s, though the full 5–10× would need higher effective batch
+and an mmul FFN too. **Next build (focused):** (1) wire the mmul GEMM into the
+batched-prefill path (npu.cpp fp32-y handling) for an immediate faster-prefill
+win; (2) mmul FFN; (3) speculative decoding.
