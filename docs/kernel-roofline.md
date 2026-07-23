@@ -259,3 +259,19 @@ the array. (The existing `gemm_q` is *also* element-wise, so batched prefill was
 
 Together these are the credible route from ~1 tok/s to interactive speeds; each is
 a substantial kernel/architecture effort, not a micro-optimization.
+
+## mmul validation (2026-07-23): the systolic path is ~44× our kernels
+
+Measured the mlir-aie reference bf16 matmul (`programming_examples/.../whole_array`,
+`aie::mmul<4,8,8>`) on npu2, 32 cores, M=512 K=4096 N=4096:
+
+- **1746 GFLOPS = ~873 GMAC/s** (vs our element-wise gemv/gemm at ~20 GMAC/s).
+
+So the systolic `aie::mmul` intrinsic is **~44× faster** than our element-wise
+`aie::mul`/`aie::mac` kernels at peak (large batch M). This validates the real-time
+architecture: the compute floor is not the hardware — it's the batch=1 element-wise
+kernel structure. With a batch (speculative decoding) + an mmul-based Q4_0 kernel,
+the matmuls can run vastly faster per token. Even at modest batch and with Q4
+dequant overhead (amortized over the batch), there is large headroom over ~20
+GMAC/s. Next: build a Q4_0 mmul GEMM kernel (dequant the weight tile to bf16 into
+the mmul B operand), wire it into the batched path, and add speculative decoding.
