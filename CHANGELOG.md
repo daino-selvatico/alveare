@@ -6,6 +6,23 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 ## [Unreleased]
 
 ### Changed
+- **~1 token/s on Gemma-4-12B.** The output projection (`w_o`) is zero-padded in
+  its output dim for gemma4 sliding layers so it reuses the **same** `(8192, 4096)`
+  kernel shape as the fused `w_qkv` — the two projections run back-to-back with no
+  kernel context switch between them (~2.6 ms saved/layer). Combined with fused
+  Q/K/V, decode reaches **~1029 ms/token (~0.97 tok/s; early/short-context tokens
+  <1000 ms, >1 tok/s)** — down from ~1123. Bit-exact (greedy tokens identical,
+  rerun reproduces output). Only sliding layers share (global O has a different K).
+- **Fused Q/K/V projection: fewer NPU launches, ~10% faster decode.** The three
+  attention input projections share the same input, so their weights are
+  concatenated into one resident weight and run as a **single gemv** — 160 NPU
+  launches/token instead of 248. The win is avoiding kernel context switches: a
+  micro-benchmark shows switching gemv shapes costs **~2.6 ms/call** (vs ~0.9 ms
+  for a same-shape call), so each removed launch removes a switch. Bit-exact
+  (greedy tokens identical, rerun matches). Decode **~1236 → ~1123 ms/token**
+  (~0.89 tok/s). This is the floor for per-shape kernels (3 shapes/layer =
+  QKV, O, FFN → 3 switches/layer); crossing 1 tok/s needs a shared-context
+  (runtime-shape) kernel to remove the remaining switches.
 - **Decode ~2× faster again: all 32 compute tiles.** The GEMV and fused-FFN
   kernels now run across **32 cores** (4 rows × 8 columns) instead of 16. Two
   things unlocked the 4th-row routing: broadcasting the activation through a

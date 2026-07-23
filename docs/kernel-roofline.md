@@ -187,3 +187,27 @@ per-token attention GEMVs (~527 ms) are dominated by **host dispatch overhead**
 fewer/fused launches (e.g. one fused Q/K/V GEMV) rather than more cores. 32 is
 also the physical tile ceiling; beyond it needs a faster per-core kernel
 (systolic `aie::mmul` instead of the element-wise dequant+MAC path).
+
+## Launch / context-switch overhead (2026-07-22)
+
+At 32 cores the attention GEMVs stopped being compute-bound and became
+**launch-bound**. A micro-benchmark (`ALVEARE_TEST_LAUNCH`) settles why: 200
+same-shape gemv calls average **0.93 ms/call** (≈ the kernel time, ~0 overhead),
+but alternating between two shapes averages **3.57 ms/call** — a **~2.6 ms
+kernel-context-switch penalty** every time the active kernel shape changes. The
+decode loop cycles Q/K/V/O/FFN shapes each layer, so almost every launch pays it.
+
+**Fix applied — fused Q/K/V.** The three input projections share the input
+`x_norm`, so their weights are concatenated (`w_qkv`) and run as one gemv:
+248 → 160 launches/token, decode ~1236 → ~1123 ms/token (~0.89 tok/s). Needed a
+`10240×4096` gemv (global q++k) besides the existing `8192×4096` (sliding
+q++k++v).
+
+**Remaining floor.** With separate per-shape kernels each layer still touches 3
+shapes (QKV, O, FFN) → 3 switches/layer × 48 × ~2.6 ms ≈ 374 ms/token of pure
+switching. Pure kernel time is only ~640 ms, so the switch tax is the largest
+remaining cost. Crossing 1 tok/s (<1000 ms) needs to **remove switches**, not add
+cores: a single **runtime-shape** gemv context that serves all N/K without
+reconfiguring the array (so QKV, O and lm_head stop switching), leaving only the
+gemv↔FFN boundary. That is a kernel/runtime change (runtime-configured DMA taps),
+the clear next lever.
