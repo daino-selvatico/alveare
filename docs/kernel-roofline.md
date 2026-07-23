@@ -309,3 +309,26 @@ step up from 1 tok/s, though the full 5–10× would need higher effective batch
 and an mmul FFN too. **Next build (focused):** (1) wire the mmul GEMM into the
 batched-prefill path (npu.cpp fp32-y handling) for an immediate faster-prefill
 win; (2) mmul FFN; (3) speculative decoding.
+
+### Integration finding (2026-07-23): batched prefill is streaming-bound, not the target
+
+Wired the mmul GEMM into the batched-prefill path (run_layer_batch, updated for
+the w_qkv fusion + o_gemv_n padding; run_gemm/run_gemm_streamed made to read the
+kernel's fp32 y and convert to bf16; ensure_loaded sizes the gemm y BO as fp32).
+Two findings, so the change was reverted from the runtime (kept only the kernel +
+gemm_q.py on the branch):
+
+1. **Prefill is streaming-bound.** The batched FFN streams the separate Q4
+   gate/up/down weights (~6 GB/token) per chunk; that DMA dominates (~80 s),
+   so a 10× faster GEMM does not move prefill time. The GEMV/GEMM compute is a
+   small fraction here.
+2. A `run_gemm` correctness discrepancy appeared at N=16384 with a resident
+   weight (rows came out wrong), needing more debugging — not worth it for a
+   target that can't win anyway.
+
+**Conclusion:** the mmul GEMM helps only where the matmul is the bottleneck **and**
+weights are resident — i.e. a batched forward with an **mmul FFN kernel that keeps
+the FFN weights resident** (like the current fused FFN, but batched). That mmul
+FFN is the real missing piece; speculative decoding then supplies the batch. Both
+remain the (large) next build. The validated 10× mmul GEMM is the foundation that
+proves it's achievable.
