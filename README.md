@@ -4,7 +4,7 @@
 
 Alveare runs large language models on the AMD Ryzen AI NPU with a **fully open** stack — including the AIE kernels. It is a from-scratch alternative to the only other practical NPU runtime on Linux today, built so that anyone can bring their own model instead of waiting for closed, per-model kernel binaries.
 
-> **Status: working, correct, and getting faster.** Alveare runs **Gemma-4-12B end-to-end on the NPU**, and its greedy output matches `llama.cpp` (same Q4 GGUF) **token-for-token**. It also runs Llama-3.2-1B and Gemma-3-1B. The default server is a **native C++ runtime** (no Python in the decode loop) with the full FFN — gate/up, GeGLU, and down — fused into a single open AIE kernel, and matmul kernels now spread across all 32 of the NPU's compute tiles; it decodes Gemma-4-12B at ~1.24 s/token (down from ~3.6). A legacy Python server is still available via `--legacy`. Correctness came first, speed is the ongoing work. See [`ROADMAP.md`](ROADMAP.md).
+> **Status: working, correct, and getting faster.** Alveare runs **Gemma-4-12B end-to-end on the NPU**, and its greedy output matches `llama.cpp` (same Q4 GGUF) **token-for-token**. It also runs Llama-3.2-1B and Gemma-3-1B. The default server is a **native C++ runtime** (no Python in the decode loop) with the full FFN — gate/up, GeGLU, and down — fused into a single open AIE kernel, and matmul kernels now spread across all 32 of the NPU's compute tiles; it decodes Gemma-4-12B at ~1 s/token (down from ~3.6). A legacy Python server is still available via `--legacy`. Correctness came first, speed is the ongoing work. See [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
@@ -21,7 +21,7 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 
 ## What works today
 
-- **Native C++ runtime** — the default `alveare serve` path. No Python in the decode loop: native XRT, a hand-ported CPU math path (RMSNorm / RoPE / attention / sampling), a self-contained byte-level BPE tokenizer that loads the model's `tokenizer.json`, and the Gemma chat template. Runs Gemma-4-12B coherently at ~1.24 s/token. (`--legacy` still starts the Python server.)
+- **Native C++ runtime** — the default `alveare serve` path. No Python in the decode loop: native XRT, a hand-ported CPU math path (RMSNorm / RoPE / attention / sampling), a self-contained byte-level BPE tokenizer that loads the model's `tokenizer.json`, and the Gemma chat template. Runs Gemma-4-12B coherently at ~1 s/token. (`--legacy` still starts the Python server.)
 - **Gemma-4-12B-it** — full 48-layer forward on the NPU with per-layer weight streaming (~5.5 GB peak RAM). Greedy output matches `llama.cpp` token-for-token.
 - **Gemma-3-1B-it** — end-to-end on the NPU, greedy continuation matches `llama.cpp`.
 - **Llama-3.2-1B-Instruct** — end-to-end on the NPU.
@@ -32,7 +32,7 @@ The whole stack we need is open and documented by AMD. FLM is living proof it wo
 
 ### Current limitations
 
-- **Decode speed:** Decode is ~1.24 s/token on Gemma-4-12B with the native C++ runtime (down from ~3.6: cached-activation FFN + 32-core memtile GEMV/FFN kernels). Still the ongoing focus — the next levers are fewer/fused kernel launches and a systolic-matmul kernel. See [`docs/kernel-roofline.md`](docs/kernel-roofline.md).
+- **Decode speed:** Decode is ~1 s/token on Gemma-4-12B with the native C++ runtime (down from ~3.6: cached-activation FFN, 32-core memtile GEMV/FFN kernels, fused Q/K/V, and shared kernel contexts to avoid per-shape switch overhead). Still the ongoing focus — the next levers are a runtime-shape gemv (removes remaining context switches) and a systolic-matmul kernel. See [`docs/kernel-roofline.md`](docs/kernel-roofline.md).
 - **Experimental state:** Expect rough edges!
 - **Prompt batched prefill:** The initial prompt prefill phase is now successfully offloaded to the NPU with batched matrix multiplications, drastically improving Time-to-First-Token latency compared to the initial CPU-only implementation!
 
@@ -204,7 +204,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 Add `"stream": true` to the request body to receive Server-Sent Events (`text/event-stream`) instead of a single JSON response.
 
-> The model name is auto-detected from the served weights' `config.json`; `GET /v1/models` reports the exact id to use. Generation is single-request serialized (one NPU); expect ~1.24 s/token on the 12B.
+> The model name is auto-detected from the served weights' `config.json`; `GET /v1/models` reports the exact id to use. Generation is single-request serialized (one NPU); expect ~1 s/token on the 12B.
 
 ---
 
