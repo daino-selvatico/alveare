@@ -244,7 +244,9 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
-            std::vector<int> draft = propose_draft(seq, K, 3, 2);
+            // min_ngram=3: require a 3-token match before drafting, so spurious
+            // short matches don't trigger an expensive verify that gets rejected.
+            std::vector<int> draft = propose_draft(seq, K, 3, 3);
             while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
                 draft.pop_back();
             int nd = static_cast<int>(draft.size());

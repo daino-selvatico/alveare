@@ -81,11 +81,13 @@ void gemm_q(
             aie::store_v(&btile[ki * S * T], aie::transpose(bts, T, S));
         }
 
-        // Run all 4 batch accumulators concurrently so the systolic pipeline
+        // Run all NB batch accumulators concurrently so the systolic pipeline
         // stays full: each C.mac depends on its own C, so a single accumulator
-        // serializes on mmul latency; 4 independent chains hide it. The B operand
-        // is loaded ONCE per ki and shared across all 4 (it is batch-independent).
-        // Assumes DIM_B/R == 4 (DIM_B=16).
+        // serializes on mmul latency; NB independent chains hide it. The B operand
+        // is loaded ONCE per ki and shared across all NB (it is batch-independent).
+        // NB = DIM_B / R: 4 for DIM_B=16 (prefill), 2 for DIM_B=8 (spec verify).
+        constexpr int NB = DIM_B / R;
+        static_assert(NB == 2 || NB == 4, "supported DIM_B: 8 or 16");
         auto load_c = [&](int bi) {
             return aie::concat(
                 aie::load_v<T>(&y[(bi * R + 0) * DIM_M + mi * T]),
@@ -93,7 +95,10 @@ void gemm_q(
                 aie::load_v<T>(&y[(bi * R + 2) * DIM_M + mi * T]),
                 aie::load_v<T>(&y[(bi * R + 3) * DIM_M + mi * T]));
         };
-        MMUL C0(load_c(0)), C1(load_c(1)), C2(load_c(2)), C3(load_c(3));
+        // C2/C3 are unused (and never mac'd/stored) when NB==2; init them from a
+        // valid row so the load stays in bounds for the DIM_B=8 y buffer.
+        MMUL C0(load_c(0)), C1(load_c(1)),
+             C2(load_c(NB > 2 ? 2 : 0)), C3(load_c(NB > 2 ? 3 : 0));
 
         auto load_a = [&](int bi, int ki) {
             return aie::concat(
@@ -107,8 +112,10 @@ void gemm_q(
             aie::vector<bfloat16, S * T> b = aie::load_v<S * T>(&btile[ki * S * T]);
             C0.mac(load_a(0, ki), b);
             C1.mac(load_a(1, ki), b);
-            C2.mac(load_a(2, ki), b);
-            C3.mac(load_a(3, ki), b);
+            if constexpr (NB > 2) {
+                C2.mac(load_a(2, ki), b);
+                C3.mac(load_a(3, ki), b);
+            }
         }
 
         auto store_c = [&](int bi, MMUL& C) {
@@ -118,7 +125,8 @@ void gemm_q(
             aie::store_v(&y[(bi * R + 2) * DIM_M + mi * T], co.extract<T>(2));
             aie::store_v(&y[(bi * R + 3) * DIM_M + mi * T], co.extract<T>(3));
         };
-        store_c(0, C0); store_c(1, C1); store_c(2, C2); store_c(3, C3);
+        store_c(0, C0); store_c(1, C1);
+        if constexpr (NB > 2) { store_c(2, C2); store_c(3, C3); }
     }
 }
 
