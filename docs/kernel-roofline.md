@@ -394,3 +394,30 @@ prompt-lookup n-gram drafter is already done and unit-tested).
 for X's shapes only; running it against a different model clobbers the manifest
 (and `kernels/build/` is gitignored, so git won't flag it). Recover by rebuilding
 a superset `manifest.json` from the on-disk xclbins — no recompile needed.
+
+## mmul GEMM kernel: 1.57× faster (56 → 88 GMAC/s), 2026-07-24
+
+Three bit-exact optimizations to `kernels/gemm_q/gemm_q.cc` (N=4096 K=4096 B=16,
+device time, max_diff unchanged 0.3264):
+
+| step                                   | device µs | GMAC/s |
+|----------------------------------------|-----------|--------|
+| baseline (transpose inside batch loop) | 4800      | 56     |
+| hoist weight transpose out of batch    | 4405      | 61     |
+| 4 concurrent batch accumulators        | 3675      | 73     |
+| fuse Q4_0 dequant (1× to_float/mul)    | 3049      | 88     |
+
+- **Transpose hoist**: the B operand does not depend on the batch tile, so build
+  the pre-transposed `btile` once per output-tile instead of re-transposing (and
+  re-loading) it for every batch tile.
+- **Concurrent accumulators**: a single `MMUL` accumulator serializes on systolic
+  latency (each `C.mac` depends on the previous). Four independent accumulators
+  (`C0..C3`), with the weight loaded once per `ki` and shared, keep the pipeline
+  full — the biggest single win.
+- **Dequant fuse**: interleave the low/high int4 nibbles as int16 first, then one
+  32-wide `to_float` + one 32-wide scale multiply (was two of each).
+
+**Remaining gap to the 873 GMAC/s bf16 peak:** the systolic array is idle during
+the (vector-unit) dequant, which is serialized before the mmul loop per tile.
+Overlapping dequant with mmul (double-buffered `wtile`/`btile`, software-pipelined
+across output tiles) is the next lever — a larger, riskier rewrite.
