@@ -426,7 +426,10 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     // FFN gate/up/down on streamed weights.
     const int K = config_.hidden_size;      // 3840
     const int K_padded = 4096;
-    const int B = 16;
+    // Pad the GEMM batch to the smallest built kernel that fits: B=8 (speculative
+    // verify, nrows<=8) or B=16 (prefill chunks). A smaller B halves the mmul MACs
+    // (the dequant is fixed), so a short draft verify does not pay the full B=16.
+    const int B = (nrows <= 8) ? 8 : 16;
     const LayerWeights& lw = weights_.layers[layer];
 
     const bool is_sliding = ((layer + 1) % 6 != 0);
