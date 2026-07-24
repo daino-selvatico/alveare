@@ -164,7 +164,9 @@ struct NpuRegistry::Impl {
                 } else {
                     const size_t rows = (kind == "gemm") ? size_t(B) : 1;
                     x_bytes = rows * size_t(K) * sizeof(uint16_t);
-                    y_bytes = rows * size_t(N) * sizeof(uint16_t);
+                    // gemm (mmul kernel) outputs fp32; gemv outputs bf16.
+                    const size_t y_elt = (kind == "gemm") ? sizeof(float) : sizeof(uint16_t);
+                    y_bytes = rows * size_t(N) * y_elt;
                 }
                 lk.x_bo = xrt::bo(device, x_bytes, XRT_BO_FLAGS_HOST_ONLY,
                                   lk.kernel.group_id(4));
@@ -308,7 +310,10 @@ void NpuRegistry::run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf
     run.wait();
 
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+    // The mmul gemm kernel outputs fp32; convert to bf16 for the caller.
+    const float* yf = lk.y_bo.map<const float*>();
+    uint16_t* yout = static_cast<uint16_t*>(y_bf16);
+    for (size_t i = 0; i < size_t(B) * N; ++i) yout[i] = bf16(yf[i]).v;
 }
 
 void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
@@ -334,7 +339,10 @@ void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
     run.wait();
 
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+    // The mmul gemm kernel outputs fp32; convert to bf16 for the caller.
+    const float* yf = lk.y_bo.map<const float*>();
+    uint16_t* yout = static_cast<uint16_t*>(y_bf16);
+    for (size_t i = 0; i < size_t(B) * N; ++i) yout[i] = bf16(yf[i]).v;
 }
 
 void NpuRegistry::run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,
