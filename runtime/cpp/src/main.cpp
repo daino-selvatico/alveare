@@ -96,16 +96,29 @@ int main(int argc, char** argv) {
             double gemm_ms = ms(t0, clk::now(), IT);
 
             // Correctness: xb rows all equal x, so every gemm output row must
-            // match the gemv output.
-            float d0 = 0.0f, d15 = 0.0f, mag = 0.0f;
-            for (int i = 0; i < N; ++i) {
-                float g = y_gemv[i].to_float();
-                mag = std::max(mag, std::fabs(g));
-                d0 = std::max(d0, std::fabs(yb[i].to_float() - g));
-                d15 = std::max(d15, std::fabs(yb[size_t(15) * N + i].to_float() - g));
+            // match the gemv output. Print per-row maxdiff + sample values.
+            std::cout << "GEMV y[0..5]: ";
+            for (int i = 0; i < 6; ++i) std::cout << y_gemv[i].to_float() << " ";
+            std::cout << "\n";
+            for (int r : {0, 1, 8, 15}) {
+                float dr = 0.0f;
+                for (int i = 0; i < N; ++i)
+                    dr = std::max(dr, std::fabs(yb[size_t(r) * N + i].to_float() - y_gemv[i].to_float()));
+                std::cout << "GEMM(resident) row" << r << " maxdiff=" << dr << "  y[0..5]: ";
+                for (int i = 0; i < 6; ++i) std::cout << yb[size_t(r) * N + i].to_float() << " ";
+                std::cout << "\n" << std::flush;
             }
-            std::cout << "GEMM-vs-GEMV correctness: signal_max=" << mag
-                      << " row0_maxdiff=" << d0 << " row15_maxdiff=" << d15 << "\n" << std::flush;
+            // Streamed variant: fresh weight upload (like the standalone verify).
+            std::vector<bf16> ybs(static_cast<size_t>(B) * N);
+            reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), ybs.data());
+            for (int r : {0, 8, 15}) {
+                float dr = 0.0f;
+                for (int i = 0; i < N; ++i)
+                    dr = std::max(dr, std::fabs(ybs[size_t(r) * N + i].to_float() - y_gemv[i].to_float()));
+                std::cout << "GEMM(streamed) row" << r << " maxdiff=" << dr << "  y[0..3]: ";
+                for (int i = 0; i < 4; ++i) std::cout << ybs[size_t(r) * N + i].to_float() << " ";
+                std::cout << "\n" << std::flush;
+            }
 
             reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
             t0 = clk::now();
