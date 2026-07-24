@@ -30,6 +30,13 @@ static constexpr int T = 8;
 // dequantizing the whole DIM_M tile at once overflows tile memory.
 alignas(32) static bfloat16 wtile[T * DIM_K];
 
+// The same tile pre-transposed to the mmul B operand layout, one [S,T] block per
+// ki: btile[ki*S*T + s*T + t] = wtile[t*DIM_K + ki*S + s]. Building this ONCE per
+// mi tile (instead of transposing inside the batch loop, where the weight was
+// re-loaded and re-transposed for every bi) removes ~3/4 of the transpose+load
+// work — the weight does not depend on the batch index.
+alignas(32) static bfloat16 btile[(DIM_K / S) * S * T];
+
 void gemm_q(
     const uint8_t *restrict w_combined,
     const bfloat16 *restrict x,
@@ -46,55 +53,72 @@ void gemm_q(
             for (int b = 0; b < DIM_K / 32; ++b) {
                 const uint8_t *blk = &row_ptr[b * 20];
                 bfloat16 scale = *(const bfloat16 *)&blk[16];
-                aie::vector<bfloat16, 16> sv = aie::broadcast<bfloat16, 16>(scale);
                 aie::vector<int8_t, 16> pk = aie::load_unaligned_v<16>((const int8_t *)&blk[0]);
                 aie::vector<int16_t, 16> up = pk.unpack();
-                aie::vector<int16_t, 16> q0 = (up << 12) >> 12;   // low nibble
-                aie::vector<int16_t, 16> q1 = (up << 8) >> 12;    // high nibble
-                aie::vector<bfloat16, 16> w0 = aie::mul(aie::to_float<bfloat16>(q0), sv).to_vector<bfloat16>();
-                aie::vector<bfloat16, 16> w1 = aie::mul(aie::to_float<bfloat16>(q1), sv).to_vector<bfloat16>();
-                auto zipped = aie::interleave_zip(w0, w1, 1);  // element 2i=w0[i], 2i+1=w1[i]
-                aie::vector<bfloat16, 32> w01 = aie::concat(zipped.first, zipped.second);
+                aie::vector<int16_t, 16> q0 = (up << 12) >> 12;   // low nibble  -> even
+                aie::vector<int16_t, 16> q1 = (up << 8) >> 12;    // high nibble -> odd
+                // Interleave the integer nibbles FIRST (2i=q0[i], 2i+1=q1[i]), then do
+                // ONE 32-wide to_float and ONE 32-wide scale multiply (was 2 of each).
+                auto zipped = aie::interleave_zip(q0, q1, 1);
+                aie::vector<int16_t, 32> qi = aie::concat(zipped.first, zipped.second);
+                aie::vector<bfloat16, 32> sv = aie::broadcast<bfloat16, 32>(scale);
+                aie::vector<bfloat16, 32> w01 = aie::mul(aie::to_float<bfloat16>(qi), sv).to_vector<bfloat16>();
                 aie::store_v(&wtile[t * DIM_K + b * 32], w01);
             }
         }
 
-        // mmul: for each batch tile, C[bi,mi] = sum_ki A[bi,ki] @ B[ki,mi].
-        for (int bi = 0; bi < DIM_B / R; ++bi) {
-            // C init from the fp32 partial y[bi*R:+R][mi*T:+T] (rows strided DIM_M).
-            aie::vector<float, R * T> c0 = aie::concat(
+        // Pre-transpose the whole tile once: wtile[T,DIM_K] -> btile[ki][S,T].
+        for (int ki = 0; ki < DIM_K / S; ++ki) {
+            aie::vector<bfloat16, S * T> bts = aie::concat(
+                aie::load_v<S>(&wtile[0 * DIM_K + ki * S]),
+                aie::load_v<S>(&wtile[1 * DIM_K + ki * S]),
+                aie::load_v<S>(&wtile[2 * DIM_K + ki * S]),
+                aie::load_v<S>(&wtile[3 * DIM_K + ki * S]),
+                aie::load_v<S>(&wtile[4 * DIM_K + ki * S]),
+                aie::load_v<S>(&wtile[5 * DIM_K + ki * S]),
+                aie::load_v<S>(&wtile[6 * DIM_K + ki * S]),
+                aie::load_v<S>(&wtile[7 * DIM_K + ki * S]));
+            aie::store_v(&btile[ki * S * T], aie::transpose(bts, T, S));
+        }
+
+        // Run all 4 batch accumulators concurrently so the systolic pipeline
+        // stays full: each C.mac depends on its own C, so a single accumulator
+        // serializes on mmul latency; 4 independent chains hide it. The B operand
+        // is loaded ONCE per ki and shared across all 4 (it is batch-independent).
+        // Assumes DIM_B/R == 4 (DIM_B=16).
+        auto load_c = [&](int bi) {
+            return aie::concat(
                 aie::load_v<T>(&y[(bi * R + 0) * DIM_M + mi * T]),
                 aie::load_v<T>(&y[(bi * R + 1) * DIM_M + mi * T]),
                 aie::load_v<T>(&y[(bi * R + 2) * DIM_M + mi * T]),
                 aie::load_v<T>(&y[(bi * R + 3) * DIM_M + mi * T]));
-            MMUL C(c0);
+        };
+        MMUL C0(load_c(0)), C1(load_c(1)), C2(load_c(2)), C3(load_c(3));
 
-            for (int ki = 0; ki < DIM_K / S; ++ki) {
-                aie::vector<bfloat16, R * S> a = aie::concat(
-                    aie::load_v<S>(&x[(bi * R + 0) * DIM_K + ki * S]),
-                    aie::load_v<S>(&x[(bi * R + 1) * DIM_K + ki * S]),
-                    aie::load_v<S>(&x[(bi * R + 2) * DIM_K + ki * S]),
-                    aie::load_v<S>(&x[(bi * R + 3) * DIM_K + ki * S]));
-                // wtile block [T,S] (rows strided DIM_K) -> transpose to [S,T] (W^T).
-                aie::vector<bfloat16, S * T> bts = aie::concat(
-                    aie::load_v<S>(&wtile[0 * DIM_K + ki * S]),
-                    aie::load_v<S>(&wtile[1 * DIM_K + ki * S]),
-                    aie::load_v<S>(&wtile[2 * DIM_K + ki * S]),
-                    aie::load_v<S>(&wtile[3 * DIM_K + ki * S]),
-                    aie::load_v<S>(&wtile[4 * DIM_K + ki * S]),
-                    aie::load_v<S>(&wtile[5 * DIM_K + ki * S]),
-                    aie::load_v<S>(&wtile[6 * DIM_K + ki * S]),
-                    aie::load_v<S>(&wtile[7 * DIM_K + ki * S]));
-                aie::vector<bfloat16, S * T> b = aie::transpose(bts, T, S);
-                C.mac(a, b);
-            }
+        auto load_a = [&](int bi, int ki) {
+            return aie::concat(
+                aie::load_v<S>(&x[(bi * R + 0) * DIM_K + ki * S]),
+                aie::load_v<S>(&x[(bi * R + 1) * DIM_K + ki * S]),
+                aie::load_v<S>(&x[(bi * R + 2) * DIM_K + ki * S]),
+                aie::load_v<S>(&x[(bi * R + 3) * DIM_K + ki * S]));
+        };
 
-            aie::vector<float, R * T> co = C.to_vector<float>();
+        for (int ki = 0; ki < DIM_K / S; ++ki) {
+            aie::vector<bfloat16, S * T> b = aie::load_v<S * T>(&btile[ki * S * T]);
+            C0.mac(load_a(0, ki), b);
+            C1.mac(load_a(1, ki), b);
+            C2.mac(load_a(2, ki), b);
+            C3.mac(load_a(3, ki), b);
+        }
+
+        auto store_c = [&](int bi, MMUL& C) {
+            aie::vector<float, R * T> co = C.template to_vector<float>();
             aie::store_v(&y[(bi * R + 0) * DIM_M + mi * T], co.extract<T>(0));
             aie::store_v(&y[(bi * R + 1) * DIM_M + mi * T], co.extract<T>(1));
             aie::store_v(&y[(bi * R + 2) * DIM_M + mi * T], co.extract<T>(2));
             aie::store_v(&y[(bi * R + 3) * DIM_M + mi * T], co.extract<T>(3));
-        }
+        };
+        store_c(0, C0); store_c(1, C1); store_c(2, C2); store_c(3, C3);
     }
 }
 
