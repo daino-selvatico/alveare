@@ -24,7 +24,11 @@ Output:
 """
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -131,8 +135,43 @@ def compile_gemm(B: int, N: int, K: int, out: Path) -> dict:
     name = f"gemm_{N}x{K}_b{B}"
     xclbin = out / f"{name}.xclbin"
     insts = out / f"{name}.insts"
-    gemm_q_npu.specialize(B=B, N=N, K=K, m=M, k_tile=K_TILE).compile(
-        xclbin_path=str(xclbin), inst_path=str(insts))
+
+    with tempfile.TemporaryDirectory(prefix=f"gc_{N}x{K}_b{B}_") as tmpdir:
+        env = os.environ.copy()
+        env["NPU_CACHE_HOME"] = tmpdir
+        cmd = [
+            sys.executable,
+            str(ROOT / "kernels" / "gemm_q" / "gemm_q.py"),
+            "-N", str(N),
+            "-K", str(K),
+            "-B", str(B),
+            "-m", "32",
+            "-k", "256",
+            "--iters", "3",
+            "--warmup", "1",
+        ]
+        res = subprocess.run(
+            cmd,
+            env=env,
+            timeout=300,
+            capture_output=True,
+            text=True,
+        )
+
+        xclbin_matches = list(Path(tmpdir).rglob("final.xclbin"))
+        insts_matches = list(Path(tmpdir).rglob("insts.bin"))
+
+        if not xclbin_matches or not insts_matches:
+            raise RuntimeError(
+                f"Failed to find compiled GEMM artifacts in {tmpdir} for shape N={N}, K={K}, B={B}.\n"
+                f"Exit code: {res.returncode}\n"
+                f"Stdout:\n{res.stdout}\n"
+                f"Stderr:\n{res.stderr}"
+            )
+
+        shutil.copy2(xclbin_matches[0], xclbin)
+        shutil.copy2(insts_matches[0], insts)
+
     return {"kind": "gemm", "B": B, "N": N, "K": K, "m": M, "k_tile": K_TILE,
             "n_cores": n_cores_for(N),
             "xclbin": xclbin.name, "insts": insts.name}
