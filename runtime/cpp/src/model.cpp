@@ -448,13 +448,19 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     for (int b = 0; b < nrows; ++b)
         run_rmsnorm_cpu(&x_batch[size_t(b) * K], attn_norm_w, &x_norm_pad[size_t(b) * K_padded], K);
 
-    // 2. QKV projections (batched GEMM on resident weights).
+    // 2. Fused Q/K/V projection (one batched GEMM), then slice — matches the
+    // decode path's w_qkv (q++k++v sliding, q++k global with v==k).
     std::vector<bf16> q(size_t(B) * N_q), k(size_t(B) * N_kv), v(size_t(B) * N_kv);
-    reg_.run_gemm(B, N_q, K_padded, lw.w_q, x_norm_pad.data(), q.data());
-    reg_.run_gemm(B, N_kv, K_padded, lw.w_k, x_norm_pad.data(), k.data());
-    if (is_sliding)
-        reg_.run_gemm(B, N_kv, K_padded, lw.w_v, x_norm_pad.data(), v.data());
-    else
+    std::vector<bf16> qkv(size_t(B) * lw.n_qkv);
+    reg_.run_gemm(B, lw.n_qkv, K_padded, lw.w_qkv, x_norm_pad.data(), qkv.data());
+    for (int b = 0; b < nrows; ++b) {
+        const bf16* row = &qkv[size_t(b) * lw.n_qkv];
+        std::memcpy(&q[size_t(b) * N_q], row, size_t(N_q) * sizeof(bf16));
+        std::memcpy(&k[size_t(b) * N_kv], row + N_q, size_t(N_kv) * sizeof(bf16));
+        if (is_sliding)
+            std::memcpy(&v[size_t(b) * N_kv], row + N_q + N_kv, size_t(N_kv) * sizeof(bf16));
+    }
+    if (!is_sliding)
         v = k;  // gemma4 global layers reuse K for V (before per-head norm)
 
     // 3. QK-norm and V-norm (per head, per row).
@@ -498,15 +504,18 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     for (int b = 0; b < nrows; ++b)
         run_attention_host(&q_rope[size_t(b) * N_q], pos_start + b, layer, &attn_out[size_t(b) * N_q]);
 
-    // 7. Output projection (batched GEMM on resident weight).
-    std::vector<bf16> attn_proj(size_t(B) * K_padded);
-    reg_.run_gemm(B, K_padded, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    // 7. Output projection (batched GEMM). w_o may be output-padded to o_gemv_n
+    // (gemma4 sliding shares the w_qkv kernel shape); only the first K columns
+    // of each row are the real projection.
+    const int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : K_padded;
+    std::vector<bf16> attn_proj(size_t(B) * o_n);
+    reg_.run_gemm(B, o_n, N_q, lw.w_o, attn_out.data(), attn_proj.data());
 
     // 8. Post-attention norm + residual.
     std::vector<bf16> x_post_attn(size_t(nrows) * K);
     std::vector<bf16> normed(K);
     for (int b = 0; b < nrows; ++b) {
-        run_rmsnorm_cpu(&attn_proj[size_t(b) * K_padded], post_attn_w, normed.data(), K);
+        run_rmsnorm_cpu(&attn_proj[size_t(b) * o_n], post_attn_w, normed.data(), K);
         for (int i = 0; i < K; ++i)
             x_post_attn[size_t(b) * K + i] = bf16(x_batch[size_t(b) * K + i].to_float() + normed[i].to_float());
     }
