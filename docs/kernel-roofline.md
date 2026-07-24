@@ -332,3 +332,32 @@ the FFN weights resident** (like the current fused FFN, but batched). That mmul
 FFN is the real missing piece; speculative decoding then supplies the batch. Both
 remain the (large) next build. The validated 10× mmul GEMM is the foundation that
 proves it's achievable.
+
+## mmul GEMM works end-to-end: batched prefill ~4× faster (2026-07-24)
+
+The mmul Q4_0 GEMM is now integrated and correct in the runtime. Batched prefill
+(`ALVEARE_BATCH_PREFILL`) produces coherent, bit-exact output and prefills an
+18-token prompt in **~10.3 s vs ~40 s per-token — ~4× faster** (TTFT win).
+
+The earlier "streaming-bound, wrong target" conclusion was wrong: that 80 s was a
+STALE element-wise gemm xclbin, not streaming. With the real mmul gemm it's 10.3 s.
+
+**Runtime integration:** `run_gemm`/`run_gemm_streamed` size the gemm output BO as
+fp32 and convert the mmul kernel's fp32 output to bf16; `run_layer_batch` uses the
+fused `w_qkv` (one batched GEMM + slice) and the `o_gemv_n`-padded `w_o`.
+
+**Build gotcha (important):** `gemm_q_npu.specialize().compile(xclbin_path=…)`
+produces a STALE element-wise xclbin — an unreliable AOT-cache path that does not
+pick up the mmul `.cc` even after clearing `build/` and `~/.npu/cache`. The
+`run_iters` JIT path compiles the correct mmul. Build the gemm kernels with
+`tools/build_gemm_mmul.sh` (runs the verify with `NPU_CACHE_HOME` set and copies
+`<hash>/final.xclbin` + `insts.bin` to `build/gemm_NxK_b16.*`). Symptom of the
+stale xclbin at runtime: permuted output columns (`row[i]≈gemv[2i+1]`) + zero
+rows 8-15 — the 2×-stride signature of reading a bf16-output buffer as fp32.
+
+**Toward real-time decode:** decode is batch=1, which mmul can't accelerate;
+speculative decoding (draft proposes K, target verifies batch=K) supplies the
+batch and reuses `run_layer_batch`. The remaining piece is keeping the FFN
+gate/up/down RESIDENT for the batched verify (currently streamed — fine for a
+one-shot prefill, too slow per decode step). That + a draft model + accept/reject
+is the next build.

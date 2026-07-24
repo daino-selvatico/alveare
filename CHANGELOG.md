@@ -5,6 +5,14 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Added
+- **Batched mmul GEMM prefill (~4x faster prefill).** A new systolic `aie::mmul`
+  Q4_0 GEMM kernel (`kernels/gemm_q/gemm_q.cc`, ~56 GMAC/s vs ~5 for the
+  element-wise gemm) makes batched prefill correct and ~4x faster (18-token prompt:
+  ~40s -> ~10.3s), behind `ALVEARE_BATCH_PREFILL`. Foundation for speculative
+  decoding. Build the gemm kernels with `tools/build_gemm_mmul.sh` (the AOT
+  `.compile()` path is unreliable for these; see docs/kernel-roofline.md).
+
 ## [1.4.0] — 2026-07-23
 
 _Decode on Gemma-4-12B goes from ~2.6 s/token to **~1 s/token** — a **2.6×**
