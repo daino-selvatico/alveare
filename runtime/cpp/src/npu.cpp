@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <set>
+#include <tuple>
 #include <stdexcept>
 #include <utility>
 
@@ -342,14 +344,33 @@ void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
                                lk.kernel.group_id(3));
         lk.w_scratch_bytes = nbytes;
     }
+    // Measurement scaffold: separate weight-upload cost (what a resident weight
+    // would eliminate) from kernel compute. Prints once per (N,K,B) shape.
+    static const bool kProfStream = std::getenv("ALVEARE_PROFILE_STREAM") != nullptr;
+    using _pc = std::chrono::steady_clock;
+    auto _t0 = kProfStream ? _pc::now() : _pc::time_point{};
+
     std::memcpy(lk.w_scratch.map<void*>(), packed, nbytes);
     lk.w_scratch.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    auto _t1 = kProfStream ? _pc::now() : _pc::time_point{};
 
     std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(B) * K * sizeof(uint16_t));
     lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, lk.w_scratch, lk.x_bo, lk.y_bo);
     run.wait();
+
+    if (kProfStream) {
+        auto _t2 = _pc::now();
+        double up_ms = std::chrono::duration<double, std::milli>(_t1 - _t0).count();
+        double cp_ms = std::chrono::duration<double, std::milli>(_t2 - _t1).count();
+        static std::set<std::tuple<int,int,int>> seen;
+        auto key = std::make_tuple(N, K, B);
+        if (seen.insert(key).second)
+            std::fprintf(stderr, "[stream] gemm N=%d K=%d B=%d  w_upload=%.1fms (%.1fMB)  compute+x+out=%.1fms\n",
+                         N, K, B, up_ms, nbytes / 1e6, cp_ms);
+    }
 
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     // The mmul gemm kernel outputs fp32; convert to bf16 for the caller.
