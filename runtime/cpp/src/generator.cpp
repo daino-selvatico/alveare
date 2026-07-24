@@ -1,4 +1,5 @@
 #include "alveare/generator.h"
+#include "alveare/prompt_lookup.h"
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
@@ -218,6 +219,111 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     // 2. Decode: the last prompt token produces the first generated token.
     int current_token = input_tokens.back();
     int pos = num_prompt_tokens - 1;
+
+    // Speculative decode (gemma4, ALVEARE_SPECULATIVE): a prompt-lookup n-gram
+    // drafter proposes up to K tokens, verified in ONE batched forward; accept the
+    // matching prefix + one correction. When the drafter finds no match it falls
+    // back to the normal single-token forward, so it never decodes slower than the
+    // default path. The batched forward pays a fixed B=16 GEMM cost, so it only
+    // wins when a draft is found AND partly accepted (repetitive / structured
+    // text); the per-step log prints draft/accepted so the trade-off is visible.
+    bool use_spec = (cfg.model_type == "gemma4") && std::getenv("ALVEARE_SPECULATIVE");
+    if (use_spec) {
+        const int K = 4;                 // max draft length
+        const int max_seq_len = 2048;
+        std::vector<int> seq = input_tokens;  // committed sequence (drafter context)
+        int generated = 0, step = 0;
+
+        auto emit = [&](int t) -> bool {  // returns false to stop
+            if (tokenizer_.is_stop_token(t)) return false;
+            if (!on_token(tokenizer_.decode(t))) return false;
+            seq.push_back(t);
+            ++generated;
+            return true;
+        };
+
+        while (generated < params.max_tokens) {
+            auto t0_step = clock::now();
+            std::vector<int> draft = propose_draft(seq, K, 3, 2);
+            while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
+                draft.pop_back();
+            int nd = static_cast<int>(draft.size());
+
+            if (nd == 0) {
+                // Fallback: normal single-token decode (fused FFN, no B=16 penalty).
+                forward(current_token, pos, true);
+                if (pos >= num_prompt_tokens) cached_tokens_.push_back(current_token);
+                int t = sample(logits, params);
+                double ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
+                tag() << "spec " << ++step << ": draft=0 fallback -> 1 tok in "
+                      << std::fixed << std::setprecision(1) << ms << "ms (id=" << t << ")\n" << std::flush;
+                current_token = t; ++pos;
+                if (!emit(t)) break;
+                continue;
+            }
+
+            // Batched verify: rows = [current_token, draft...] at [pos..pos+nd].
+            int B = nd + 1;
+            std::vector<bf16> xb(static_cast<size_t>(B) * hidden_size);
+            std::vector<bf16> ob(static_cast<size_t>(B) * hidden_size);
+            std::vector<int> btoks(B);
+            btoks[0] = current_token;
+            for (int j = 0; j < nd; ++j) btoks[j + 1] = draft[j];
+            for (int b = 0; b < B; ++b)
+                for (int i = 0; i < hidden_size; ++i)
+                    xb[static_cast<size_t>(b) * hidden_size + i] =
+                        bf16(weights_.token_embd[static_cast<size_t>(btoks[b]) * hidden_size + i] * embed_scale);
+            for (int l = 0; l < cfg.num_hidden_layers; ++l) {
+                model_.run_layer_batch(xb.data(), B, pos, l, ob.data());
+                std::swap(xb, ob);
+            }
+            // Per-row: final norm + LM head + argmax.
+            std::vector<int> preds(B);
+            std::vector<bf16> normed(hidden_size);
+            std::vector<float> rl;
+            for (int b = 0; b < B; ++b) {
+                const bf16* xrow = &xb[static_cast<size_t>(b) * hidden_size];
+                float var = 0.0f;
+                for (int i = 0; i < hidden_size; ++i) { float v = xrow[i].to_float(); var += v * v; }
+                var /= hidden_size;
+                float inv = 1.0f / std::sqrt(var + cfg.rms_norm_eps);
+                for (int i = 0; i < hidden_size; ++i) {
+                    float w = weights_.output_norm.empty() ? 1.0f : weights_.output_norm[i];
+                    normed[i] = bf16(xrow[i].to_float() * inv * w);
+                }
+                run_lm_head(normed.data(), rl);
+                preds[b] = sample(rl, params);
+            }
+            // Accept draft[j] while it matches the model's argmax at row j.
+            int accept = 0;
+            while (accept < nd && preds[accept] == draft[accept]) ++accept;
+            double ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
+            tag() << "spec " << ++step << ": draft=" << nd << " accepted=" << accept
+                  << " -> " << (accept + 1) << " tok in " << std::fixed << std::setprecision(1) << ms
+                  << "ms (" << std::setprecision(1) << (ms / (accept + 1)) << "ms/tok)\n" << std::flush;
+
+            // KV is valid for rows 0..accept (current_token + accepted draft). Emit
+            // the accepted draft tokens then the correction preds[accept]; advance
+            // pos to pos+accept+1 (correction's KV is written by the next forward).
+            // Stale KV at rejected positions is overwritten next iteration.
+            bool stop = false;
+            for (int j = 0; j < accept; ++j) {
+                if (generated >= params.max_tokens) { stop = true; break; }
+                if (!emit(draft[j])) { stop = true; break; }
+            }
+            if (stop) break;
+            int corr = preds[accept];
+            current_token = corr;
+            pos = pos + accept + 1;
+            if (generated >= params.max_tokens) break;
+            if (!emit(corr)) break;
+        }
+        // KV is in the cache for positions [0, pos); current_token (seq.back()) has
+        // not been forwarded yet. Record only the cached tokens for cross-request reuse.
+        cached_tokens_.assign(seq.begin(), seq.begin() + std::min<size_t>(pos, seq.size()));
+        return;
+    }
+
     for (int i = 0; i < params.max_tokens; ++i) {
         double npu_s0 = model_.registry().npu_seconds();
         double ffn_s0 = model_.registry().ffn_seconds();
