@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <stdexcept>
@@ -312,6 +314,17 @@ void NpuRegistry::run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     // The mmul gemm kernel outputs fp32; convert to bf16 for the caller.
     const float* yf = lk.y_bo.map<const float*>();
+    if (std::getenv("ALVEARE_DUMP_Y")) {
+        std::fprintf(stderr, "[dump] B=%d N=%d K=%d y_bytes=%zu\n", B, N, K, size_t(B)*N*4);
+        std::fprintf(stderr, "[dump] yf fp32 [0..11]:");
+        for (int i = 0; i < 12; ++i) std::fprintf(stderr, " %.5f", yf[i]);
+        std::fprintf(stderr, "\n[dump] yf fp32 [N..N+5] (row1):");
+        for (int i = 0; i < 6; ++i) std::fprintf(stderr, " %.5f", yf[size_t(N)+i]);
+        const uint16_t* yb16 = reinterpret_cast<const uint16_t*>(yf);
+        std::fprintf(stderr, "\n[dump] raw as bf16 [0..15]:");
+        for (int i = 0; i < 16; ++i) { bf16 v; v.v = yb16[i]; std::fprintf(stderr, " %.5f", v.to_float()); }
+        std::fprintf(stderr, "\n");
+    }
     uint16_t* yout = static_cast<uint16_t*>(y_bf16);
     for (size_t i = 0; i < size_t(B) * N; ++i) yout[i] = bf16(yf[i]).v;
 }
