@@ -361,3 +361,36 @@ batch and reuses `run_layer_batch`. The remaining piece is keeping the FFN
 gate/up/down RESIDENT for the batched verify (currently streamed — fine for a
 one-shot prefill, too slow per decode step). That + a draft model + accept/reject
 is the next build.
+
+## Decisive measurement: batched prefill is mmul-COMPUTE-bound, not streaming (2026-07-24)
+
+Instrumented `run_gemm_streamed` (`ALVEARE_PROFILE_STREAM=1`) to separate the
+weight upload (what a resident weight would remove) from kernel compute:
+
+| GEMM (B=16)            | weight upload | compute+x+out | upload share |
+|-----------------------|---------------|---------------|--------------|
+| gate/up 16384×4096     | 4.3 ms (42MB) | 19.1 ms       | 18%          |
+| down 4096×8192         | 1.6 ms (21MB) | 10.1 ms       | 14%          |
+
+**The streamed FFN is compute-bound, not upload-bound** — a resident FFN would
+save only ~15%. This overturns the earlier "resident-weight FFN is the next
+piece" plan. The real wall is mmul GEMM throughput: **~56 GMAC/s**
+(16384·4096·16 MAC / 19.1 ms) versus the **873 GMAC/s** whole_array bf16 peak —
+~15× locked by (a) the per-tile Q4_0→bf16 dequant, (b) R=4 under-utilization,
+(c) fp32 accumulate + the memtile DMA funnel.
+
+Decode (batch=1) is likewise FFN-bound: 1015 ms/token = ffn 562 + gemv 311 +
+lm_head 67 + cpu 90.
+
+**Consequence for speculative decoding:** a B=16 verify costs ~5.3 s → best case
+16 tok / 5.3 s ≈ 3 tok/s, worst case (nothing accepted) 0.2 tok/s, *below* the
+1 tok/s decode. Speculative decoding cannot cross ~3 tok/s and loses on poor
+acceptance **until the mmul GEMM is faster**. The gate for real-time is therefore
+kernel throughput — the R=8 mmul with 2×2 register blocking plus a
+hoisted/vectorized dequant — not resident weights and not the drafter (the
+prompt-lookup n-gram drafter is already done and unit-tested).
+
+**Build gotcha:** `build_kernels.py --weights-dir X` regenerates `manifest.json`
+for X's shapes only; running it against a different model clobbers the manifest
+(and `kernels/build/` is gitignored, so git won't flag it). Recover by rebuilding
+a superset `manifest.json` from the on-disk xclbins — no recompile needed.
