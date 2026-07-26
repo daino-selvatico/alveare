@@ -229,7 +229,12 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     // text); the per-step log prints draft/accepted so the trade-off is visible.
     bool use_spec = (cfg.model_type == "gemma4") && std::getenv("ALVEARE_SPECULATIVE");
     if (use_spec) {
-        const int K = 4;                 // max draft length
+        // max draft length. The batched verify pads the GEMM to B=8 regardless of
+        // nd (see run_layer_batch), so the mmul cost is IDENTICAL for any nd<=7 —
+        // a longer draft fills the already-paid-for B=8 pad for free. K=7 => B=8,
+        // so on repetitive/structured text a verify can emit up to 8 tokens at the
+        // same ~3s cost as one that emitted 5 (profiled: 3060ms batched forward).
+        const int K = 7;                 // max draft length (fills the B=8 pad)
         const int max_seq_len = 2048;
         std::vector<int> seq = input_tokens;  // committed sequence (drafter context)
         int generated = 0, step = 0;
@@ -244,8 +249,13 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
-            // min_ngram=3: require a 3-token match before drafting, so spurious
-            // short matches don't trigger an expensive verify that gets rejected.
+            // min_ngram=3: require a 3-token context match before drafting. A
+            // rejected draft still runs the full B=8 verify (~3-4s, ~4x the 910ms
+            // fallback), so mis-fires on novel text are costly — but raising the gate
+            // to 4-grams did NOT remove them (matches into earlier repeated context
+            // are >=4-gram) and fired later on genuine repetition, so 3 is kept.
+            // Speculative is opt-in (ALVEARE_SPECULATIVE) and situational: a clear
+            // win on repetitive/structured runs, roughly neutral-to-negative on prose.
             std::vector<int> draft = propose_draft(seq, K, 3, 3);
             while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
                 draft.pop_back();
