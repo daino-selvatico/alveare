@@ -88,13 +88,20 @@ pip install -r requirements.txt
 
 That covers `fastapi`/`uvicorn`/`pydantic` (the OpenAI-compatible server), `numpy`/`ml_dtypes`/`gguf` (weights), `transformers` (tokenizer/chat template), and `requests` (the llama.cpp verification tools). Add `torch` separately if you want to regenerate the HF reference oracles (`tools/ref/`), which is only needed for development, not for serving.
 
-> **Serving fails with `ModuleNotFoundError: No module named 'fastapi'`?** You're running from the wrong environment (usually conda `base`). `conda activate alveare-aie` and install the requirements above. `alveare serve` now preflights this and prints exactly what's missing.
+> **Note:** the default native C++ server needs none of these Python deps — they are only for the `--legacy` Python server and the tokenizer/quantizer tooling. `requirements.txt` is still worth installing so `quantize`, `chat`, and the dev tools work.
 
 ---
 
-## 6. Activate the environment for each session
+## 6. Running: the environment is automatic
 
-Before running anything on the NPU, activate the conda env and source the AIE environment:
+Every `./alveare` command that touches the NPU (`serve`, `check`, `build-kernels`, `quantize`, `bench`, …) **auto-activates the `alveare-aie` conda env and sources the AIE environment**, then re-execs — so you can run them from any shell, including conda `base`, with no manual setup:
+
+```bash
+./alveare serve gemma4
+# [alveare] auto-activated the 'alveare-aie' env + NPU stack
+```
+
+If conda or the env isn't installed yet, it points you at `./alveare install`. For direct/dev work **outside** the launcher (running the Python tools by hand, compiling kernels manually), activate it yourself:
 
 ```bash
 conda activate alveare-aie

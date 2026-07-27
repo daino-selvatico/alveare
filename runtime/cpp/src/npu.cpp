@@ -2,8 +2,12 @@
 
 #include <chrono>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
+#include <set>
+#include <tuple>
 #include <stdexcept>
 #include <utility>
 
@@ -164,7 +168,9 @@ struct NpuRegistry::Impl {
                 } else {
                     const size_t rows = (kind == "gemm") ? size_t(B) : 1;
                     x_bytes = rows * size_t(K) * sizeof(uint16_t);
-                    y_bytes = rows * size_t(N) * sizeof(uint16_t);
+                    // gemm (mmul kernel) outputs fp32; gemv outputs bf16.
+                    const size_t y_elt = (kind == "gemm") ? sizeof(float) : sizeof(uint16_t);
+                    y_bytes = rows * size_t(N) * y_elt;
                 }
                 lk.x_bo = xrt::bo(device, x_bytes, XRT_BO_FLAGS_HOST_ONLY,
                                   lk.kernel.group_id(4));
@@ -308,7 +314,21 @@ void NpuRegistry::run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf
     run.wait();
 
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+    // The mmul gemm kernel outputs fp32; convert to bf16 for the caller.
+    const float* yf = lk.y_bo.map<const float*>();
+    if (std::getenv("ALVEARE_DUMP_Y")) {
+        std::fprintf(stderr, "[dump] B=%d N=%d K=%d y_bytes=%zu\n", B, N, K, size_t(B)*N*4);
+        std::fprintf(stderr, "[dump] yf fp32 [0..11]:");
+        for (int i = 0; i < 12; ++i) std::fprintf(stderr, " %.5f", yf[i]);
+        std::fprintf(stderr, "\n[dump] yf fp32 [N..N+5] (row1):");
+        for (int i = 0; i < 6; ++i) std::fprintf(stderr, " %.5f", yf[size_t(N)+i]);
+        const uint16_t* yb16 = reinterpret_cast<const uint16_t*>(yf);
+        std::fprintf(stderr, "\n[dump] raw as bf16 [0..15]:");
+        for (int i = 0; i < 16; ++i) { bf16 v; v.v = yb16[i]; std::fprintf(stderr, " %.5f", v.to_float()); }
+        std::fprintf(stderr, "\n");
+    }
+    uint16_t* yout = static_cast<uint16_t*>(y_bf16);
+    for (size_t i = 0; i < size_t(B) * N; ++i) yout[i] = bf16(yf[i]).v;
 }
 
 void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
@@ -324,8 +344,16 @@ void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
                                lk.kernel.group_id(3));
         lk.w_scratch_bytes = nbytes;
     }
+    // Measurement scaffold: separate weight-upload cost (what a resident weight
+    // would eliminate) from kernel compute. Prints once per (N,K,B) shape.
+    static const bool kProfStream = std::getenv("ALVEARE_PROFILE_STREAM") != nullptr;
+    using _pc = std::chrono::steady_clock;
+    auto _t0 = kProfStream ? _pc::now() : _pc::time_point{};
+
     std::memcpy(lk.w_scratch.map<void*>(), packed, nbytes);
     lk.w_scratch.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    auto _t1 = kProfStream ? _pc::now() : _pc::time_point{};
 
     std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(B) * K * sizeof(uint16_t));
     lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -333,8 +361,22 @@ void NpuRegistry::run_gemm_streamed(int B, int N, int K, const void* packed,
     auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, lk.w_scratch, lk.x_bo, lk.y_bo);
     run.wait();
 
+    if (kProfStream) {
+        auto _t2 = _pc::now();
+        double up_ms = std::chrono::duration<double, std::milli>(_t1 - _t0).count();
+        double cp_ms = std::chrono::duration<double, std::milli>(_t2 - _t1).count();
+        static std::set<std::tuple<int,int,int>> seen;
+        auto key = std::make_tuple(N, K, B);
+        if (seen.insert(key).second)
+            std::fprintf(stderr, "[stream] gemm N=%d K=%d B=%d  w_upload=%.1fms (%.1fMB)  compute+x+out=%.1fms\n",
+                         N, K, B, up_ms, nbytes / 1e6, cp_ms);
+    }
+
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(B) * N * sizeof(uint16_t));
+    // The mmul gemm kernel outputs fp32; convert to bf16 for the caller.
+    const float* yf = lk.y_bo.map<const float*>();
+    uint16_t* yout = static_cast<uint16_t*>(y_bf16);
+    for (size_t i = 0; i < size_t(B) * N; ++i) yout[i] = bf16(yf[i]).v;
 }
 
 void NpuRegistry::run_ffn_fused(int H, int I, const std::string& activation, WeightHandle w,

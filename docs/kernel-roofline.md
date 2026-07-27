@@ -275,3 +275,149 @@ the matmuls can run vastly faster per token. Even at modest batch and with Q4
 dequant overhead (amortized over the batch), there is large headroom over ~20
 GMAC/s. Next: build a Q4_0 mmul GEMM kernel (dequant the weight tile to bf16 into
 the mmul B operand), wire it into the batched path, and add speculative decoding.
+
+## Working Q4_0 mmul GEMM (2026-07-23): 10.7× the element-wise kernel
+
+Built and validated on-NPU a batched Q4_0 GEMM using `aie::mmul<4,8,8>`
+(`kernels/gemm_q/gemm_q.cc`). It dequantizes each output-row tile (8 rows) of
+Q4_0 weights to bf16 once — amortized over the batch — then runs the systolic
+mmul; `y` is fp32 so the accumulator persists across the per-k-tile calls.
+
+Measured (N=4096, K=4096), bit-accurate (max_diff vs fp32 CPU ref = **0.33**,
+*better* than the element-wise 3.5 because it accumulates in fp32):
+
+| kernel | B=16 | B=8 |
+|---|---:|---:|
+| element-wise gemm_q | 51.5 ms (~5 GMAC/s) | — |
+| **mmul gemm_q** | **4.8 ms (~56 GMAC/s)** | 3.4 ms (~39 GMAC/s) |
+
+→ **10.7× at B=16**; per token (÷B) the mmul GEMM is ~2× the decode gemv even at
+B=8. Bigger batch = higher throughput (the dequant amortizes). Bugs fixed:
+device n_cols=1 (added `_resolve_full_device`), the dequant buffer must be
+tile-memory `.bss` not the 3.8 KB worker stack, and only T rows at a time (whole
+tile overflows tile memory). `aie::mmul<8,8,8>` (C=64 fp32) exceeds one
+accumulator register → needs the 2×2 register blocking of the reference; R=4
+(C=32) is the working single-accumulator config.
+
+### Realistic real-time projection
+Single-stream decode is batch=1, so this kernel helps only with a **batch** →
+speculative decoding (draft proposes K, target verifies K in one batch=K
+forward). At K≈8 the mmul GEMM is ~2× the gemv per token, and the ~250 ms/token
+of context switches amortize over K. Net: roughly **2–3 tok/s** (interactive),
+bounded by speculative acceptance rate and small-batch mmul efficiency — a real
+step up from 1 tok/s, though the full 5–10× would need higher effective batch
+and an mmul FFN too. **Next build (focused):** (1) wire the mmul GEMM into the
+batched-prefill path (npu.cpp fp32-y handling) for an immediate faster-prefill
+win; (2) mmul FFN; (3) speculative decoding.
+
+### Integration finding (2026-07-23): batched prefill is streaming-bound, not the target
+
+Wired the mmul GEMM into the batched-prefill path (run_layer_batch, updated for
+the w_qkv fusion + o_gemv_n padding; run_gemm/run_gemm_streamed made to read the
+kernel's fp32 y and convert to bf16; ensure_loaded sizes the gemm y BO as fp32).
+Two findings, so the change was reverted from the runtime (kept only the kernel +
+gemm_q.py on the branch):
+
+1. **Prefill is streaming-bound.** The batched FFN streams the separate Q4
+   gate/up/down weights (~6 GB/token) per chunk; that DMA dominates (~80 s),
+   so a 10× faster GEMM does not move prefill time. The GEMV/GEMM compute is a
+   small fraction here.
+2. A `run_gemm` correctness discrepancy appeared at N=16384 with a resident
+   weight (rows came out wrong), needing more debugging — not worth it for a
+   target that can't win anyway.
+
+**Conclusion:** the mmul GEMM helps only where the matmul is the bottleneck **and**
+weights are resident — i.e. a batched forward with an **mmul FFN kernel that keeps
+the FFN weights resident** (like the current fused FFN, but batched). That mmul
+FFN is the real missing piece; speculative decoding then supplies the batch. Both
+remain the (large) next build. The validated 10× mmul GEMM is the foundation that
+proves it's achievable.
+
+## mmul GEMM works end-to-end: batched prefill ~4× faster (2026-07-24)
+
+The mmul Q4_0 GEMM is now integrated and correct in the runtime. Batched prefill
+(`ALVEARE_BATCH_PREFILL`) produces coherent, bit-exact output and prefills an
+18-token prompt in **~10.3 s vs ~40 s per-token — ~4× faster** (TTFT win).
+
+The earlier "streaming-bound, wrong target" conclusion was wrong: that 80 s was a
+STALE element-wise gemm xclbin, not streaming. With the real mmul gemm it's 10.3 s.
+
+**Runtime integration:** `run_gemm`/`run_gemm_streamed` size the gemm output BO as
+fp32 and convert the mmul kernel's fp32 output to bf16; `run_layer_batch` uses the
+fused `w_qkv` (one batched GEMM + slice) and the `o_gemv_n`-padded `w_o`.
+
+**Build gotcha (important):** `gemm_q_npu.specialize().compile(xclbin_path=…)`
+produces a STALE element-wise xclbin — an unreliable AOT-cache path that does not
+pick up the mmul `.cc` even after clearing `build/` and `~/.npu/cache`. The
+`run_iters` JIT path compiles the correct mmul. Build the gemm kernels with
+`tools/build_gemm_mmul.sh` (runs the verify with `NPU_CACHE_HOME` set and copies
+`<hash>/final.xclbin` + `insts.bin` to `build/gemm_NxK_b16.*`). Symptom of the
+stale xclbin at runtime: permuted output columns (`row[i]≈gemv[2i+1]`) + zero
+rows 8-15 — the 2×-stride signature of reading a bf16-output buffer as fp32.
+
+**Toward real-time decode:** decode is batch=1, which mmul can't accelerate;
+speculative decoding (draft proposes K, target verifies batch=K) supplies the
+batch and reuses `run_layer_batch`. The remaining piece is keeping the FFN
+gate/up/down RESIDENT for the batched verify (currently streamed — fine for a
+one-shot prefill, too slow per decode step). That + a draft model + accept/reject
+is the next build.
+
+## Decisive measurement: batched prefill is mmul-COMPUTE-bound, not streaming (2026-07-24)
+
+Instrumented `run_gemm_streamed` (`ALVEARE_PROFILE_STREAM=1`) to separate the
+weight upload (what a resident weight would remove) from kernel compute:
+
+| GEMM (B=16)            | weight upload | compute+x+out | upload share |
+|-----------------------|---------------|---------------|--------------|
+| gate/up 16384×4096     | 4.3 ms (42MB) | 19.1 ms       | 18%          |
+| down 4096×8192         | 1.6 ms (21MB) | 10.1 ms       | 14%          |
+
+**The streamed FFN is compute-bound, not upload-bound** — a resident FFN would
+save only ~15%. This overturns the earlier "resident-weight FFN is the next
+piece" plan. The real wall is mmul GEMM throughput: **~56 GMAC/s**
+(16384·4096·16 MAC / 19.1 ms) versus the **873 GMAC/s** whole_array bf16 peak —
+~15× locked by (a) the per-tile Q4_0→bf16 dequant, (b) R=4 under-utilization,
+(c) fp32 accumulate + the memtile DMA funnel.
+
+Decode (batch=1) is likewise FFN-bound: 1015 ms/token = ffn 562 + gemv 311 +
+lm_head 67 + cpu 90.
+
+**Consequence for speculative decoding:** a B=16 verify costs ~5.3 s → best case
+16 tok / 5.3 s ≈ 3 tok/s, worst case (nothing accepted) 0.2 tok/s, *below* the
+1 tok/s decode. Speculative decoding cannot cross ~3 tok/s and loses on poor
+acceptance **until the mmul GEMM is faster**. The gate for real-time is therefore
+kernel throughput — the R=8 mmul with 2×2 register blocking plus a
+hoisted/vectorized dequant — not resident weights and not the drafter (the
+prompt-lookup n-gram drafter is already done and unit-tested).
+
+**Build gotcha:** `build_kernels.py --weights-dir X` regenerates `manifest.json`
+for X's shapes only; running it against a different model clobbers the manifest
+(and `kernels/build/` is gitignored, so git won't flag it). Recover by rebuilding
+a superset `manifest.json` from the on-disk xclbins — no recompile needed.
+
+## mmul GEMM kernel: 1.57× faster (56 → 88 GMAC/s), 2026-07-24
+
+Three bit-exact optimizations to `kernels/gemm_q/gemm_q.cc` (N=4096 K=4096 B=16,
+device time, max_diff unchanged 0.3264):
+
+| step                                   | device µs | GMAC/s |
+|----------------------------------------|-----------|--------|
+| baseline (transpose inside batch loop) | 4800      | 56     |
+| hoist weight transpose out of batch    | 4405      | 61     |
+| 4 concurrent batch accumulators        | 3675      | 73     |
+| fuse Q4_0 dequant (1× to_float/mul)    | 3049      | 88     |
+
+- **Transpose hoist**: the B operand does not depend on the batch tile, so build
+  the pre-transposed `btile` once per output-tile instead of re-transposing (and
+  re-loading) it for every batch tile.
+- **Concurrent accumulators**: a single `MMUL` accumulator serializes on systolic
+  latency (each `C.mac` depends on the previous). Four independent accumulators
+  (`C0..C3`), with the weight loaded once per `ki` and shared, keep the pipeline
+  full — the biggest single win.
+- **Dequant fuse**: interleave the low/high int4 nibbles as int16 first, then one
+  32-wide `to_float` + one 32-wide scale multiply (was two of each).
+
+**Remaining gap to the 873 GMAC/s bf16 peak:** the systolic array is idle during
+the (vector-unit) dequant, which is serialized before the mmul loop per tile.
+Overlapping dequant with mmul (double-buffered `wtile`/`btile`, software-pipelined
+across output tiles) is the next lever — a larger, riskier rewrite.
