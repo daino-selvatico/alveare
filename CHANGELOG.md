@@ -29,6 +29,15 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
   decode is ~97% NPU dispatch and memory/dequant-bound, pinning the architectural
   ceiling at ~3 tok/s on 12B Q4 (see docs/kernel-roofline.md).
 
+### Changed
+- **`./alveare` auto-activates its environment.** Commands that touch the NPU
+  (`serve`, `check`, `build-kernels`, `quantize`, `bench`, ...) now detect and
+  activate the `alveare-aie` conda env + source the mlir-aie NPU stack, then
+  re-exec — so `./alveare serve gemma4` works from any shell (e.g. conda `base`)
+  with no manual `conda activate` / `env_setup.sh`. If conda or the env is missing
+  it points at `./alveare install`. The native C++ server no longer wrongly
+  requires the Python `fastapi`/`uvicorn`/`pyxrt` deps (those gate `--legacy` only).
+
 ## [1.4.0] — 2026-07-23
 
 _Decode on Gemma-4-12B goes from ~2.6 s/token to **~1 s/token** — a **2.6×**

@@ -26,8 +26,65 @@ while [ -h "$SOURCE" ]; do
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+SELF="$ROOT/$(basename "$SOURCE")"   # absolute path to this script, for re-exec
 
 PY="${ALVEARE_PYTHON:-python}"
+ENV_NAME="${ALVEARE_ENV_NAME:-alveare-aie}"
+
+# Auto-bootstrap into the runtime environment. Commands that touch the NPU need
+# the 'alveare-aie' conda env AND the mlir-aie NPU stack (pyxrt/aie, XRT libs on
+# LD_LIBRARY_PATH). Instead of making the user activate both by hand — the #1
+# gotcha, e.g. running from conda 'base' — we detect the env, activate it, source
+# env_setup.sh, and re-exec ourselves. Guarded by ALVEARE_BOOTSTRAPPED so we try
+# at most once; if conda or the env is missing we point at `./alveare install`.
+ensure_runtime_env() {
+  [ -n "${ALVEARE_BOOTSTRAPPED:-}" ] && return 0
+  # Already fully set up? (right conda env + env_setup.sh sourced.)
+  if [ "${CONDA_DEFAULT_ENV:-}" = "$ENV_NAME" ] && [ -n "${MLIR_AIE_INSTALL_DIR:-}" ]; then
+    return 0
+  fi
+
+  # Locate a conda base.
+  local conda_base=""
+  if command -v conda >/dev/null 2>&1; then
+    conda_base="$(conda info --base 2>/dev/null || true)"
+  elif [ -n "${CONDA_EXE:-}" ]; then
+    conda_base="$(dirname "$(dirname "$CONDA_EXE")")"
+  else
+    local c
+    for c in "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/miniforge3" /opt/conda; do
+      [ -f "$c/etc/profile.d/conda.sh" ] && { conda_base="$c"; break; }
+    done
+  fi
+  if [ -z "$conda_base" ] || [ ! -f "$conda_base/etc/profile.d/conda.sh" ]; then
+    echo "error: could not find conda to auto-activate the '$ENV_NAME' environment." >&2
+    echo "Run the one-time setup, then retry:" >&2
+    echo "    ./alveare install         # creates the env + installs the toolchain" >&2
+    exit 1
+  fi
+
+  # Activate + source the NPU stack. conda/env_setup scripts are not written for
+  # 'set -euo pipefail', so relax it around them. env_setup.sh reads $1/$2 as
+  # optional install paths — pass empty positionals so it uses its pip defaults
+  # instead of interpreting our subcommand ('serve', model name) as paths.
+  set +eu
+  # shellcheck disable=SC1090,SC1091
+  source "$conda_base/etc/profile.d/conda.sh"
+  if ! conda activate "$ENV_NAME" 2>/dev/null; then
+    set -eu
+    echo "error: the '$ENV_NAME' conda env does not exist yet." >&2
+    echo "Run the one-time setup, then retry:" >&2
+    echo "    ./alveare install" >&2
+    exit 1
+  fi
+  local aie_env="$ROOT/mlir-aie/utils/env_setup.sh"
+  [ -f "$aie_env" ] && source "$aie_env" "" "" >/dev/null 2>&1 || true
+  set -eu
+
+  echo "[alveare] auto-activated the '$ENV_NAME' env + NPU stack" >&2
+  export ALVEARE_BOOTSTRAPPED=1
+  exec "$SELF" "$@"
+}
 
 usage() {
   cat <<'EOF'
@@ -245,22 +302,21 @@ cmd_serve() {
     echo "warning: $weights_dir has no config.json; the server may fail to detect the model." >&2
   fi
 
-  # Preflight: the server needs its runtime deps AND the NPU stack. The #1
-  # gotcha is running from the wrong env (e.g. conda 'base'), where these are
-  # missing. Fail early with an actionable message instead of a raw traceback.
-  local missing=""
-  "$PY" -c 'import fastapi, uvicorn, pydantic' >/dev/null 2>&1 || missing="$missing fastapi/uvicorn/pydantic"
-  "$PY" -c 'import pyxrt' >/dev/null 2>&1 || missing="$missing pyxrt(NPU)"
-  if [ -n "$missing" ]; then
-    echo "error: missing Python dependencies for '$PY':$missing" >&2
-    echo >&2
-    echo "You are probably not in the 'alveare-aie' conda environment." >&2
-    echo "Activate it and install the runtime deps, then retry:" >&2
-    echo "    conda activate alveare-aie" >&2
-    echo "    pip install -r requirements.txt          # fastapi, uvicorn, ..." >&2
-    echo "    cd mlir-aie && source utils/env_setup.sh  # NPU stack (pyxrt/aie)" >&2
-    echo "See docs/SETUP.md for the full, version-pinned setup." >&2
-    exit 1
+  # Preflight: only the LEGACY Python server needs fastapi/uvicorn/pydantic +
+  # the pyxrt module. The default native C++ server links XRT directly and needs
+  # none of them (just the NPU libs on LD_LIBRARY_PATH, provided by env_setup.sh,
+  # which ensure_runtime_env already sourced). So gate this check on --legacy.
+  if [ "${legacy:-0}" -eq 1 ]; then
+    local missing=""
+    "$PY" -c 'import fastapi, uvicorn, pydantic' >/dev/null 2>&1 || missing="$missing fastapi/uvicorn/pydantic"
+    "$PY" -c 'import pyxrt' >/dev/null 2>&1 || missing="$missing pyxrt(NPU)"
+    if [ -n "$missing" ]; then
+      echo "error: missing Python dependencies for the legacy server ('$PY'):$missing" >&2
+      echo "Install them into the '$ENV_NAME' env, then retry:" >&2
+      echo "    pip install -r requirements.txt" >&2
+      echo "Or drop --legacy to use the native C++ server (no Python deps)." >&2
+      exit 1
+    fi
   fi
 
   echo "Serving model from: $weights_dir"
@@ -414,6 +470,13 @@ cmd_bench() {
 
 main() {
   local cmd="${1:-help}"
+  # Commands that touch the NPU / Python runtime get auto-bootstrapped into the
+  # alveare-aie env (see ensure_runtime_env). 'install'/'setup'/'help' must NOT —
+  # install creates the env, setup diagnoses it, help needs nothing.
+  case "$cmd" in
+    serve|check|build-kernels|quantize|bench|test|chat|list|models)
+      ensure_runtime_env "$@" ;;
+  esac
   [ "$#" -gt 0 ] && shift || true
   case "$cmd" in
     install)      cmd_install "$@" ;;
