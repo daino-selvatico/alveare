@@ -7,11 +7,27 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ### Added
 - **Batched mmul GEMM prefill (~4x faster prefill).** A new systolic `aie::mmul`
-  Q4_0 GEMM kernel (`kernels/gemm_q/gemm_q.cc`, ~56 GMAC/s vs ~5 for the
-  element-wise gemm) makes batched prefill correct and ~4x faster (18-token prompt:
-  ~40s -> ~10.3s), behind `ALVEARE_BATCH_PREFILL`. Foundation for speculative
-  decoding. Build the gemm kernels with `tools/build_gemm_mmul.sh` (the AOT
-  `.compile()` path is unreliable for these; see docs/kernel-roofline.md).
+  Q4_0 GEMM kernel (`kernels/gemm_q/gemm_q.cc`) makes batched prefill correct and
+  ~4x faster (18-token prompt: ~40s -> ~10.3s), behind `ALVEARE_BATCH_PREFILL`.
+  Build the gemm kernels with `tools/build_gemm_mmul.sh` (the AOT `.compile()` path
+  is unreliable for these; see docs/kernel-roofline.md).
+- **1.57x faster mmul GEMM kernel (56 -> 88 GMAC/s), bit-exact.** Three safe steps:
+  hoist the weight transpose out of the batch loop, run 4 concurrent batch
+  accumulators to hide systolic latency, and fuse the Q4_0 dequant. Prefill for a
+  39-token prompt drops 16.6s -> 12.4s. (dequant/mmul overlap was tried and rejected
+  — ~2x regression on the shared vector datapath; int8 mmul benchmarked at only ~8%
+  over bf16, so 88 GMAC/s is effectively the kernel ceiling.)
+- **Speculative decode (opt-in, `ALVEARE_SPECULATIVE`, gemma4).** A prompt-lookup
+  n-gram drafter proposes up to 7 tokens, verified in ONE batched B=8 forward;
+  accept the matching prefix + one correction, fall back to the normal single-token
+  decode when no draft is found (never slower than the default path). Situational: a
+  clear win on repetitive/structured output (measured ~473 ms/tok vs ~910 for a
+  fully-accepted 8-token burst), roughly neutral-to-negative on novel prose (a
+  rejected draft pays the full ~4s verify). Deterministic; rerun reproduces output.
+- **Gated decode profilers (`ALVEARE_PROFILE_DECODE`, zero cost when off).** Break
+  down per-token decode and the batched verify by phase. These established that
+  decode is ~97% NPU dispatch and memory/dequant-bound, pinning the architectural
+  ceiling at ~3 tok/s on 12B Q4 (see docs/kernel-roofline.md).
 
 ## [1.4.0] — 2026-07-23
 
