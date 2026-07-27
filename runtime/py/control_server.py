@@ -90,14 +90,29 @@ def append_log(msg: str):
 
 def discover_models() -> List[Dict[str, Any]]:
     models = []
-    # Search for quantized_weights_* directories
-    for d in ROOT_DIR.glob("quantized_weights*"):
-        if not d.is_dir():
+    seen_paths = set()
+    # Search for quantized_weights* directories and symlinks
+    for d in sorted(ROOT_DIR.glob("quantized_weights*")):
+        if not d.exists():
             continue
-        name = d.name.replace("quantized_weights_", "").replace("quantized_weights", "gemma")
-        if not name:
-            name = "default"
-        cfg_path = d / "config.json"
+        try:
+            real_p = d.resolve()
+        except Exception:
+            real_p = d
+
+        if real_p in seen_paths:
+            continue
+        seen_paths.add(real_p)
+
+        folder_name = d.name
+        if folder_name.startswith("quantized_weights_"):
+            alias = folder_name[len("quantized_weights_"):]
+        elif folder_name == "quantized_weights":
+            alias = "gemma3"
+        else:
+            alias = folder_name
+
+        cfg_path = real_p / "config.json"
         arch = "unknown"
         if cfg_path.exists():
             try:
@@ -107,13 +122,13 @@ def discover_models() -> List[Dict[str, Any]]:
             except Exception:
                 pass
         else:
-            if "llama" in d.name:
+            if "llama" in alias:
                 arch = "llama"
 
         # Calculate approximate size
         size_bytes = 0
         try:
-            for p in d.rglob("*"):
+            for p in real_p.rglob("*"):
                 if p.is_file() and not p.is_symlink():
                     size_bytes += p.stat().st_size
         except Exception:
@@ -122,13 +137,13 @@ def discover_models() -> List[Dict[str, Any]]:
         size_mb = round(size_bytes / (1024 * 1024), 1)
 
         models.append({
-            "id": name,
-            "alias": name,
+            "id": alias,
+            "alias": alias,
             "arch": arch,
-            "path": str(d),
+            "path": str(real_p),
             "size_mb": size_mb,
             "has_config": cfg_path.exists(),
-            "active": (name == state.active_model)
+            "active": (alias == state.active_model)
         })
     return models
 
@@ -301,10 +316,16 @@ async def npu_check():
         pass
 
     try:
-        res = subprocess.run([sys.executable, "-c", "import pyxrt"], capture_output=True, text=True)
-        pyxrt_import = res.returncode == 0
-    except Exception:
-        pass
+        import pyxrt
+        pyxrt_import = True
+    except ImportError:
+        try:
+            if "/usr/lib/python3/dist-packages" not in sys.path:
+                sys.path.append("/usr/lib/python3/dist-packages")
+            import pyxrt
+            pyxrt_import = True
+        except Exception:
+            pyxrt_import = False
 
     return {
         "device_node": device_node,

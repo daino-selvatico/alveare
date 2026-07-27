@@ -78,7 +78,7 @@ ensure_runtime_env() {
     exit 1
   fi
   local aie_env="$ROOT/mlir-aie/utils/env_setup.sh"
-  [ -f "$aie_env" ] && source "$aie_env" "" "" >/dev/null 2>&1 || true
+  [ -f "$aie_env" ] && source "$aie_env" >/dev/null 2>&1 || true
   set -eu
 
   echo "[alveare] auto-activated the '$ENV_NAME' env + NPU stack" >&2
