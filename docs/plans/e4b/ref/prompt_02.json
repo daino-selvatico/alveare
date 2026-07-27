@@ -1,0 +1,210 @@
+{
+  "prompt_index": 2,
+  "prompt_text": "The capital of France is",
+  "prompt_tokens": [
+    2,
+    818,
+    5279,
+    529,
+    7001,
+    563
+  ],
+  "completion_text": " Paris.",
+  "completion_token_ids": [
+    9079,
+    236761,
+    106
+  ],
+  "completion_probabilities": [
+    {
+      "id": 9079,
+      "token": " Paris",
+      "bytes": [
+        32,
+        80,
+        97,
+        114,
+        105,
+        115
+      ],
+      "logprob": -0.003746964270249009,
+      "top_logprobs": [
+        {
+          "id": 9079,
+          "token": " Paris",
+          "bytes": [
+            32,
+            80,
+            97,
+            114,
+            105,
+            115
+          ],
+          "logprob": -0.003746964270249009
+        },
+        {
+          "id": 5213,
+          "token": " **",
+          "bytes": [
+            32,
+            42,
+            42
+          ],
+          "logprob": -6.010041236877441
+        },
+        {
+          "id": 50429,
+          "token": "Paris",
+          "bytes": [
+            80,
+            97,
+            114,
+            105,
+            115
+          ],
+          "logprob": -8.856673240661621
+        },
+        {
+          "id": 3224,
+          "token": " known",
+          "bytes": [
+            32,
+            107,
+            110,
+            111,
+            119,
+            110
+          ],
+          "logprob": -8.937701225280762
+        },
+        {
+          "id": 236881,
+          "token": "?",
+          "bytes": [
+            63
+          ],
+          "logprob": -8.955792427062988
+        }
+      ]
+    },
+    {
+      "id": 236761,
+      "token": ".",
+      "bytes": [
+        46
+      ],
+      "logprob": -0.002241618698462844,
+      "top_logprobs": [
+        {
+          "id": 236761,
+          "token": ".",
+          "bytes": [
+            46
+          ],
+          "logprob": -0.002241618698462844
+        },
+        {
+          "id": 236764,
+          "token": ",",
+          "bytes": [
+            44
+          ],
+          "logprob": -6.2057671546936035
+        },
+        {
+          "id": 2907,
+          "token": ".)",
+          "bytes": [
+            46,
+            41
+          ],
+          "logprob": -9.212244033813477
+        },
+        {
+          "id": 236793,
+          "token": ";",
+          "bytes": [
+            59
+          ],
+          "logprob": -9.996072769165039
+        },
+        {
+          "id": 532,
+          "token": " and",
+          "bytes": [
+            32,
+            97,
+            110,
+            100
+          ],
+          "logprob": -10.901504516601562
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "token": "",
+      "bytes": [],
+      "logprob": -0.5755035877227783,
+      "top_logprobs": [
+        {
+          "id": 106,
+          "token": "",
+          "bytes": [],
+          "logprob": -0.5755035877227783
+        },
+        {
+          "id": 107,
+          "token": "\n",
+          "bytes": [
+            10
+          ],
+          "logprob": -1.6843655109405518
+        },
+        {
+          "id": 108,
+          "token": "\n\n",
+          "bytes": [
+            10,
+            10
+          ],
+          "logprob": -1.7684986591339111
+        },
+        {
+          "id": 9079,
+          "token": " Paris",
+          "bytes": [
+            32,
+            80,
+            97,
+            114,
+            105,
+            115
+          ],
+          "logprob": -3.76006817817688
+        },
+        {
+          "id": 7001,
+          "token": " France",
+          "bytes": [
+            32,
+            70,
+            114,
+            97,
+            110,
+            99,
+            101
+          ],
+          "logprob": -3.9867069721221924
+        }
+      ]
+    }
+  ],
+  "generation_settings": {
+    "temperature": 0,
+    "n_predict": 32,
+    "n_probs": 5,
+    "model": "gemma-4-E4B-it-UD-Q4_K_XL.gguf",
+    "llama_cpp_commit": "adb541a"
+  }
+}
