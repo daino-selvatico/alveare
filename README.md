@@ -59,25 +59,22 @@ Full, version-pinned instructions are in **[`docs/SETUP.md`](docs/SETUP.md)**. I
 # 1. Install everything (conda env alveare-aie + toolchain + deps) — one command:
 ./install.sh                    # or:  ./alveare install
 
-# 2. Every session, enter the env + NPU toolchain:
-conda activate alveare-aie
-cd mlir-aie && source utils/env_setup.sh && cd ..
-
-# 3. Verify the NPU end-to-end:
+# 2. Verify the NPU end-to-end. (No manual `conda activate` needed — every
+#    ./alveare command auto-activates the alveare-aie env + NPU toolchain.)
 ./alveare check
 
-# 4. Quantize a source GGUF into Alveare's Q4 layout (a single GGUF you downloaded).
+# 3. Quantize a source GGUF into Alveare's Q4 layout (a single GGUF you downloaded).
 #    The architecture is auto-detected from the GGUF; give it a short alias:
 ./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf     # -> quantized_weights_g4-12b
 #    (omit the alias to name it after the GGUF file)
 
-# 5. See what's installed:
+# 4. See what's installed:
 ./alveare list
 
-# 6. Serve it (OpenAI-compatible HTTP server):
+# 5. Serve it (OpenAI-compatible HTTP server):
 ./alveare serve g4-12b
 
-# 7. Talk to it from another terminal:
+# 6. Talk to it from another terminal:
 ./alveare chat
 ```
 
@@ -127,13 +124,7 @@ The server **auto-detects the architecture** from `config.json` in the served di
 
 ### From "I have a model" to "it's served"
 
-Everything below runs **inside the `alveare-aie` conda env with the NPU toolchain sourced** (see [`docs/SETUP.md`](docs/SETUP.md)). Running from another env (e.g. conda `base`) is the #1 gotcha — the server deps and the NPU stack won't be there:
-
-```bash
-conda activate alveare-aie
-pip install -r requirements.txt              # fastapi/uvicorn/... (one-time)
-cd mlir-aie && source utils/env_setup.sh && cd ..   # NPU stack (pyxrt/aie)
-```
+Every `./alveare` command **auto-activates the `alveare-aie` conda env + NPU toolchain** and re-execs, so the steps below work from any shell (including conda `base`) — no manual `conda activate` / `env_setup.sh`. If conda or the env isn't there yet it tells you to run `./alveare install`. (For direct/dev work outside the launcher, activate it yourself; see [`docs/SETUP.md`](docs/SETUP.md).)
 
 1. **Download a source GGUF** — a single file, as usual. E.g. for Gemma-4-12B grab a GGUF from Hugging Face (`bartowski/…gemma-4-12b-it-GGUF`, `unsloth/…`, etc.), the same file you'd give `llama.cpp`.
 2. **Quantize** it into Alveare's `.npy` layout (a few minutes; the 12B output is ~9.7 GB). The architecture is auto-detected; pick an alias:

@@ -5,6 +5,19 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-07-27
+
+_Faster prefill and a characterized decode ceiling. A new systolic `aie::mmul`
+Q4_0 GEMM makes **batched prefill ~4x faster** (18-token: ~40s -> ~10.3s) and was
+tuned **1.57x** (56 -> 88 GMAC/s), all bit-exact. Opt-in **speculative decode**
+(prompt-lookup drafter + batched B=8 verify) gives a clear win on repetitive/
+structured output (~473 ms/tok on a fully-accepted 8-token burst). Gated profilers
+established that decode is ~97% NPU dispatch and memory/dequant-bound: the
+architectural ceiling on 12B Q4 is **~3 tok/s** — bf16 and int8 MAC throughput are
+equal (~8% apart) and dequant/mmul overlap regresses, so breaking it needs a smaller
+model or lower-bit quant, not kernel work. Finally, `./alveare` now auto-activates
+its environment, so one command just works from any shell._
+
 ### Added
 - **Batched mmul GEMM prefill (~4x faster prefill).** A new systolic `aie::mmul`
   Q4_0 GEMM kernel (`kernels/gemm_q/gemm_q.cc`) makes batched prefill correct and
