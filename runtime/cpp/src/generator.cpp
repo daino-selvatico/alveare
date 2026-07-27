@@ -72,7 +72,7 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
     // scale (bytes 16..17) and 2 pad bytes. K = K_blocks * 32 is padded (4096 for
     // Gemma-4, vs hidden_size 3840), so x is treated as zero-padded past hidden_size.
     const int block_bytes = 20;
-    const int K_padded = (cfg.model_type == "gemma4") ? 4096 : hidden_size;
+    const int K_padded = cfg.get_padded_hidden_size();
     const int K_blocks = K_padded / 32;
     const int row_bytes = K_blocks * block_bytes;
     int vocab_size = static_cast<int>(weights_.lm_head.size() / row_bytes);
