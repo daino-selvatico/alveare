@@ -3,6 +3,27 @@
 #include <cstring>
 #include <stdexcept>
 #include <iostream>
+#include <chrono>
+#include <cstdlib>
+#include <iomanip>
+
+// Per-token decode profiler (ALVEARE_PROFILE_DECODE=1). Accumulates wall time by
+// phase across all layers of one forward; run_layer prints + resets on the last
+// layer. Coarse split: NPU dispatch (qkv/o/ffn gemv) vs host attention vs the
+// remaining CPU work (rmsnorm/rope/residual/kv), to locate the 1 tok/s bottleneck.
+namespace {
+struct DecodeProf { double npu_qkv=0, npu_o=0, npu_ffn=0, attn=0, layer=0; int nl=0; };
+static DecodeProf g_prof;
+// Batched-verify profiler: gemm(qkv+o resident) vs ffn(gate/up/down streamed:
+// upload+repack+compute) vs host attention vs the rest (rmsnorm/rope/geglu/kv).
+struct BatchProf { double gemm=0, ffn_up=0, ffn_repack=0, ffn_cmp=0, attn=0, layer=0; int nl=0; };
+static BatchProf g_bprof;
+static const bool g_prof_on = (std::getenv("ALVEARE_PROFILE_DECODE") != nullptr);
+using pclock = std::chrono::steady_clock;
+static inline double ms_since(std::chrono::time_point<pclock> t) {
+    return std::chrono::duration<double, std::milli>(pclock::now() - t).count();
+}
+}
 
 namespace alveare {
 
@@ -263,6 +284,7 @@ void Model::run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out
 }
 
 void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
+    auto t_layer = pclock::now();
     int K = config_.hidden_size;
     const LayerWeights& lw = weights_.layers[layer];
     
@@ -290,6 +312,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     std::vector<bf16> k(N_kv);
     std::vector<bf16> v(N_kv);
 
+    auto t_qkv = pclock::now();
     if (lw.w_qkv != kInvalidWeight) {
         // Fused Q/K/V: one gemv (one launch, one kernel-shape context) producing
         // [q | k | v] (or [q | k] for global, where v == k), then sliced.
@@ -310,6 +333,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
             v = k; // Gemma4 global layers use K for V
         }
     }
+    g_prof.npu_qkv += ms_since(t_qkv);
 
     // 3. QK-Norm & V-Norm (Gemma only)
     if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
@@ -367,7 +391,9 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
 
     // 6. Attention
     std::vector<bf16> attn_out(N_q);
+    auto t_attn = pclock::now();
     run_attention_host(q_rope.data(), pos, layer, attn_out.data());
+    g_prof.attn += ms_since(t_attn);
 
     // 7. Output Projection. o_gemv_n may be padded (gemma4 sliding: 8192) so O
     // reuses the w_qkv kernel context and avoids a shape switch; only the first
@@ -376,7 +402,9 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     int N_out_padded = config_.model_type == "gemma4" ? 4096 : N_out;
     int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : N_out_padded;
     std::vector<bf16> attn_proj(o_n, bf16(0.0f));
+    auto t_o = pclock::now();
     reg_.run_gemv(o_n, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    g_prof.npu_o += ms_since(t_o);
 
     // 8. Post-attention norm and residual
     std::vector<bf16> x_post_attn(K);
@@ -401,7 +429,9 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     int I_padded = config_.model_type == "gemma4" ? 16384 : config_.intermediate_size;
     std::vector<bf16> down(H_padded, bf16(0.0f));
     std::string act_type = (config_.model_type == "gemma3" || config_.model_type == "gemma4") ? "gelu" : "silu";
+    auto t_ffn = pclock::now();
     reg_.run_ffn_fused(H_padded, I_padded, act_type, lw.w_ffn_fused, x_norm2.data(), down.data());
+    g_prof.npu_ffn += ms_since(t_ffn);
 
     // 11. Post-FFN norm and residual
     if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
@@ -417,6 +447,24 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
             out_bf16[i] = bf16(x_post_attn[i].to_float() + down[i].to_float());
         }
     }
+
+    // Profiling: accumulate this layer, print + reset on the last layer.
+    if (g_prof_on) {
+        g_prof.layer += ms_since(t_layer);
+        g_prof.nl++;
+        if (layer == config_.num_hidden_layers - 1) {
+            double npu = g_prof.npu_qkv + g_prof.npu_o + g_prof.npu_ffn;
+            double cpu_rest = g_prof.layer - npu - g_prof.attn;
+            std::cerr << std::fixed << std::setprecision(1)
+                << "[decode-prof] layers=" << g_prof.nl
+                << " total=" << g_prof.layer << "ms"
+                << " | NPU=" << npu << " (qkv=" << g_prof.npu_qkv
+                << " o=" << g_prof.npu_o << " ffn=" << g_prof.npu_ffn << ")"
+                << " | attn(cpu)=" << g_prof.attn
+                << " | cpu_rest=" << cpu_rest << "\n" << std::flush;
+            g_prof = DecodeProf();
+        }
+    }
 }
 
 void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
@@ -424,9 +472,13 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     // gemma4-only batched prefill. Mirrors run_layer but over `nrows` positions,
     // padding the GEMM batch to B=16 and running QKV/O on resident weights and
     // FFN gate/up/down on streamed weights.
+    auto t_blayer = pclock::now();
     const int K = config_.hidden_size;      // 3840
     const int K_padded = 4096;
-    const int B = 16;
+    // Pad the GEMM batch to the smallest built kernel that fits: B=8 (speculative
+    // verify, nrows<=8) or B=16 (prefill chunks). A smaller B halves the mmul MACs
+    // (the dequant is fixed), so a short draft verify does not pay the full B=16.
+    const int B = (nrows <= 8) ? 8 : 16;
     const LayerWeights& lw = weights_.layers[layer];
 
     const bool is_sliding = ((layer + 1) % 6 != 0);
@@ -448,13 +500,21 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     for (int b = 0; b < nrows; ++b)
         run_rmsnorm_cpu(&x_batch[size_t(b) * K], attn_norm_w, &x_norm_pad[size_t(b) * K_padded], K);
 
-    // 2. QKV projections (batched GEMM on resident weights).
+    // 2. Fused Q/K/V projection (one batched GEMM), then slice — matches the
+    // decode path's w_qkv (q++k++v sliding, q++k global with v==k).
     std::vector<bf16> q(size_t(B) * N_q), k(size_t(B) * N_kv), v(size_t(B) * N_kv);
-    reg_.run_gemm(B, N_q, K_padded, lw.w_q, x_norm_pad.data(), q.data());
-    reg_.run_gemm(B, N_kv, K_padded, lw.w_k, x_norm_pad.data(), k.data());
-    if (is_sliding)
-        reg_.run_gemm(B, N_kv, K_padded, lw.w_v, x_norm_pad.data(), v.data());
-    else
+    std::vector<bf16> qkv(size_t(B) * lw.n_qkv);
+    auto t_bqkv = pclock::now();
+    reg_.run_gemm(B, lw.n_qkv, K_padded, lw.w_qkv, x_norm_pad.data(), qkv.data());
+    g_bprof.gemm += ms_since(t_bqkv);
+    for (int b = 0; b < nrows; ++b) {
+        const bf16* row = &qkv[size_t(b) * lw.n_qkv];
+        std::memcpy(&q[size_t(b) * N_q], row, size_t(N_q) * sizeof(bf16));
+        std::memcpy(&k[size_t(b) * N_kv], row + N_q, size_t(N_kv) * sizeof(bf16));
+        if (is_sliding)
+            std::memcpy(&v[size_t(b) * N_kv], row + N_q + N_kv, size_t(N_kv) * sizeof(bf16));
+    }
+    if (!is_sliding)
         v = k;  // gemma4 global layers reuse K for V (before per-head norm)
 
     // 3. QK-norm and V-norm (per head, per row).
@@ -495,18 +555,25 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
 
     // 6. Attention (per row, causal against the cache).
     std::vector<bf16> attn_out(size_t(B) * N_q, bf16(0.0f));
+    auto t_battn = pclock::now();
     for (int b = 0; b < nrows; ++b)
         run_attention_host(&q_rope[size_t(b) * N_q], pos_start + b, layer, &attn_out[size_t(b) * N_q]);
+    g_bprof.attn += ms_since(t_battn);
 
-    // 7. Output projection (batched GEMM on resident weight).
-    std::vector<bf16> attn_proj(size_t(B) * K_padded);
-    reg_.run_gemm(B, K_padded, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    // 7. Output projection (batched GEMM). w_o may be output-padded to o_gemv_n
+    // (gemma4 sliding shares the w_qkv kernel shape); only the first K columns
+    // of each row are the real projection.
+    const int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : K_padded;
+    std::vector<bf16> attn_proj(size_t(B) * o_n);
+    auto t_bo = pclock::now();
+    reg_.run_gemm(B, o_n, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    g_bprof.gemm += ms_since(t_bo);
 
     // 8. Post-attention norm + residual.
     std::vector<bf16> x_post_attn(size_t(nrows) * K);
     std::vector<bf16> normed(K);
     for (int b = 0; b < nrows; ++b) {
-        run_rmsnorm_cpu(&attn_proj[size_t(b) * K_padded], post_attn_w, normed.data(), K);
+        run_rmsnorm_cpu(&attn_proj[size_t(b) * o_n], post_attn_w, normed.data(), K);
         for (int i = 0; i < K; ++i)
             x_post_attn[size_t(b) * K + i] = bf16(x_batch[size_t(b) * K + i].to_float() + normed[i].to_float());
     }
@@ -519,10 +586,12 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     // 10. FFN: gate/up GEMM (streamed) -> GeGLU (CPU) -> down GEMM (2 K-chunks).
     const int I = 16384, I_real = 15360;
     std::vector<bf16> gate(size_t(B) * I), up(size_t(B) * I);
+    auto t_bgu = pclock::now();
     reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_gate_bytes.data(), lw.ffn_gate_bytes.size(),
                            x_norm2_pad.data(), gate.data());
     reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_up_bytes.data(), lw.ffn_up_bytes.size(),
                            x_norm2_pad.data(), up.data());
+    g_bprof.ffn_cmp += ms_since(t_bgu);
 
     std::vector<bf16> geglu(size_t(B) * I, bf16(0.0f));
     const float kGeluC = std::sqrt(2.0f / static_cast<float>(M_PI));
@@ -544,6 +613,7 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     std::vector<uint8_t> wchunk(size_t(Nd) * chunk_row_bytes);
     std::vector<bf16> xchunk(size_t(B) * chunkK), ychunk(size_t(B) * Nd);
     for (int c = 0; c < 2; ++c) {
+        auto t_rep = pclock::now();
         for (int r = 0; r < Nd; ++r)
             std::memcpy(&wchunk[size_t(r) * chunk_row_bytes],
                         &lw.ffn_down_bytes[size_t(r) * row_bytes + size_t(c) * chunk_row_bytes],
@@ -551,8 +621,11 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
         for (int b = 0; b < B; ++b)
             for (int i = 0; i < chunkK; ++i)
                 xchunk[size_t(b) * chunkK + i] = geglu[size_t(b) * I + size_t(c) * chunkK + i];
+        g_bprof.ffn_repack += ms_since(t_rep);
+        auto t_dn = pclock::now();
         reg_.run_gemm_streamed(B, Nd, chunkK, wchunk.data(), wchunk.size(),
                                xchunk.data(), ychunk.data());
+        g_bprof.ffn_cmp += ms_since(t_dn);
         for (int b = 0; b < nrows; ++b)
             for (int i = 0; i < K; ++i)
                 down_acc[size_t(b) * K + i] += ychunk[size_t(b) * Nd + i].to_float();
@@ -567,6 +640,24 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
         for (int i = 0; i < K; ++i)
             out_batch[size_t(b) * K + i] =
                 bf16((x_post_attn[size_t(b) * K + i].to_float() + down_normed[i].to_float()) * oscale);
+    }
+
+    if (g_prof_on) {
+        g_bprof.layer += ms_since(t_blayer);
+        g_bprof.nl++;
+        if (layer == config_.num_hidden_layers - 1) {
+            double acc = g_bprof.gemm + g_bprof.ffn_cmp + g_bprof.ffn_repack + g_bprof.attn;
+            double rest = g_bprof.layer - acc;
+            std::cerr << std::fixed << std::setprecision(1)
+                << "[verify-prof] layers=" << g_bprof.nl << " B=" << B
+                << " total=" << g_bprof.layer << "ms"
+                << " | gemm(qkv+o)=" << g_bprof.gemm
+                << " | ffn_cmp=" << g_bprof.ffn_cmp
+                << " | ffn_repack=" << g_bprof.ffn_repack
+                << " | attn=" << g_bprof.attn
+                << " | rest=" << rest << "\n" << std::flush;
+            g_bprof = BatchProf();
+        }
     }
 }
 

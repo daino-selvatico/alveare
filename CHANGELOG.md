@@ -5,6 +5,52 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-07-27
+
+_Faster prefill and a characterized decode ceiling. A new systolic `aie::mmul`
+Q4_0 GEMM makes **batched prefill ~4x faster** (18-token: ~40s -> ~10.3s) and was
+tuned **1.57x** (56 -> 88 GMAC/s), all bit-exact. Opt-in **speculative decode**
+(prompt-lookup drafter + batched B=8 verify) gives a clear win on repetitive/
+structured output (~473 ms/tok on a fully-accepted 8-token burst). Gated profilers
+established that decode is ~97% NPU dispatch and memory/dequant-bound: the
+architectural ceiling on 12B Q4 is **~3 tok/s** — bf16 and int8 MAC throughput are
+equal (~8% apart) and dequant/mmul overlap regresses, so breaking it needs a smaller
+model or lower-bit quant, not kernel work. Finally, `./alveare` now auto-activates
+its environment, so one command just works from any shell._
+
+### Added
+- **Batched mmul GEMM prefill (~4x faster prefill).** A new systolic `aie::mmul`
+  Q4_0 GEMM kernel (`kernels/gemm_q/gemm_q.cc`) makes batched prefill correct and
+  ~4x faster (18-token prompt: ~40s -> ~10.3s), behind `ALVEARE_BATCH_PREFILL`.
+  Build the gemm kernels with `tools/build_gemm_mmul.sh` (the AOT `.compile()` path
+  is unreliable for these; see docs/kernel-roofline.md).
+- **1.57x faster mmul GEMM kernel (56 -> 88 GMAC/s), bit-exact.** Three safe steps:
+  hoist the weight transpose out of the batch loop, run 4 concurrent batch
+  accumulators to hide systolic latency, and fuse the Q4_0 dequant. Prefill for a
+  39-token prompt drops 16.6s -> 12.4s. (dequant/mmul overlap was tried and rejected
+  — ~2x regression on the shared vector datapath; int8 mmul benchmarked at only ~8%
+  over bf16, so 88 GMAC/s is effectively the kernel ceiling.)
+- **Speculative decode (opt-in, `ALVEARE_SPECULATIVE`, gemma4).** A prompt-lookup
+  n-gram drafter proposes up to 7 tokens, verified in ONE batched B=8 forward;
+  accept the matching prefix + one correction, fall back to the normal single-token
+  decode when no draft is found (never slower than the default path). Situational: a
+  clear win on repetitive/structured output (measured ~473 ms/tok vs ~910 for a
+  fully-accepted 8-token burst), roughly neutral-to-negative on novel prose (a
+  rejected draft pays the full ~4s verify). Deterministic; rerun reproduces output.
+- **Gated decode profilers (`ALVEARE_PROFILE_DECODE`, zero cost when off).** Break
+  down per-token decode and the batched verify by phase. These established that
+  decode is ~97% NPU dispatch and memory/dequant-bound, pinning the architectural
+  ceiling at ~3 tok/s on 12B Q4 (see docs/kernel-roofline.md).
+
+### Changed
+- **`./alveare` auto-activates its environment.** Commands that touch the NPU
+  (`serve`, `check`, `build-kernels`, `quantize`, `bench`, ...) now detect and
+  activate the `alveare-aie` conda env + source the mlir-aie NPU stack, then
+  re-exec — so `./alveare serve gemma4` works from any shell (e.g. conda `base`)
+  with no manual `conda activate` / `env_setup.sh`. If conda or the env is missing
+  it points at `./alveare install`. The native C++ server no longer wrongly
+  requires the Python `fastapi`/`uvicorn`/`pyxrt` deps (those gate `--legacy` only).
+
 ## [1.4.0] — 2026-07-23
 
 _Decode on Gemma-4-12B goes from ~2.6 s/token to **~1 s/token** — a **2.6×**

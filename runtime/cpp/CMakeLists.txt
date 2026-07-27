@@ -36,6 +36,7 @@ set(ALVEARE_CORE_SRC
     src/model.cpp
     src/tokenizer.cpp
     src/gemma_tokenizer.cpp
+    src/prompt_lookup.cpp
     src/generator.cpp
     src/server.cpp
 )
