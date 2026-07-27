@@ -104,6 +104,7 @@ COMMANDS:
     build-kernels <model> Compile the hardware NPU kernels (.xclbin) for a model.
     list  (or: models)    List installed models (quantized weight directories).
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
+    start [opts]          Start the Web UI & Control Center dashboard (port 8080).
     chat [opts]           Minimal terminal chat against a running server.
     test                  Run the integration test suite (starts server and chat).
     bench [model]         Benchmark every NPU kernel + end-to-end prefill/decode;
@@ -468,13 +469,59 @@ cmd_bench() {
   exec "$PY" "$ROOT/tests/bench/run_bench.py" "$weights_dir"
 }
 
+cmd_start() {
+  local port="${ALVEARE_CONTROL_PORT:-8080}"
+  local host="${ALVEARE_CONTROL_HOST:-127.0.0.1}"
+  local no_browser=0
+  local dev=0
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port) port="$2"; shift 2 ;;
+      --host) host="$2"; shift 2 ;;
+      --no-browser) no_browser=1; shift 1 ;;
+      --dev) dev=1; shift 1 ;;
+      *) echo "error: unknown start option '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  if [ ! -d "$ROOT/frontend/dist" ] || [ "$dev" -eq 1 ]; then
+    if [ ! -d "$ROOT/frontend/node_modules" ]; then
+      echo "[start] Installing frontend dependencies..."
+      (cd "$ROOT/frontend" && npm install)
+    fi
+    if [ "$dev" -eq 1 ]; then
+      echo "[start] Starting frontend in dev mode (Vite)..."
+      (cd "$ROOT/frontend" && npm run dev -- --host "$host" &)
+    else
+      echo "[start] Building frontend for production..."
+      (cd "$ROOT/frontend" && npm run build)
+    fi
+  fi
+
+  echo "=========================================================="
+  echo " Alveare NPU Control Center & Web UI"
+  echo " Web UI URL:  http://$host:$port"
+  echo "=========================================================="
+  echo
+
+  export ALVEARE_CONTROL_HOST="$host"
+  export ALVEARE_CONTROL_PORT="$port"
+
+  if [ "$no_browser" -eq 0 ] && command -v xdg-open >/dev/null 2>&1; then
+    (sleep 1 && xdg-open "http://$host:$port" >/dev/null 2>&1 &) || true
+  fi
+
+  exec "$PY" "$ROOT/runtime/py/control_server.py"
+}
+
 main() {
   local cmd="${1:-help}"
   # Commands that touch the NPU / Python runtime get auto-bootstrapped into the
   # alveare-aie env (see ensure_runtime_env). 'install'/'setup'/'help' must NOT —
   # install creates the env, setup diagnoses it, help needs nothing.
   case "$cmd" in
-    serve|check|build-kernels|quantize|bench|test|chat|list|models)
+    serve|check|build-kernels|quantize|bench|test|chat|list|models|start)
       ensure_runtime_env "$@" ;;
   esac
   [ "$#" -gt 0 ] && shift || true
@@ -486,6 +533,7 @@ main() {
     quantize)     cmd_quantize "$@" ;;
     list|models)  cmd_list "$@" ;;
     serve)        cmd_serve "$@" ;;
+    start)        cmd_start "$@" ;;
     chat)         cmd_chat "$@" ;;
     test)         cmd_test "$@" ;;
     bench)        cmd_bench "$@" ;;
