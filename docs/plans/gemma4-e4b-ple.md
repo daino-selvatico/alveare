@@ -16,7 +16,18 @@ result before unblocking the next. Do the tasks in dependency order (below).
 - **M0.2 ✅ DONE + orchestrator-verified** — `docs/plans/e4b/PLE-spec.md` (exact
   PLE math, scales, injection order, sliding pattern, KV-sharing), cross-checked
   against `~/.unsloth/llama.cpp/src/models/gemma4-iswa.cpp` — matches.
-- **Next: M1 (quantizer) ∥ M2.1 (parameterization)** can start in parallel.
+- **M1 ✅ DONE** — `tools/quantize_gemma4e.py` exports all PLE tensors to
+  `quantized_weights_gemma4-e4b/` (722 files, 9.3G) + correct config. (Minor gap:
+  no standalone numeric PLE self-check report; PLE is validated for real in M2.2.)
+- **M2.1 ✅ DONE + orchestrator-verified** — gemma4 geometry read from config_;
+  12B re-tested bit-exact (coherent output, rerun token-ids identical). Two
+  environmental issues found & fixed during verification: (a) `kernels/build/
+  manifest.json` had been clobbered to **gemma3** by a stray kernel build (the
+  web-ui kernel panel?) — reconstructed the gemma4 superset from on-disk xclbins;
+  (b) the 12B `config.json` had a pre-existing bug `num_key_value_heads=30`
+  (garbage from the old quantizer) which the now-parameterized runtime reads —
+  patched to 8 (the sliding kv-head count the runtime always hard-coded).
+- **Next: M2.2 (PLE forward + KV-sharing) — the core, validated vs the M0 oracle.**
 - **New scope from M0.2:** E4B also uses **KV-cache sharing** (`shared_kv_layers=18`:
   layers 24–41 reuse earlier KV, do not write). The 12B does not. Add this to M2.2.
   Sliding pattern is the SAME period-6 as the 12B (`(l+1)%6==0` → global), so that
