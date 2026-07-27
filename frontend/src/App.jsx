@@ -194,27 +194,27 @@ export default function App() {
       </nav>
 
       {/* Main View Body */}
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {activeTab === 'chat' && (
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+        <div style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
           <ChatPlayground
             apiBase={apiBase}
             activeModel={status?.model || 'gemma4'}
             isServerRunning={status?.is_running || false}
           />
-        )}
+        </div>
 
-        {activeTab === 'control' && (
+        <div style={{ flex: 1, display: activeTab === 'control' ? 'block' : 'none' }}>
           <ServerControl
             apiBase={apiBase}
             status={status}
             models={models}
             onRefresh={() => { fetchStatus(); fetchModels(); }}
           />
-        )}
+        </div>
 
-        {activeTab === 'logs' && (
+        <div style={{ flex: 1, display: activeTab === 'logs' ? 'block' : 'none' }}>
           <LogsViewer apiBase={apiBase} />
-        )}
+        </div>
       </main>
     </div>
   );
