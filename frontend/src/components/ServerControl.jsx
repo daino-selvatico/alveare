@@ -160,9 +160,9 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
             <HardDrive size={22} color="var(--accent-cyan)" /> Modelli Quantizzati Disponibili
           </h3>
 
-          {kernelStatus?.manifest_exists && (
+          {kernelStatus && (
             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              Kernel compilati in <code>kernels/build</code>: <strong style={{ color: '#38bdf8' }}>{kernelStatus.manifest_model_type}</strong> ({kernelStatus.kernels_count} kernel)
+              Kernel salvati in <code>kernels/build/&lt;modello&gt;</code> per avvio immediato
             </span>
           )}
         </div>
@@ -171,7 +171,8 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
           {models.map(m => {
             const isServed = status?.is_running && status?.model === m.id;
             const isSelected = targetModel === m.id;
-            const isKernelMatching = kernelStatus?.manifest_exists && kernelStatus.manifest_model_type === m.arch;
+            const mKernel = kernelStatus?.[m.id] || (kernelStatus?.manifest_model_type === m.arch ? kernelStatus : null);
+            const isKernelMatching = mKernel?.manifest_exists;
 
             return (
               <div
@@ -207,14 +208,14 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
 
                 {/* Kernel Status Indicator */}
                 <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span>Kernel Hardware:</span>
+                  <span>Kernel Hardware NPU:</span>
                   {isKernelMatching ? (
                     <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                      ✓ Compilati ({m.arch})
+                      ✓ Compilati ({mKernel.kernels_count} kernel)
                     </span>
                   ) : (
                     <span style={{ color: '#fbbf24', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                      ⚠️ Da Compilare
+                      ⚠️ Non Compilati
                     </span>
                   )}
                 </div>

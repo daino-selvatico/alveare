@@ -301,28 +301,46 @@ class BuildKernelsRequest(BaseModel):
 
 @app.get("/api/kernels/status")
 async def get_kernels_status():
-    manifest_path = ROOT_DIR / "kernels" / "build" / "manifest.json"
-    if not manifest_path.exists():
-        return {
-            "manifest_exists": False,
-            "manifest_model_type": None,
-            "kernels_count": 0
-        }
-    try:
-        with open(manifest_path, "r") as f:
-            data = json.load(f)
-        return {
-            "manifest_exists": True,
-            "manifest_model_type": data.get("model_type"),
-            "kernels_count": len(data.get("kernels", [])),
-            "manifest_path": str(manifest_path)
-        }
-    except Exception as e:
-        return {
-            "manifest_exists": False,
-            "error": str(e),
-            "kernels_count": 0
-        }
+    result = {}
+    models = discover_models()
+    for m in models:
+        alias = m["alias"]
+        possible_paths = [
+            ROOT_DIR / "kernels" / "build" / alias / "manifest.json",
+            ROOT_DIR / "kernels" / f"build_{alias}" / "manifest.json",
+            Path(m["path"]) / "manifest.json",
+            ROOT_DIR / "kernels" / "build" / "manifest.json"
+        ]
+        manifest_found = None
+        manifest_data = None
+        for p in possible_paths:
+            if p.exists():
+                try:
+                    with open(p, "r") as f:
+                        d = json.load(f)
+                    if d.get("model_type") == m["arch"]:
+                        manifest_found = p
+                        manifest_data = d
+                        break
+                    elif not manifest_found:
+                        manifest_found = p
+                        manifest_data = d
+                except Exception:
+                    pass
+
+        if manifest_found and manifest_data:
+            result[m["id"]] = {
+                "manifest_exists": True,
+                "manifest_model_type": manifest_data.get("model_type"),
+                "kernels_count": len(manifest_data.get("kernels", [])),
+                "manifest_path": str(manifest_found)
+            }
+        else:
+            result[m["id"]] = {
+                "manifest_exists": False,
+                "kernels_count": 0
+            }
+    return result
 
 @app.post("/api/control/build-kernels")
 async def control_build_kernels(req: BuildKernelsRequest):

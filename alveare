@@ -335,11 +335,25 @@ cmd_serve() {
     exec "$PY" "$ROOT/runtime/py/server.py"
   else
     echo "Starting Native C++ Server..."
-    local manifest="$ROOT/kernels/build/manifest.json"
-    if [ ! -f "$manifest" ]; then
-      echo "error: manifest not found at $manifest. Ensure kernels are built." >&2
+    local alias
+    alias="$(basename "$weights_dir")"; alias="${alias#quantized_weights_}"; alias="${alias#quantized_weights}"
+    [ -z "$alias" ] && alias="gemma3"
+
+    local manifest=""
+    if [ -f "$ROOT/kernels/build/$alias/manifest.json" ]; then
+      manifest="$ROOT/kernels/build/$alias/manifest.json"
+    elif [ -f "$ROOT/kernels/build_$alias/manifest.json" ]; then
+      manifest="$ROOT/kernels/build_$alias/manifest.json"
+    elif [ -f "$weights_dir/manifest.json" ]; then
+      manifest="$weights_dir/manifest.json"
+    elif [ -f "$ROOT/kernels/build/manifest.json" ]; then
+      manifest="$ROOT/kernels/build/manifest.json"
+    else
+      echo "error: manifest.json not found for model '$model' ($alias). Ensure kernels are built." >&2
       exit 1
     fi
+
+    echo "Using NPU manifest: $manifest"
     exec "$ROOT/runtime/cpp/build/alveare_runtime" "$weights_dir" "$manifest" "$port"
   fi
 }
@@ -366,10 +380,13 @@ cmd_build_kernels() {
     exit 1
   fi
 
-  local out_dir="$ROOT/kernels/build"
+  local alias
+  alias="$(basename "$weights_dir")"; alias="${alias#quantized_weights_}"; alias="${alias#quantized_weights}"
+  [ -z "$alias" ] && alias="gemma3"
+
+  local out_dir="$ROOT/kernels/build/$alias"
   mkdir -p "$out_dir"
-  echo "Building hardware kernels for $weights_dir"
-  echo "Output directory: $out_dir"
+  echo "Building hardware kernels for $weights_dir -> $out_dir"
   echo "NOTE: This interrogates the XDNA2 compiler and can take a long time."
   echo "----------------------------------------------------------------------"
   exec "$PY" "$ROOT/tools/build_kernels.py" --weights-dir "$weights_dir" --out "$out_dir" "$@"
