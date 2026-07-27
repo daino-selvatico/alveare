@@ -21,12 +21,12 @@ venv/
 weights/
 models/
 quantized_weights*
-tools/ref/data*/
+tools/ref/data*
 
 # Toolchain installs (pinned in docs/toolchain-setup.md instead)
-mlir-aie/
-llvm-aie/
-ironenv/
+mlir-aie
+llvm-aie
+ironenv
 
 # Benchmark scratch
 tests/bench/*.raw
@@ -38,4 +38,4 @@ tests/bench/*.raw
 *.swp
 
 # Claude Code / agent worktrees & scratch
-.claude/
+.claude
