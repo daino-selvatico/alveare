@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Square, RotateCw, Server, Cpu, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, Wrench, ChevronDown, ChevronUp } from 'lucide-react';
+import { Play, Square, RotateCw, Server, Cpu, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, Wrench, ChevronDown, ChevronUp, Layers } from 'lucide-react';
 
 export default function ServerControl({ apiBase, status, models, onRefresh }) {
   const [loading, setLoading] = useState(false);
@@ -14,11 +14,11 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
   const [showBuildOptions, setShowBuildOptions] = useState(false);
   const [noGemm, setNoGemm] = useState(false);
   const [maxBatch, setMaxBatch] = useState(16);
-  const [buildingKernels, setBuildingKernels] = useState(false);
+  const [buildingModel, setBuildingModel] = useState(null);
 
   useEffect(() => {
     fetchKernelStatus();
-  }, []);
+  }, [status?.model]);
 
   const fetchKernelStatus = async () => {
     try {
@@ -30,15 +30,19 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
     }
   };
 
-  const handleStart = async () => {
+  const handleStart = async (modelToStart) => {
+    const selected = modelToStart || targetModel;
     setLoading(true);
     try {
       await fetch(`${apiBase}/api/control/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: targetModel, host, port, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, legacy, offline })
       });
-      setTimeout(onRefresh, 1000);
+      setTimeout(() => {
+        onRefresh();
+        fetchKernelStatus();
+      }, 1000);
     } catch (e) {
       alert(`Errore avvio server: ${e}`);
     } finally {
@@ -50,7 +54,10 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
     setLoading(true);
     try {
       await fetch(`${apiBase}/api/control/stop`, { method: 'POST' });
-      setTimeout(onRefresh, 1000);
+      setTimeout(() => {
+        onRefresh();
+        fetchKernelStatus();
+      }, 1000);
     } catch (e) {
       alert(`Errore arresto server: ${e}`);
     } finally {
@@ -58,15 +65,19 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
     }
   };
 
-  const handleRestart = async () => {
+  const handleRestart = async (modelToRestart) => {
+    const selected = modelToRestart || targetModel;
     setLoading(true);
     try {
       await fetch(`${apiBase}/api/control/restart`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: targetModel, host, port, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, legacy, offline })
       });
-      setTimeout(onRefresh, 1500);
+      setTimeout(() => {
+        onRefresh();
+        fetchKernelStatus();
+      }, 1500);
     } catch (e) {
       alert(`Errore riavvio server: ${e}`);
     } finally {
@@ -74,65 +85,60 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
     }
   };
 
-  const handleBuildKernels = async () => {
-    if (!confirm(`Vuoi avviare la compilazione AIE dei kernel NPU per il modello '${targetModel}'? La procedura compila i file .xclbin e aggiorna kernels/build/manifest.json.`)) {
+  const handleBuildKernels = async (modelId) => {
+    if (!confirm(`Vuoi avviare la compilazione dei kernel NPU per '${modelId}'? La procedura compila i file .xclbin e aggiorna kernels/build/manifest.json.`)) {
       return;
     }
-    setBuildingKernels(true);
+    setBuildingModel(modelId);
     try {
-      const res = await fetch(`${apiBase}/api/control/build-kernels`, {
+      await fetch(`${apiBase}/api/control/build-kernels`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: targetModel,
+          model: modelId,
           no_gemm: noGemm,
           max_batch: maxBatch
         })
       });
-      const data = await res.json();
-      alert(`Compilazione kernel avviata per '${targetModel}'. Segui il progresso in tempo reale nella tab 'Log & Diagnostica'.`);
+      alert(`Compilazione kernel avviata per '${modelId}'. Puoi seguire i log in tempo reale nella tab 'Log & Diagnostica'.`);
       setTimeout(fetchKernelStatus, 3000);
     } catch (e) {
       alert(`Errore avvio compilazione kernel: ${e}`);
     } finally {
-      setBuildingKernels(false);
+      setBuildingModel(null);
     }
   };
 
-  const selectedModelObj = models.find(m => m.id === targetModel);
-  const isManifestMismatch = kernelStatus?.manifest_exists &&
-    kernelStatus.manifest_model_type &&
-    selectedModelObj?.arch &&
-    kernelStatus.manifest_model_type !== selectedModelObj.arch;
+  const activeModelObj = models.find(m => m.id === status?.model);
 
   return (
     <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       
-      {/* Top Banner: Status & Actions */}
+      {/* 1. HERO SERVER STATUS BANNER */}
       <div className="glass-card" style={{ padding: '1.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-            <Server size={24} color="var(--accent-purple)" />
+            <Server size={26} color="var(--accent-purple)" />
             <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>Inference Engine Controller</h2>
             
-            {status?.status === 'running' && <span className="badge badge-success"><CheckCircle size={14} /> In Esecuzione</span>}
-            {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> Arrestato</span>}
+            {status?.status === 'running' && <span className="badge badge-success"><CheckCircle size={14} /> In Esecuzione ({status.model})</span>}
+            {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> Server Spento</span>}
             {status?.status === 'starting' && <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" /> In Avvio...</span>}
-            {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> Compilazione Kernel...</span>}
+            {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> Compilazione Kernel NPU in corso...</span>}
           </div>
           
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
             {status?.is_running
               ? `Server attivo su http://${status.host}:${status.port} (PID: ${status.pid}, Uptime: ${status.uptime_seconds}s)`
-              : "Il server NPU è attualmente spento. Configura le opzioni e clicca Avvia."}
+              : "Seleziona un modello dalla scheda sottostante e clicca 'Carica & Avvia'."}
           </p>
         </div>
 
-        {/* Action Controls */}
+        {/* Global Action Controls */}
         <div style={{ display: 'flex', gap: '0.75rem' }}>
           {status?.is_running ? (
             <>
-              <button className="btn-secondary" onClick={handleRestart} disabled={loading}>
+              <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading}>
                 <RotateCw size={18} /> Riavvia
               </button>
               <button className="btn-danger" onClick={handleStop} disabled={loading}>
@@ -140,227 +146,202 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
               </button>
             </>
           ) : (
-            <button className="btn-primary" onClick={handleStart} disabled={loading} style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
-              <Play size={18} /> Avvia Server NPU
+            <button className="btn-primary" onClick={() => handleStart(targetModel)} disabled={loading} style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
+              <Play size={18} /> Avvia Server NPU ({targetModel})
             </button>
           )}
         </div>
       </div>
 
-      {/* Hardware Kernel Manager Banner */}
-      <div className="glass-card" style={{ padding: '1.5rem', background: isManifestMismatch ? 'rgba(245, 158, 11, 0.08)' : 'rgba(23, 32, 54, 0.7)', border: isManifestMismatch ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid var(--border-color)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.4rem' }}>
-              <Hammer size={20} color={isManifestMismatch ? 'var(--accent-amber)' : 'var(--accent-cyan)'} />
-              <h3 style={{ fontSize: '1.1rem', fontWeight: 600 }}>Gestione Hardware Kernel NPU (`kernels/build`)</h3>
-              
-              {kernelStatus?.manifest_exists ? (
-                <span className="badge badge-success"><CheckCircle size={14} /> Manifest OK ({kernelStatus.manifest_model_type})</span>
-              ) : (
-                <span className="badge badge-warning"><AlertCircle size={14} /> Manifest Assente</span>
-              )}
-            </div>
+      {/* 2. UNIFIED MODEL GALLERY */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'white' }}>
+            <HardDrive size={22} color="var(--accent-cyan)" /> Modelli Quantizzati Disponibili
+          </h3>
 
-            <p style={{ fontSize: '0.9rem', color: isManifestMismatch ? '#fcd34d' : 'var(--text-muted)' }}>
-              {isManifestMismatch ? (
-                <>⚠️ Attenzione: I kernel compilati in <code>kernels/build</code> sono per l'architettura <strong>{kernelStatus.manifest_model_type}</strong>, mentre hai selezionato <strong>{targetModel}</strong> ({selectedModelObj?.arch}). Il server potrebbe fallire all'avvio. Clicca 'Compila Kernel NPU' per rigenerarli.</>
-              ) : (
-                <>I kernel hardware <code>.xclbin</code> vengono compilati via AOT per le matrici esatte del modello selezionato.</>
-              )}
-            </p>
+          {kernelStatus?.manifest_exists && (
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              Kernel compilati in <code>kernels/build</code>: <strong style={{ color: '#38bdf8' }}>{kernelStatus.manifest_model_type}</strong> ({kernelStatus.kernels_count} kernel)
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
+          {models.map(m => {
+            const isServed = status?.is_running && status?.model === m.id;
+            const isSelected = targetModel === m.id;
+            const isKernelMatching = kernelStatus?.manifest_exists && kernelStatus.manifest_model_type === m.arch;
+
+            return (
+              <div
+                key={m.id}
+                onClick={() => setTargetModel(m.id)}
+                className="glass-card"
+                style={{
+                  padding: '1.35rem',
+                  cursor: 'pointer',
+                  border: isServed ? '2px solid #10b981' : isSelected ? '2px solid var(--accent-purple)' : '1px solid var(--border-color)',
+                  background: isServed ? 'rgba(16, 185, 129, 0.08)' : isSelected ? 'rgba(139, 92, 246, 0.1)' : 'rgba(23, 32, 54, 0.6)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '1rem'
+                }}
+              >
+                {/* Header Card */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <h4 style={{ fontSize: '1.15rem', fontWeight: 700, color: isSelected ? '#c084fc' : 'white' }}>
+                      {m.id}
+                    </h4>
+                    <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                      Architettura: <strong>{m.arch}</strong> • Dimensione: {m.size_mb} MB
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.3rem' }}>
+                    {isServed && <span className="badge badge-success"><CheckCircle size={12} /> IN ESECUZIONE</span>}
+                    {isSelected && !isServed && <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.4)' }}>SELEZIONATO</span>}
+                  </div>
+                </div>
+
+                {/* Kernel Status Indicator */}
+                <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span>Kernel Hardware:</span>
+                  {isKernelMatching ? (
+                    <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                      ✓ Compilati ({m.arch})
+                    </span>
+                  ) : (
+                    <span style={{ color: '#fbbf24', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                      ⚠️ Da Compilare
+                    </span>
+                  )}
+                </div>
+
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', gap: '0.6rem', marginTop: 'auto', paddingTop: '0.5rem' }}>
+                  <button
+                    className="btn-primary"
+                    style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem', justifyContent: 'center' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTargetModel(m.id);
+                      isServed ? handleRestart(m.id) : handleStart(m.id);
+                    }}
+                    disabled={loading}
+                  >
+                    {isServed ? <RotateCw size={14} /> : <Play size={14} />}
+                    {isServed ? "Riavvia" : "Carica & Avvia"}
+                  </button>
+
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTargetModel(m.id);
+                      handleBuildKernels(m.id);
+                    }}
+                    disabled={buildingModel === m.id}
+                    title="Compila/Rigenera kernel .xclbin NPU per questo modello"
+                  >
+                    <Hammer size={14} /> {buildingModel === m.id ? "Compilazione..." : "Compila Kernel"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 3. SETTINGS & OPTIONS PANEL */}
+      <div className="glass-card" style={{ padding: '1.5rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Settings size={20} color="var(--accent-cyan)" /> Configurazione Server & Opzioni Avanzate Kernel
+          </h3>
+
+          <button className="btn-secondary" onClick={() => setShowBuildOptions(!showBuildOptions)} style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem' }}>
+            {showBuildOptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />} Opzioni Avanzate Compilazione
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+              Indirizzo Host
+            </label>
+            <input
+              type="text"
+              value={host}
+              onChange={e => setHost(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '0.65rem',
+                borderRadius: '8px',
+                background: 'rgba(0,0,0,0.4)',
+                border: '1px solid var(--border-color)',
+                color: 'white',
+                fontFamily: 'var(--font-mono)'
+              }}
+            />
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <button className="btn-primary" onClick={handleBuildKernels} disabled={buildingKernels} style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%)' }}>
-              <Wrench size={18} /> Compila / Ricrea Kernel per {targetModel}
-            </button>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+              Porta API HTTP
+            </label>
+            <input
+              type="number"
+              value={port}
+              onChange={e => setPort(parseInt(e.target.value) || 8000)}
+              style={{
+                width: '100%',
+                padding: '0.65rem',
+                borderRadius: '8px',
+                background: 'rgba(0,0,0,0.4)',
+                border: '1px solid var(--border-color)',
+                color: 'white',
+                fontFamily: 'var(--font-mono)'
+              }}
+            />
+          </div>
 
-            <button className="btn-secondary" onClick={() => setShowBuildOptions(!showBuildOptions)}>
-              {showBuildOptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />} Opzioni Avanzate
-            </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', justifyContent: 'center' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
+              <input type="checkbox" checked={legacy} onChange={e => setLegacy(e.target.checked)} />
+              <span>Server Legacy Python (Uvicorn)</span>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
+              <input type="checkbox" checked={offline} onChange={e => setOffline(e.target.checked)} />
+              <span>Modalità Offline (HF_HUB_OFFLINE)</span>
+            </label>
           </div>
         </div>
 
-        {/* Advanced Kernel Options Accordion */}
+        {/* Expandable Advanced Kernel Compilation Options */}
         {showBuildOptions && (
-          <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem' }}>
+          <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
               <input type="checkbox" checked={noGemm} onChange={e => setNoGemm(e.target.checked)} />
-              <span>--no-gemm (Salta forme GEMM per prefill più rapido)</span>
+              <span>--no-gemm (Compilazione veloce saltando forme GEMM prefill)</span>
             </label>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.88rem' }}>
               <span>--max-batch:</span>
               <input
                 type="number"
                 value={maxBatch}
                 onChange={e => setMaxBatch(parseInt(e.target.value) || 16)}
-                style={{ width: '70px', padding: '0.3rem', borderRadius: '6px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: 'white' }}
+                style={{ width: '80px', padding: '0.4rem', borderRadius: '6px', background: 'rgba(0,0,0,0.4)', border: '1px solid var(--border-color)', color: 'white', fontFamily: 'var(--font-mono)' }}
               />
             </div>
           </div>
         )}
       </div>
 
-      {/* Grid: Settings & Model Switcher */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '1.5rem' }}>
-        
-        {/* Settings Card */}
-        <div className="glass-card" style={{ padding: '1.5rem' }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Settings size={20} color="var(--accent-cyan)" /> Flag di Avvio & Rete
-          </h3>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                Seleziona Modello da Servire
-              </label>
-              <select
-                value={targetModel}
-                onChange={e => setTargetModel(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '0.65rem',
-                  borderRadius: '8px',
-                  background: 'rgba(0,0,0,0.4)',
-                  border: '1px solid var(--border-color)',
-                  color: 'white',
-                  fontSize: '0.95rem'
-                }}
-              >
-                {models.map(m => (
-                  <option key={m.id} value={m.id}>{m.id} ({m.arch})</option>
-                ))}
-              </select>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                  Indirizzo Host
-                </label>
-                <input
-                  type="text"
-                  value={host}
-                  onChange={e => setHost(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.65rem',
-                    borderRadius: '8px',
-                    background: 'rgba(0,0,0,0.4)',
-                    border: '1px solid var(--border-color)',
-                    color: 'white',
-                    fontFamily: 'var(--font-mono)'
-                  }}
-                />
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                  Porta API
-                </label>
-                <input
-                  type="number"
-                  value={port}
-                  onChange={e => setPort(parseInt(e.target.value) || 8000)}
-                  style={{
-                    width: '100%',
-                    padding: '0.65rem',
-                    borderRadius: '8px',
-                    background: 'rgba(0,0,0,0.4)',
-                    border: '1px solid var(--border-color)',
-                    color: 'white',
-                    fontFamily: 'var(--font-mono)'
-                  }}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.9rem' }}>
-                <input
-                  type="checkbox"
-                  checked={legacy}
-                  onChange={e => setLegacy(e.target.checked)}
-                />
-                <span>Usa Server Legacy Python (Uvicorn / FastAPI)</span>
-              </label>
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.9rem' }}>
-                <input
-                  type="checkbox"
-                  checked={offline}
-                  onChange={e => setOffline(e.target.checked)}
-                />
-                <span>Modalità Offline (HF_HUB_OFFLINE=1)</span>
-              </label>
-            </div>
-          </div>
-        </div>
-
-        {/* Installed Models Gallery */}
-        <div className="glass-card" style={{ padding: '1.5rem' }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <HardDrive size={20} color="var(--accent-purple)" /> Modelli Quantizzati Installati
-          </h3>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', maxHeight: '320px', overflowY: 'auto' }}>
-            {models.map(m => (
-              <div
-                key={m.id}
-                style={{
-                  padding: '0.85rem 1rem',
-                  borderRadius: '8px',
-                  background: m.id === status?.model && status?.is_running ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255,255,255,0.03)',
-                  border: m.id === status?.model && status?.is_running ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid var(--border-color)',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center'
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 600, color: 'white', fontSize: '0.95rem' }}>{m.id}</div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Architettura: {m.arch} • {m.size_mb} MB
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <button
-                    className="btn-secondary"
-                    style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
-                    onClick={() => {
-                      setTargetModel(m.id);
-                      handleBuildKernels();
-                    }}
-                    title="Compila kernel hardware per questo modello"
-                  >
-                    <Hammer size={12} /> Kernel
-                  </button>
-
-                  {m.id === status?.model && status?.is_running ? (
-                    <span className="badge badge-success">Attivo</span>
-                  ) : (
-                    <button
-                      className="btn-secondary"
-                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
-                      onClick={() => {
-                        setTargetModel(m.id);
-                        handleRestart();
-                      }}
-                    >
-                      Carica
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
     </div>
   );
 }

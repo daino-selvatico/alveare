@@ -288,7 +288,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     int K = config_.hidden_size;
     const LayerWeights& lw = weights_.layers[layer];
     
-    int K_padded = config_.model_type == "gemma4" ? 4096 : K;
+    int K_padded = (config_.model_type == "gemma4") ? 4096 : (config_.model_type == "gemma3" ? 2048 : K);
     
     // 1. Input RMSNorm
     std::vector<bf16> x_norm(K_padded, bf16(0.0f));
@@ -325,12 +325,23 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
         else
             v = k; // Gemma4 global layers use K for V
     } else {
-        reg_.run_gemv(N_q, K_padded, lw.w_q, x_norm.data(), q.data());
-        reg_.run_gemv(N_kv, K_padded, lw.w_k, x_norm.data(), k.data());
+        int N_q_padded = config_.model_type == "gemma3" ? 2048 : N_q;
+        int N_kv_padded = config_.model_type == "gemma3" ? 2048 : N_kv;
+        std::vector<bf16> q_buf(N_q_padded);
+        std::vector<bf16> k_buf(N_kv_padded);
+        std::vector<bf16> v_buf(N_kv_padded);
+
+        reg_.run_gemv(N_q_padded, K_padded, lw.w_q, x_norm.data(), q_buf.data());
+        std::memcpy(q.data(), q_buf.data(), size_t(N_q) * sizeof(bf16));
+
+        reg_.run_gemv(N_kv_padded, K_padded, lw.w_k, x_norm.data(), k_buf.data());
+        std::memcpy(k.data(), k_buf.data(), size_t(N_kv) * sizeof(bf16));
+
         if (config_.model_type != "gemma4" || is_sliding) {
-            reg_.run_gemv(N_kv, K_padded, lw.w_v, x_norm.data(), v.data());
+            reg_.run_gemv(N_kv_padded, K_padded, lw.w_v, x_norm.data(), v_buf.data());
+            std::memcpy(v.data(), v_buf.data(), size_t(N_kv) * sizeof(bf16));
         } else {
-            v = k; // Gemma4 global layers use K for V
+            v = k;
         }
     }
     g_prof.npu_qkv += ms_since(t_qkv);
@@ -425,8 +436,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     run_rmsnorm_cpu(x_post_attn.data(), lw.ffn_norm.empty() ? nullptr : lw.ffn_norm.data(), x_norm2.data());
 
     // 10. FFN Fused NPU
-    int H_padded = config_.model_type == "gemma4" ? 4096 : config_.hidden_size;
-    int I_padded = config_.model_type == "gemma4" ? 16384 : config_.intermediate_size;
+    int H_padded = (config_.model_type == "gemma4") ? 4096 : (config_.model_type == "gemma3" ? 2048 : config_.hidden_size);
+    int I_padded = (config_.model_type == "gemma4") ? 16384 : (config_.model_type == "gemma3" ? 8192 : config_.intermediate_size);
     std::vector<bf16> down(H_padded, bf16(0.0f));
     std::string act_type = (config_.model_type == "gemma3" || config_.model_type == "gemma4") ? "gelu" : "silu";
     auto t_ffn = pclock::now();

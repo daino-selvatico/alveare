@@ -258,6 +258,11 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             l_N_kv = 2048;
             l_N_out = 4096;
             K_attn_padded = 4096;
+        } else if (config.model_type == "gemma3") {
+            l_N_q = 2048;
+            l_N_kv = 2048;
+            l_N_out = 2048;
+            K_attn_padded = 2048;
         }
 
         std::string act_type = (config.model_type == "gemma3" || config.model_type == "gemma4") ? "gelu" : "silu";
@@ -332,8 +337,8 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         free_npy(o_arr);
 
         // FFN Fused
-        int H_padded = config.model_type == "gemma4" ? 4096 : config.hidden_size;
-        int I_padded = config.model_type == "gemma4" ? 16384 : config.intermediate_size;
+        int H_padded = (config.model_type == "gemma4") ? 4096 : (config.model_type == "gemma3" ? 2048 : config.hidden_size);
+        int I_padded = (config.model_type == "gemma4") ? 16384 : (config.model_type == "gemma3" ? 8192 : config.intermediate_size);
         
         std::string ffn_path = dir + "/blk." + std::to_string(l) + ".ffn_fused.weight_packed.npy";
         NpyArray ffn_arr{};

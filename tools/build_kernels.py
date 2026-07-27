@@ -77,7 +77,7 @@ def packed_shape_to_logical(path: Path) -> tuple[int, int]:
     return int(N), int(K)
 
 
-def enumerate_shapes(weights_dir: Path, num_layers: int) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+def enumerate_shapes(weights_dir: Path, num_layers: int, model_type: str = "") -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
     gemv_shapes: set[tuple[int, int]] = set()
     ffn_shapes: set[tuple[int, int]] = set()
     
@@ -88,14 +88,11 @@ def enumerate_shapes(weights_dir: Path, num_layers: int) -> tuple[set[tuple[int,
                 gemv_shapes.add(packed_shape_to_logical(p))
 
         # gemma4 fuses Q/K/V into one gemv at runtime, so the concatenated
-        # output shape (N_q + N_k + N_v, K) also needs a kernel. gemma marker:
-        # per-head q-norm. Sliding layers ((l+1)%6 != 0) use q++k++v; global
-        # layers reuse k for v, so q++k.
+        # output shape (N_q + N_k + N_v, K) also needs a kernel.
         pq = weights_dir / f"blk.{l}.attn_q.weight_packed.npy"
         pk = weights_dir / f"blk.{l}.attn_k.weight_packed.npy"
         pv = weights_dir / f"blk.{l}.attn_v.weight_packed.npy"
-        p_qnorm = weights_dir / f"blk.{l}.attn_q_norm.weight.npy"
-        if p_qnorm.exists() and pq.exists() and pk.exists():
+        if model_type == "gemma4" and pq.exists() and pk.exists():
             nq, K = packed_shape_to_logical(pq)
             nk, _ = packed_shape_to_logical(pk)
             is_sliding = (l + 1) % 6 != 0
@@ -221,7 +218,8 @@ def main():
     
     args.out.mkdir(parents=True, exist_ok=True)
 
-    gemv_shapes, ffn_shapes = enumerate_shapes(args.weights_dir, num_layers)
+    model_type = cfg.get("model_type", "")
+    gemv_shapes, ffn_shapes = enumerate_shapes(args.weights_dir, num_layers, model_type)
     gemv_shapes = sorted(gemv_shapes)
     ffn_shapes = sorted(ffn_shapes)
     
