@@ -410,11 +410,15 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     // reuses the w_qkv kernel context and avoids a shape switch; only the first
     // N_out_padded outputs are the real projection.
     int N_out = K;
-    int N_out_padded = config_.model_type == "gemma4" ? 4096 : N_out;
+    int N_out_padded = (config_.model_type == "gemma4") ? 4096 : (config_.model_type == "gemma3" ? 2048 : N_out);
     int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : N_out_padded;
+    int N_q_padded = (config_.model_type == "gemma4") ? (is_sliding ? 4096 : 8192) : (config_.model_type == "gemma3" ? 2048 : N_q);
+    std::vector<bf16> attn_out_padded(N_q_padded, bf16(0.0f));
+    std::memcpy(attn_out_padded.data(), attn_out.data(), size_t(N_q) * sizeof(bf16));
+
     std::vector<bf16> attn_proj(o_n, bf16(0.0f));
     auto t_o = pclock::now();
-    reg_.run_gemv(o_n, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    reg_.run_gemv(o_n, N_q_padded, lw.w_o, attn_out_padded.data(), attn_proj.data());
     g_prof.npu_o += ms_since(t_o);
 
     // 8. Post-attention norm and residual
