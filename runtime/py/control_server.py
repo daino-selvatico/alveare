@@ -293,6 +293,85 @@ async def control_restart(req: StartRequest):
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to restart server")
     return {"status": "ok", "message": f"Server restarted with model {model}"}
 
+class BuildKernelsRequest(BaseModel):
+    model: Optional[str] = None
+    force_arch: Optional[str] = None
+    no_gemm: Optional[bool] = False
+    max_batch: Optional[int] = 16
+
+@app.get("/api/kernels/status")
+async def get_kernels_status():
+    manifest_path = ROOT_DIR / "kernels" / "build" / "manifest.json"
+    if not manifest_path.exists():
+        return {
+            "manifest_exists": False,
+            "manifest_model_type": None,
+            "kernels_count": 0
+        }
+    try:
+        with open(manifest_path, "r") as f:
+            data = json.load(f)
+        return {
+            "manifest_exists": True,
+            "manifest_model_type": data.get("model_type"),
+            "kernels_count": len(data.get("kernels", [])),
+            "manifest_path": str(manifest_path)
+        }
+    except Exception as e:
+        return {
+            "manifest_exists": False,
+            "error": str(e),
+            "kernels_count": 0
+        }
+
+@app.post("/api/control/build-kernels")
+async def control_build_kernels(req: BuildKernelsRequest):
+    model = req.model or state.active_model
+    if state.process and state.process.poll() is None:
+        stop_inference_server()
+
+    alveare_bin = ROOT_DIR / "alveare"
+    cmd = [str(alveare_bin), "build-kernels", model]
+    if req.no_gemm:
+        cmd.append("--no-gemm")
+    if req.max_batch and req.max_batch != 16:
+        cmd.extend(["--max-batch", str(req.max_batch)])
+
+    append_log(f"Starting kernel compilation: {' '.join(cmd)}")
+    state.status = "building_kernels"
+
+    try:
+        state.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=str(ROOT_DIR),
+            env=os.environ.copy()
+        )
+        state.start_time = time.time()
+
+        def log_reader():
+            if not state.process or not state.process.stdout:
+                return
+            for line in iter(state.process.stdout.readline, ''):
+                if line:
+                    append_log(line.strip())
+            state.status = "stopped"
+            append_log("Kernel compilation completed.")
+
+        import threading
+        t = threading.Thread(target=log_reader, daemon=True)
+        t.start()
+
+        return {"status": "ok", "message": f"Building kernels for model {model}"}
+    except Exception as e:
+        state.status = "error"
+        state.last_error = str(e)
+        append_log(f"Failed to start kernel build: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/config")
 async def get_config():
     return load_config()

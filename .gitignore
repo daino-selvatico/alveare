@@ -39,3 +39,4 @@ tests/bench/*.raw
 
 # Claude Code / agent worktrees & scratch
 .claude
+.alveare_config.json

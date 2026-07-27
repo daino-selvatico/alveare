@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Play, Square, RotateCw, Server, Cpu, HardDrive, Settings, AlertCircle, CheckCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Play, Square, RotateCw, Server, Cpu, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, Wrench, ChevronDown, ChevronUp } from 'lucide-react';
 
 export default function ServerControl({ apiBase, status, models, onRefresh }) {
   const [loading, setLoading] = useState(false);
@@ -8,6 +8,27 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
   const [port, setPort] = useState(status?.port || 8000);
   const [legacy, setLegacy] = useState(status?.legacy || false);
   const [offline, setOffline] = useState(status?.offline || false);
+
+  // Kernel Build States
+  const [kernelStatus, setKernelStatus] = useState(null);
+  const [showBuildOptions, setShowBuildOptions] = useState(false);
+  const [noGemm, setNoGemm] = useState(false);
+  const [maxBatch, setMaxBatch] = useState(16);
+  const [buildingKernels, setBuildingKernels] = useState(false);
+
+  useEffect(() => {
+    fetchKernelStatus();
+  }, []);
+
+  const fetchKernelStatus = async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/kernels/status`);
+      const data = await res.json();
+      setKernelStatus(data);
+    } catch (e) {
+      console.error("Failed to fetch kernel status:", e);
+    }
+  };
 
   const handleStart = async () => {
     setLoading(true);
@@ -53,6 +74,37 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
     }
   };
 
+  const handleBuildKernels = async () => {
+    if (!confirm(`Vuoi avviare la compilazione AIE dei kernel NPU per il modello '${targetModel}'? La procedura compila i file .xclbin e aggiorna kernels/build/manifest.json.`)) {
+      return;
+    }
+    setBuildingKernels(true);
+    try {
+      const res = await fetch(`${apiBase}/api/control/build-kernels`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          no_gemm: noGemm,
+          max_batch: maxBatch
+        })
+      });
+      const data = await res.json();
+      alert(`Compilazione kernel avviata per '${targetModel}'. Segui il progresso in tempo reale nella tab 'Log & Diagnostica'.`);
+      setTimeout(fetchKernelStatus, 3000);
+    } catch (e) {
+      alert(`Errore avvio compilazione kernel: ${e}`);
+    } finally {
+      setBuildingKernels(false);
+    }
+  };
+
+  const selectedModelObj = models.find(m => m.id === targetModel);
+  const isManifestMismatch = kernelStatus?.manifest_exists &&
+    kernelStatus.manifest_model_type &&
+    selectedModelObj?.arch &&
+    kernelStatus.manifest_model_type !== selectedModelObj.arch;
+
   return (
     <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       
@@ -66,6 +118,7 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
             {status?.status === 'running' && <span className="badge badge-success"><CheckCircle size={14} /> In Esecuzione</span>}
             {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> Arrestato</span>}
             {status?.status === 'starting' && <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" /> In Avvio...</span>}
+            {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> Compilazione Kernel...</span>}
           </div>
           
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
@@ -92,6 +145,62 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
             </button>
           )}
         </div>
+      </div>
+
+      {/* Hardware Kernel Manager Banner */}
+      <div className="glass-card" style={{ padding: '1.5rem', background: isManifestMismatch ? 'rgba(245, 158, 11, 0.08)' : 'rgba(23, 32, 54, 0.7)', border: isManifestMismatch ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid var(--border-color)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.4rem' }}>
+              <Hammer size={20} color={isManifestMismatch ? 'var(--accent-amber)' : 'var(--accent-cyan)'} />
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 600 }}>Gestione Hardware Kernel NPU (`kernels/build`)</h3>
+              
+              {kernelStatus?.manifest_exists ? (
+                <span className="badge badge-success"><CheckCircle size={14} /> Manifest OK ({kernelStatus.manifest_model_type})</span>
+              ) : (
+                <span className="badge badge-warning"><AlertCircle size={14} /> Manifest Assente</span>
+              )}
+            </div>
+
+            <p style={{ fontSize: '0.9rem', color: isManifestMismatch ? '#fcd34d' : 'var(--text-muted)' }}>
+              {isManifestMismatch ? (
+                <>⚠️ Attenzione: I kernel compilati in <code>kernels/build</code> sono per l'architettura <strong>{kernelStatus.manifest_model_type}</strong>, mentre hai selezionato <strong>{targetModel}</strong> ({selectedModelObj?.arch}). Il server potrebbe fallire all'avvio. Clicca 'Compila Kernel NPU' per rigenerarli.</>
+              ) : (
+                <>I kernel hardware <code>.xclbin</code> vengono compilati via AOT per le matrici esatte del modello selezionato.</>
+              )}
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button className="btn-primary" onClick={handleBuildKernels} disabled={buildingKernels} style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%)' }}>
+              <Wrench size={18} /> Compila / Ricrea Kernel per {targetModel}
+            </button>
+
+            <button className="btn-secondary" onClick={() => setShowBuildOptions(!showBuildOptions)}>
+              {showBuildOptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />} Opzioni Avanzate
+            </button>
+          </div>
+        </div>
+
+        {/* Advanced Kernel Options Accordion */}
+        {showBuildOptions && (
+          <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem' }}>
+              <input type="checkbox" checked={noGemm} onChange={e => setNoGemm(e.target.checked)} />
+              <span>--no-gemm (Salta forme GEMM per prefill più rapido)</span>
+            </label>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+              <span>--max-batch:</span>
+              <input
+                type="number"
+                value={maxBatch}
+                onChange={e => setMaxBatch(parseInt(e.target.value) || 16)}
+                style={{ width: '70px', padding: '0.3rem', borderRadius: '6px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: 'white' }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Grid: Settings & Model Switcher */}
@@ -218,20 +327,34 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
                   </div>
                 </div>
 
-                {m.id === status?.model && status?.is_running ? (
-                  <span className="badge badge-success">Attivo</span>
-                ) : (
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   <button
                     className="btn-secondary"
-                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                    style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
                     onClick={() => {
                       setTargetModel(m.id);
-                      handleRestart();
+                      handleBuildKernels();
                     }}
+                    title="Compila kernel hardware per questo modello"
                   >
-                    Carica
+                    <Hammer size={12} /> Kernel
                   </button>
-                )}
+
+                  {m.id === status?.model && status?.is_running ? (
+                    <span className="badge badge-success">Attivo</span>
+                  ) : (
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+                      onClick={() => {
+                        setTargetModel(m.id);
+                        handleRestart();
+                      }}
+                    >
+                      Carica
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
