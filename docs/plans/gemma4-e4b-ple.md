@@ -10,8 +10,17 @@ focused sessions**. This repo is the source of truth; each task lists its files,
 steps, and **acceptance criteria** so the orchestrator can verify the returned
 result before unblocking the next. Do the tasks in dependency order (below).
 
-**Status (2026-07-27).** Investigation done; GGUF downloaded; plan written. No
-code yet.
+**Status (2026-07-27).**
+- **M0.1 ✅ DONE** — llama.cpp E4B reference dumps in `docs/plans/e4b/ref/` (4
+  greedy prompts + top-k logprobs; arch recognized, PLE tensors not ignored).
+- **M0.2 ✅ DONE + orchestrator-verified** — `docs/plans/e4b/PLE-spec.md` (exact
+  PLE math, scales, injection order, sliding pattern, KV-sharing), cross-checked
+  against `~/.unsloth/llama.cpp/src/models/gemma4-iswa.cpp` — matches.
+- **Next: M1 (quantizer) ∥ M2.1 (parameterization)** can start in parallel.
+- **New scope from M0.2:** E4B also uses **KV-cache sharing** (`shared_kv_layers=18`:
+  layers 24–41 reuse earlier KV, do not write). The 12B does not. Add this to M2.2.
+  Sliding pattern is the SAME period-6 as the 12B (`(l+1)%6==0` → global), so that
+  formula stays. per_layer_model_proj can run on CPU (llama.cpp does).
 
 ---
 
