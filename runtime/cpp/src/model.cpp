@@ -44,10 +44,10 @@ void Model::init_kv_caches() {
         int n_kv_heads = config_.num_key_value_heads;
         int h_dim = config_.head_dim;
         
-        if (config_.model_type == "gemma4") {
-            bool is_sliding = ((l + 1) % 6 != 0);
-            n_kv_heads = is_sliding ? 8 : 1;
-            h_dim = is_sliding ? 256 : 512;
+        if (config_.is_gemma4()) {
+            bool is_sliding = ((l + 1) % config_.sliding_pattern_period != 0);
+            n_kv_heads = (config_.model_type == "gemma4-e4b") ? config_.num_key_value_heads : (is_sliding ? config_.num_key_value_heads : 1);
+            h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
         }
 
         size_t layer_kv_size = size_t(n_kv_heads) * max_seq_len * h_dim;
@@ -81,15 +81,15 @@ void Model::precompute_rope() {
         };
         precompute(10000.0f, cos_sin_table_sliding_);
         precompute(1000000.0f, cos_sin_table_full_);
-    } else if (config_.model_type == "gemma4") {
-        cos_sin_table_sliding_.resize(max_seq_len * 256);
-        cos_sin_table_full_.resize(max_seq_len * 512);
+    } else if (config_.is_gemma4()) {
+        cos_sin_table_sliding_.resize(max_seq_len * config_.head_dim);
+        cos_sin_table_full_.resize(max_seq_len * config_.head_dim_global);
         
         auto precompute = [&](float base, int dim, std::vector<bf16>& table) {
             for (int pos = 0; pos < max_seq_len; ++pos) {
                 for (int i = 0; i < dim / 2; ++i) {
                     float inv_freq = 0.0f;
-                    if (dim == 512) {
+                    if (dim == config_.head_dim_global) {
                         int rope_angles = static_cast<int>(0.25f * dim / 2.0f);
                         if (i < rope_angles) {
                             inv_freq = 1.0f / std::pow(base, float(i * 2) / dim);
@@ -103,8 +103,8 @@ void Model::precompute_rope() {
                 }
             }
         };
-        precompute(10000.0f, 256, cos_sin_table_sliding_);
-        precompute(1000000.0f, 512, cos_sin_table_full_);
+        precompute(10000.0f, config_.head_dim, cos_sin_table_sliding_);
+        precompute(1000000.0f, config_.head_dim_global, cos_sin_table_full_);
     } else {
         // Llama
         int dim = 64;
@@ -182,10 +182,7 @@ void Model::run_rope_cpu_llama(const bf16* x, int pos, int num_heads, bf16* out)
 }
 
 void Model::run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, int num_heads, bf16* out) {
-    int dim = 256;
-    if (config_.model_type == "gemma4" && base_freq > 10000.0f) {
-        dim = 512;
-    }
+    int dim = (config_.is_gemma4() && base_freq > 10000.0f) ? config_.head_dim_global : config_.head_dim;
     const bf16* cos_sin = nullptr;
     if (base_freq == 10000.0f) {
         cos_sin = &cos_sin_table_sliding_[pos * dim];
@@ -217,18 +214,18 @@ void Model::run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out
     int window_size = 512;
     int max_seq_len = 2048; // Must match init_kv_caches
     
-    if (config_.model_type == "gemma4") {
-        bool is_sliding = ((layer + 1) % 6 != 0);
-        num_heads = 16;
-        num_kv_heads = is_sliding ? 8 : 1;
-        dim = is_sliding ? 256 : 512;
+    if (config_.is_gemma4()) {
+        bool is_sliding = ((layer + 1) % config_.sliding_pattern_period != 0);
+        num_heads = config_.num_attention_heads;
+        num_kv_heads = (config_.model_type == "gemma4-e4b") ? config_.num_key_value_heads : (is_sliding ? config_.num_key_value_heads : 1);
+        dim = is_sliding ? config_.head_dim : config_.head_dim_global;
         scale = 1.0f;
-        window_size = 1024;
+        window_size = config_.sliding_window;
     }
 
     int seq_len = pos + 1;
-    bool is_sliding_layer = (config_.model_type == "gemma3" && (layer + 1) % 6 != 0) || 
-                            (config_.model_type == "gemma4" && (layer + 1) % 6 != 0);
+    bool is_sliding_layer = (config_.model_type == "gemma3" && (layer + 1) % config_.sliding_pattern_period != 0) || 
+                            (config_.is_gemma4() && (layer + 1) % config_.sliding_pattern_period != 0);
 
     int start_pos = 0;
     if (is_sliding_layer && seq_len > window_size) {
@@ -288,26 +285,27 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     int K = config_.hidden_size;
     const LayerWeights& lw = weights_.layers[layer];
     
-    int K_padded = config_.model_type == "gemma4" ? 4096 : K;
+    int K_padded = config_.get_padded_hidden_size();
     
     // 1. Input RMSNorm
     std::vector<bf16> x_norm(K_padded, bf16(0.0f));
     run_rmsnorm_cpu(x_bf16, lw.attn_norm.empty() ? nullptr : lw.attn_norm.data(), x_norm.data());
 
     // 2. QKV Projections (NPU)
-    bool is_sliding = (config_.model_type == "gemma4" && (layer + 1) % 6 != 0);
-    int N_q = config_.num_attention_heads * config_.head_dim;
-    int N_kv = config_.num_key_value_heads * config_.head_dim;
-    
+    bool is_sliding = (config_.is_gemma4() && (layer + 1) % config_.sliding_pattern_period != 0);
+    int h_dim = config_.head_dim;
     int n_q_heads = config_.num_attention_heads;
     int n_kv_heads = config_.num_key_value_heads;
     
-    if (config_.model_type == "gemma4") {
-        N_q = is_sliding ? 4096 : 8192;
-        N_kv = 2048;
-        n_q_heads = 16;
-        n_kv_heads = is_sliding ? 8 : 1;
+    if (config_.is_gemma4()) {
+        h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
+        n_q_heads = config_.num_attention_heads;
+        n_kv_heads = (config_.model_type == "gemma4-e4b") ? config_.num_key_value_heads : (is_sliding ? config_.num_key_value_heads : 1);
     }
+
+    int N_q = n_q_heads * h_dim;
+    int N_kv = n_kv_heads * h_dim;
+
     std::vector<bf16> q(N_q);
     std::vector<bf16> k(N_kv);
     std::vector<bf16> v(N_kv);
@@ -327,7 +325,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     } else {
         reg_.run_gemv(N_q, K_padded, lw.w_q, x_norm.data(), q.data());
         reg_.run_gemv(N_kv, K_padded, lw.w_k, x_norm.data(), k.data());
-        if (config_.model_type != "gemma4" || is_sliding) {
+        if (!config_.is_gemma4() || is_sliding) {
             reg_.run_gemv(N_kv, K_padded, lw.w_v, x_norm.data(), v.data());
         } else {
             v = k; // Gemma4 global layers use K for V
@@ -336,24 +334,24 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     g_prof.npu_qkv += ms_since(t_qkv);
 
     // 3. QK-Norm & V-Norm (Gemma only)
-    if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
+    if (config_.model_type == "gemma3" || config_.is_gemma4()) {
         for (int h = 0; h < n_q_heads; ++h) {
             int h_dim = config_.head_dim;
-            if (config_.model_type == "gemma4") h_dim = is_sliding ? 256 : 512;
+            if (config_.is_gemma4()) h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
             std::vector<bf16> q_h(h_dim);
             run_rmsnorm_cpu(&q[h * h_dim], lw.q_norm.empty() ? nullptr : lw.q_norm.data(), q_h.data(), h_dim);
             std::memcpy(&q[h * h_dim], q_h.data(), h_dim * sizeof(bf16));
         }
         for (int h = 0; h < n_kv_heads; ++h) {
             int h_dim = config_.head_dim;
-            if (config_.model_type == "gemma4") h_dim = is_sliding ? 256 : 512;
+            if (config_.is_gemma4()) h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
             std::vector<bf16> k_h(h_dim);
             run_rmsnorm_cpu(&k[h * h_dim], lw.k_norm.empty() ? nullptr : lw.k_norm.data(), k_h.data(), h_dim);
             std::memcpy(&k[h * h_dim], k_h.data(), h_dim * sizeof(bf16));
         }
-        if (config_.model_type == "gemma4") {
+        if (config_.is_gemma4()) {
             for (int h = 0; h < n_kv_heads; ++h) {
-                int h_dim = is_sliding ? 256 : 512;
+                int h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
                 std::vector<bf16> v_h(h_dim);
                 run_rmsnorm_cpu(&v[h * h_dim], nullptr, v_h.data(), h_dim);
                 std::memcpy(&v[h * h_dim], v_h.data(), h_dim * sizeof(bf16));
@@ -364,10 +362,10 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     // 4. RoPE
     std::vector<bf16> q_rope(N_q);
     std::vector<bf16> k_rope(N_kv);
-    if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
+    if (config_.model_type == "gemma3" || config_.is_gemma4()) {
         float base_freq = is_sliding ? 10000.0f : 1000000.0f;
         if (config_.model_type == "gemma3") {
-            bool g3_sliding = ((layer + 1) % 6 != 0);
+            bool g3_sliding = ((layer + 1) % config_.sliding_pattern_period != 0);
             base_freq = g3_sliding ? 10000.0f : 1000000.0f;
         }
         run_rope_cpu_gemma(q.data(), pos, base_freq, n_q_heads, q_rope.data());
@@ -379,9 +377,9 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
 
     // 5. Update KV Cache
     int max_seq_len = 2048;
-    int h_dim = config_.head_dim;
-    if (config_.model_type == "gemma4") {
-        h_dim = is_sliding ? 256 : 512;
+    h_dim = config_.head_dim;
+    if (config_.is_gemma4()) {
+        h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
     }
     for (int h = 0; h < n_kv_heads; ++h) {
         int kv_idx = (h * max_seq_len + pos) * h_dim;
@@ -395,11 +393,9 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     run_attention_host(q_rope.data(), pos, layer, attn_out.data());
     g_prof.attn += ms_since(t_attn);
 
-    // 7. Output Projection. o_gemv_n may be padded (gemma4 sliding: 8192) so O
-    // reuses the w_qkv kernel context and avoids a shape switch; only the first
-    // N_out_padded outputs are the real projection.
+    // 7. Output Projection
     int N_out = K;
-    int N_out_padded = config_.model_type == "gemma4" ? 4096 : N_out;
+    int N_out_padded = config_.get_padded_hidden_size();
     int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : N_out_padded;
     std::vector<bf16> attn_proj(o_n, bf16(0.0f));
     auto t_o = pclock::now();
@@ -408,7 +404,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
 
     // 8. Post-attention norm and residual
     std::vector<bf16> x_post_attn(K);
-    if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
+    if (config_.model_type == "gemma3" || config_.is_gemma4()) {
         std::vector<bf16> attn_proj_normed(K);
         run_rmsnorm_cpu(attn_proj.data(), lw.post_attention_norm.empty() ? nullptr : lw.post_attention_norm.data(), attn_proj_normed.data());
         for (int i = 0; i < K; ++i) {
@@ -425,20 +421,20 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
     run_rmsnorm_cpu(x_post_attn.data(), lw.ffn_norm.empty() ? nullptr : lw.ffn_norm.data(), x_norm2.data());
 
     // 10. FFN Fused NPU
-    int H_padded = config_.model_type == "gemma4" ? 4096 : config_.hidden_size;
-    int I_padded = config_.model_type == "gemma4" ? 16384 : config_.intermediate_size;
+    int H_padded = config_.get_padded_hidden_size();
+    int I_padded = config_.get_padded_intermediate_size();
     std::vector<bf16> down(H_padded, bf16(0.0f));
-    std::string act_type = (config_.model_type == "gemma3" || config_.model_type == "gemma4") ? "gelu" : "silu";
+    std::string act_type = (config_.model_type == "gemma3" || config_.is_gemma4()) ? "gelu" : "silu";
     auto t_ffn = pclock::now();
     reg_.run_ffn_fused(H_padded, I_padded, act_type, lw.w_ffn_fused, x_norm2.data(), down.data());
     g_prof.npu_ffn += ms_since(t_ffn);
 
     // 11. Post-FFN norm and residual
-    if (config_.model_type == "gemma3" || config_.model_type == "gemma4") {
+    if (config_.model_type == "gemma3" || config_.is_gemma4()) {
         std::vector<bf16> down_normed(K);
         run_rmsnorm_cpu(down.data(), lw.post_ffw_norm.empty() ? nullptr : lw.post_ffw_norm.data(), down_normed.data());
         // Gemma-4 scales the whole block output (residual included) by a per-layer scalar.
-        float oscale = (config_.model_type == "gemma4") ? lw.output_scale : 1.0f;
+        float oscale = (config_.is_gemma4()) ? lw.output_scale : 1.0f;
         for (int i = 0; i < K; ++i) {
             out_bf16[i] = bf16((x_post_attn[i].to_float() + down_normed[i].to_float()) * oscale);
         }
@@ -469,24 +465,18 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16) {
 
 void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
                             int layer, bf16* out_batch) {
-    // gemma4-only batched prefill. Mirrors run_layer but over `nrows` positions,
-    // padding the GEMM batch to B=16 and running QKV/O on resident weights and
-    // FFN gate/up/down on streamed weights.
     auto t_blayer = pclock::now();
-    const int K = config_.hidden_size;      // 3840
-    const int K_padded = 4096;
-    // Pad the GEMM batch to the smallest built kernel that fits: B=8 (speculative
-    // verify, nrows<=8) or B=16 (prefill chunks). A smaller B halves the mmul MACs
-    // (the dequant is fixed), so a short draft verify does not pay the full B=16.
+    const int K = config_.hidden_size;
+    const int K_padded = config_.get_padded_hidden_size();
     const int B = (nrows <= 8) ? 8 : 16;
     const LayerWeights& lw = weights_.layers[layer];
 
-    const bool is_sliding = ((layer + 1) % 6 != 0);
-    const int N_q = is_sliding ? 4096 : 8192;
-    const int N_kv = 2048;
-    const int h_dim = is_sliding ? 256 : 512;
-    const int n_heads = 16;
-    const int n_kv_heads = is_sliding ? 8 : 1;
+    const bool is_sliding = ((layer + 1) % config_.sliding_pattern_period != 0);
+    const int h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
+    const int n_heads = config_.num_attention_heads;
+    const int n_kv_heads = (config_.model_type == "gemma4-e4b") ? config_.num_key_value_heads : (is_sliding ? config_.num_key_value_heads : 1);
+    const int N_q = n_heads * h_dim;
+    const int N_kv = n_kv_heads * h_dim;
 
     const float* attn_norm_w = lw.attn_norm.empty() ? nullptr : lw.attn_norm.data();
     const float* q_norm_w = lw.q_norm.empty() ? nullptr : lw.q_norm.data();
@@ -583,8 +573,9 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     for (int b = 0; b < nrows; ++b)
         run_rmsnorm_cpu(&x_post_attn[size_t(b) * K], ffn_norm_w, &x_norm2_pad[size_t(b) * K_padded], K);
 
-    // 10. FFN: gate/up GEMM (streamed) -> GeGLU (CPU) -> down GEMM (2 K-chunks).
-    const int I = 16384, I_real = 15360;
+    // 10. FFN: gate/up GEMM (streamed) -> GeGLU (CPU) -> down GEMM.
+    const int I = config_.get_padded_intermediate_size();
+    const int I_real = config_.intermediate_size;
     std::vector<bf16> gate(size_t(B) * I), up(size_t(B) * I);
     auto t_bgu = pclock::now();
     reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_gate_bytes.data(), lw.ffn_gate_bytes.size(),
@@ -603,16 +594,16 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
         }
     }
 
-    // down: (N=4096, K=16384). The manifest tops out at K=8192, so split K into
-    // two 8192 chunks over the 4096x8192 GEMM and sum the partials in fp32.
-    const int Nd = 4096;
-    const int chunkK = 8192;
-    const int row_bytes = I / 32 * 20;          // 10240
-    const int chunk_row_bytes = chunkK / 32 * 20;  // 5120
+    // down: GEMM output is Nd = K_padded. If I > 8192, split K into chunks of 8192.
+    const int Nd = K_padded;
+    const int chunkK = (I > 8192) ? 8192 : I;
+    const int num_chunks = (I + chunkK - 1) / chunkK;
+    const int row_bytes = (I / 32) * 20;
+    const int chunk_row_bytes = (chunkK / 32) * 20;
     std::vector<float> down_acc(size_t(nrows) * K, 0.0f);
     std::vector<uint8_t> wchunk(size_t(Nd) * chunk_row_bytes);
     std::vector<bf16> xchunk(size_t(B) * chunkK), ychunk(size_t(B) * Nd);
-    for (int c = 0; c < 2; ++c) {
+    for (int c = 0; c < num_chunks; ++c) {
         auto t_rep = pclock::now();
         for (int r = 0; r < Nd; ++r)
             std::memcpy(&wchunk[size_t(r) * chunk_row_bytes],

@@ -200,7 +200,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
     // dominates decode). It is stored on disk as (vocab, K/32*20) uint8 with K
     // already padded to the kernel's K; tile it into chunk_N-row gemv weights.
     if (!mw.lm_head.empty()) {
-        int lm_K = (config.model_type == "gemma4") ? 4096 : config.hidden_size;
+        int lm_K = config.get_padded_hidden_size();
         int row_bytes = (lm_K / 32) * 20;
         int vocab = static_cast<int>(mw.lm_head.size() / row_bytes);
         const int chunk_N = 16384; // MAX_N supported by the harvested gemv kernels
@@ -234,7 +234,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         lw.attn_norm = load_float_npy(dir + "/blk." + std::to_string(l) + ".attn_norm.weight.npy");
         lw.ffn_norm = load_float_npy(dir + "/blk." + std::to_string(l) + ".ffn_norm.weight.npy");
 
-        if (config.model_type == "gemma3" || config.model_type == "gemma4") {
+        if (config.model_type == "gemma3" || config.is_gemma4()) {
             lw.post_attention_norm = load_float_npy(dir + "/blk." + std::to_string(l) + ".post_attention_norm.weight.npy");
             lw.post_ffw_norm = load_float_npy(dir + "/blk." + std::to_string(l) + ".post_ffw_norm.weight.npy");
             lw.q_norm = load_float_npy(dir + "/blk." + std::to_string(l) + ".attn_q_norm.weight.npy");
@@ -242,25 +242,30 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         }
 
         // Gemma-4 applies a per-layer scalar to the block output.
-        if (config.model_type == "gemma4") {
+        if (config.is_gemma4()) {
             auto os = load_float_npy(dir + "/blk." + std::to_string(l) + ".layer_output_scale.weight.npy");
             if (!os.empty()) lw.output_scale = os[0];
         }
 
         // QKV, O projections
-        bool is_sliding = (config.model_type == "gemma4" && (l + 1) % 6 != 0);
+        bool is_sliding = (config.is_gemma4() && (l + 1) % config.sliding_pattern_period != 0);
         int l_N_q = N_q;
         int l_N_kv = N_kv;
         int l_N_out = N_out;
         int K_attn_padded = K_attn;
-        if (config.model_type == "gemma4") {
-            l_N_q = is_sliding ? 4096 : 8192;
-            l_N_kv = 2048;
-            l_N_out = 4096;
-            K_attn_padded = 4096;
+        if (config.is_gemma4()) {
+            int h_dim = is_sliding ? config.head_dim : config.head_dim_global;
+            l_N_q = config.num_attention_heads * h_dim;
+            if (config.model_type == "gemma4-e4b") {
+                l_N_kv = config.num_key_value_heads * h_dim;
+            } else {
+                l_N_kv = 2048; // 12B GGUF pads K to 2048
+            }
+            l_N_out = config.get_padded_hidden_size();
+            K_attn_padded = config.get_padded_hidden_size();
         }
 
-        std::string act_type = (config.model_type == "gemma3" || config.model_type == "gemma4") ? "gelu" : "silu";
+        std::string act_type = (config.model_type == "gemma3" || config.is_gemma4()) ? "gelu" : "silu";
 
         std::string q_path = dir + "/blk." + std::to_string(l) + ".attn_q.weight_packed.npy";
         std::string k_path = dir + "/blk." + std::to_string(l) + ".attn_k.weight_packed.npy";
@@ -272,7 +277,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         // launch and one kernel-shape context, avoiding ~2.6 ms of per-shape
         // context-switch overhead per extra call. The packed layout is row-major
         // (N, K/32*20), so concatenating along N is just concatenating bytes.
-        if (config.model_type == "gemma4") {
+        if (config.is_gemma4()) {
             NpyArray q_arr = load_npy(q_path);
             NpyArray k_arr = load_npy(k_path);
             lw.n_q = l_N_q;
@@ -319,7 +324,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         // w_qkv (8192, 4096) kernel context — no shape switch between them. The
         // extra 4096 output rows are zero weights (unused). Global layers keep
         // their natural (4096, 8192) shape (different K, can't share).
-        if (config.model_type == "gemma4" && is_sliding && lw.n_qkv == 8192) {
+        if (config.is_gemma4() && is_sliding && lw.n_qkv == 8192) {
             int row_bytes = o_arr.data_size / K_attn_padded;   // K_attn/32*20
             lw.o_gemv_n = 8192;
             std::vector<uint8_t> o_pad(size_t(8192) * row_bytes, 0);
@@ -332,8 +337,8 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         free_npy(o_arr);
 
         // FFN Fused
-        int H_padded = config.model_type == "gemma4" ? 4096 : config.hidden_size;
-        int I_padded = config.model_type == "gemma4" ? 16384 : config.intermediate_size;
+        int H_padded = config.get_padded_hidden_size();
+        int I_padded = config.get_padded_intermediate_size();
         
         std::string ffn_path = dir + "/blk." + std::to_string(l) + ".ffn_fused.weight_packed.npy";
         NpyArray ffn_arr{};
@@ -368,7 +373,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
 
             // Keep the separate packed gate/up/down for the batched-prefill GEMM
             // path (streamed to the device per call; decode uses the fused weight).
-            if (config.model_type == "gemma4") {
+            if (config.is_gemma4()) {
                 lw.ffn_gate_bytes = std::move(w_gate);
                 lw.ffn_up_bytes = std::move(w_up);
                 lw.ffn_down_bytes = std::move(w_down);

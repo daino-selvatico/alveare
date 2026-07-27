@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
         // the user message; defaults to a short greeting.
         if (const char* st = std::getenv("ALVEARE_SELFTEST")) {
             std::string u1 = (st[0] != '\0') ? st : "Ciao! Come stai?";
-            bool is_gemma = (config.model_type == "gemma3" || config.model_type == "gemma4");
+            bool is_gemma = (config.model_type == "gemma3" || config.is_gemma4());
             GenerationParams gp;
             gp.max_tokens = 16;
             auto run = [&](const std::string& prompt, std::string* capture) {
