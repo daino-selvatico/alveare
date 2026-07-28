@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
+#include <cstdlib>
 #include "alveare/bf16.h"
 
 namespace alveare {
@@ -334,22 +335,22 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             free_npy(v_arr);
         }
 
-        NpyArray o_arr = load_npy(o_path);
-        // gemma4 sliding: pad O's output dim from 4096 to 8192 so it reuses the
-        // w_qkv (8192, 4096) kernel context — no shape switch between them. The
-        // extra 4096 output rows are zero weights (unused). Global layers keep
-        // their natural (4096, 8192) shape (different K, can't share).
-        if (config.is_gemma4() && is_sliding && lw.n_qkv == 8192) {
+        if (config.model_type == "gemma4-e4b") {
+            lw.w_o_bytes = load_uint8_npy(o_path);
+        } else if (config.is_gemma4() && is_sliding && lw.n_qkv == 8192) {
+            NpyArray o_arr = load_npy(o_path);
             int row_bytes = o_arr.data_size / K_attn_padded;   // K_attn/32*20
             lw.o_gemv_n = 8192;
             std::vector<uint8_t> o_pad(size_t(8192) * row_bytes, 0);
             std::memcpy(o_pad.data(), o_arr.data, o_arr.data_size);
             lw.w_o = reg.create_gemv_weight(8192, l_N_q, o_pad.data(), o_pad.size());
+            free_npy(o_arr);
         } else {
+            NpyArray o_arr = load_npy(o_path);
             lw.o_gemv_n = K_attn_padded;
             lw.w_o = reg.create_gemv_weight(K_attn_padded, l_N_q, o_arr.data, o_arr.data_size);
+            free_npy(o_arr);
         }
-        free_npy(o_arr);
 
         // FFN Fused
         int H_padded = config.get_padded_hidden_size();
@@ -384,7 +385,17 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             int k_tile = (config.hidden_size == 1152) ? 128 : 256;
             auto fused = pack_ffn_fused_weights(w_gate, w_up, w_down, H_padded, I_padded, 32, k_tile);
 
-            if (H_padded % 1024 == 0) {
+            // Register the fused FFN on the NPU iff a matching kernel exists in the
+            // manifest; otherwise keep the raw gate/up/down bytes for the CPU
+            // fallback. (The old `H_padded % 1024 == 0` gate wrongly excluded e4b's
+            // H=2560, forcing a ~17s/token CPU FFN even though the 2560x10240 kernel
+            // is built.)
+            // TODO(e4b): the e4b FFN kernel (H=2560, non-power-of-2) currently HANGS
+            // the NPU — force the CPU fallback for e4b until the kernel is fixed;
+            // override with ALVEARE_E4B_NPU_FFN=1 to debug the kernel.
+            bool e4b_ffn_blocked = (config.model_type == "gemma4-e4b" &&
+                                    std::getenv("ALVEARE_E4B_NPU_FFN") == nullptr);
+            if (reg.has_ffn_fused(H_padded, I_padded, act_type) && !e4b_ffn_blocked) {
                 lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, fused.data(), fused.size());
             } else {
                 lw.w_ffn_fused = kInvalidWeight;
