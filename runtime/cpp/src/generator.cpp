@@ -111,7 +111,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
     const ModelConfig& cfg = model_.get_config();
     int hidden_size = cfg.hidden_size;
-    bool is_gemma = (cfg.model_type == "gemma3" || cfg.model_type == "gemma4");
+    bool is_gemma = (cfg.model_type == "gemma3" || cfg.is_gemma4());
     float embed_scale = is_gemma ? std::sqrt(static_cast<float>(hidden_size)) : 1.0f;
 
     std::vector<int> input_tokens = tokenizer_.encode(prompt);
@@ -141,14 +141,22 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
     double lm_head_ms = 0.0;  // profiling: last forward's LM-head wall time
 
+    std::vector<float> inp_per_layer;
+
     // Run one token through the embedding + all transformer layers. When
     // want_logits is set, also apply the final norm and LM head into `logits`.
     auto forward = [&](int token, int pos, bool want_logits) {
+        std::vector<float> inpL_f(hidden_size);
         for (int i = 0; i < hidden_size; ++i) {
-            x[i] = bf16(weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale);
+            float val = weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale;
+            x[i] = bf16(val);
+            inpL_f[i] = val;
+        }
+        if (cfg.per_layer_input > 0) {
+            model_.compute_per_layer_inputs(token, inpL_f.data(), inp_per_layer);
         }
         for (int l = 0; l < cfg.num_hidden_layers; ++l) {
-            model_.run_layer(x.data(), pos, l, out.data());
+            model_.run_layer(x.data(), pos, l, out.data(), inp_per_layer.empty() ? nullptr : inp_per_layer.data());
             x = out;
         }
         if (!want_logits) return;

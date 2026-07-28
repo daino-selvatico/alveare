@@ -20,11 +20,12 @@ Run on a machine with the mlir-aie / IRON toolchain and the NPU present:
 Output:
     kernels/build/<name>_<N>x<K>[_bB].xclbin
     kernels/build/<name>_<N>x<K>[_bB].insts
-    kernels/build/manifest.json
+    kernels/build/manifest.json (merges all compiled & existing kernels)
 """
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,11 +59,68 @@ def n_cores_for(N: int) -> int:
     return 1
 
 
+def ffn_n_cores_for(I: int) -> int:
+    """Mirror the core-count heuristic in ffn_fused.py."""
+    if I % (32 * M) == 0:
+        return 32
+    elif I % (16 * M) == 0:
+        return 16
+    elif I % (8 * M) == 0:
+        return 8
+    elif I % (4 * M) == 0:
+        return 4
+    elif I % (2 * M) == 0:
+        return 2
+    else:
+        return 1
+
+
+def kernel_key(e: dict) -> tuple:
+    kind = e.get("kind")
+    if kind == "gemv":
+        return ("gemv", e.get("N"), e.get("K"))
+    elif kind == "gemm":
+        return ("gemm", e.get("B"), e.get("N"), e.get("K"))
+    elif kind == "ffn_fused":
+        return ("ffn_fused", e.get("H"), e.get("I"), e.get("activation"))
+    return (kind, e.get("xclbin"))
+
+
+def parse_xclbin_filename(xclbin_path: Path) -> dict | None:
+    fname = xclbin_path.name
+    insts_path = xclbin_path.with_suffix(".insts")
+    if not insts_path.exists():
+        return None
+
+    m = re.match(r"^gemv_(\d+)x(\d+)\.xclbin$", fname)
+    if m:
+        N, K = int(m.group(1)), int(m.group(2))
+        return {
+            "kind": "gemv", "N": N, "K": K, "m": M, "k_tile": K_TILE,
+            "n_cores": n_cores_for(N),
+            "xclbin": fname, "insts": insts_path.name
+        }
+    m = re.match(r"^gemm_(\d+)x(\d+)_b(\d+)\.xclbin$", fname)
+    if m:
+        N, K, B = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return {
+            "kind": "gemm", "B": B, "N": N, "K": K, "m": M, "k_tile": K_TILE,
+            "n_cores": n_cores_for(N),
+            "xclbin": fname, "insts": insts_path.name
+        }
+    m = re.match(r"^ffn_fused_(\d+)x(\d+)_([a-zA-Z0-9_]+)\.xclbin$", fname)
+    if m:
+        H, I, act = int(m.group(1)), int(m.group(2)), m.group(3)
+        return {
+            "kind": "ffn_fused", "H": H, "I": I, "m_I": M, "k_tile": K_TILE,
+            "activation": act, "n_cores": ffn_n_cores_for(I),
+            "xclbin": fname, "insts": insts_path.name
+        }
+    return None
+
+
 def packed_shape_to_logical(path: Path) -> tuple[int, int]:
     """(N, K/32*20) uint8 on disk -> logical (N, K)."""
-    # Read only the .npy header; never load the payload. Use the versioned
-    # public readers (the private _read_array_header was removed in numpy 2.x,
-    # which the alveare-aie toolchain env ships).
     with open(path, "rb") as f:
         version = np.lib.format.read_magic(f)
         if version == (1, 0):
@@ -120,21 +178,32 @@ def enumerate_shapes(weights_dir: Path, num_layers: int) -> tuple[set[tuple[int,
     return gemv_shapes, ffn_shapes
 
 
-def compile_gemv(N: int, K: int, out: Path) -> dict:
+def compile_gemv(N: int, K: int, out: Path, force: bool = False) -> dict:
     name = f"gemv_{N}x{K}"
     xclbin = out / f"{name}.xclbin"
     insts = out / f"{name}.insts"
+    entry = {"kind": "gemv", "N": N, "K": K, "m": M, "k_tile": K_TILE,
+             "n_cores": n_cores_for(N),
+             "xclbin": xclbin.name, "insts": insts.name}
+    if not force and xclbin.exists() and insts.exists():
+        print(f"Skipping compile of {name} ({xclbin.name} exists)")
+        return entry
+
     gemv_q_npu.specialize(N=N, K=K, m=M, k_tile=K_TILE).compile(
         xclbin_path=str(xclbin), inst_path=str(insts))
-    return {"kind": "gemv", "N": N, "K": K, "m": M, "k_tile": K_TILE,
-            "n_cores": n_cores_for(N),
-            "xclbin": xclbin.name, "insts": insts.name}
+    return entry
 
 
-def compile_gemm(B: int, N: int, K: int, out: Path) -> dict:
+def compile_gemm(B: int, N: int, K: int, out: Path, force: bool = False) -> dict:
     name = f"gemm_{N}x{K}_b{B}"
     xclbin = out / f"{name}.xclbin"
     insts = out / f"{name}.insts"
+    entry = {"kind": "gemm", "B": B, "N": N, "K": K, "m": M, "k_tile": K_TILE,
+             "n_cores": n_cores_for(N),
+             "xclbin": xclbin.name, "insts": insts.name}
+    if not force and xclbin.exists() and insts.exists():
+        print(f"Skipping compile of {name} ({xclbin.name} exists)")
+        return entry
 
     with tempfile.TemporaryDirectory(prefix=f"gc_{N}x{K}_b{B}_") as tmpdir:
         env = os.environ.copy()
@@ -147,8 +216,8 @@ def compile_gemm(B: int, N: int, K: int, out: Path) -> dict:
             "-B", str(B),
             "-m", "32",
             "-k", "256",
-            "--iters", "3",
-            "--warmup", "1",
+            "--xclbin-path", str(xclbin),
+            "--insts-path", str(insts),
         ]
         res = subprocess.run(
             cmd,
@@ -158,48 +227,32 @@ def compile_gemm(B: int, N: int, K: int, out: Path) -> dict:
             text=True,
         )
 
-        xclbin_matches = list(Path(tmpdir).rglob("final.xclbin"))
-        insts_matches = list(Path(tmpdir).rglob("insts.bin"))
-
-        if not xclbin_matches or not insts_matches:
+        if res.returncode != 0 or not xclbin.exists() or not insts.exists():
             raise RuntimeError(
-                f"Failed to find compiled GEMM artifacts in {tmpdir} for shape N={N}, K={K}, B={B}.\n"
+                f"Failed to compile GEMM for shape N={N}, K={K}, B={B}.\n"
                 f"Exit code: {res.returncode}\n"
                 f"Stdout:\n{res.stdout}\n"
                 f"Stderr:\n{res.stderr}"
             )
 
-        shutil.copy2(xclbin_matches[0], xclbin)
-        shutil.copy2(insts_matches[0], insts)
-
-    return {"kind": "gemm", "B": B, "N": N, "K": K, "m": M, "k_tile": K_TILE,
-            "n_cores": n_cores_for(N),
-            "xclbin": xclbin.name, "insts": insts.name}
+    return entry
 
 
-def compile_ffn_fused(H: int, I: int, activation: str, out: Path) -> dict:
+def compile_ffn_fused(H: int, I: int, activation: str, out: Path, force: bool = False) -> dict:
     name = f"ffn_fused_{H}x{I}_{activation}"
     xclbin = out / f"{name}.xclbin"
     insts = out / f"{name}.insts"
+    n_cores = ffn_n_cores_for(I)
+    entry = {"kind": "ffn_fused", "H": H, "I": I, "m_I": M, "k_tile": K_TILE, "activation": activation,
+             "n_cores": n_cores,
+             "xclbin": xclbin.name, "insts": insts.name}
+    if not force and xclbin.exists() and insts.exists():
+        print(f"Skipping compile of {name} ({xclbin.name} exists)")
+        return entry
+
     ffn_fused_npu.specialize(H=H, I=I, m_I=M, k_tile=K_TILE, activation=activation).compile(
         xclbin_path=str(xclbin), inst_path=str(insts))
-    # n_cores logic matches ffn_fused.py
-    if I % (32 * M) == 0:
-        n_cores = 32
-    elif I % (16 * M) == 0:
-        n_cores = 16
-    elif I % (8 * M) == 0:
-        n_cores = 8
-    elif I % (4 * M) == 0:
-        n_cores = 4
-    elif I % (2 * M) == 0:
-        n_cores = 2
-    else:
-        n_cores = 1
-        
-    return {"kind": "ffn_fused", "H": H, "I": I, "m_I": M, "k_tile": K_TILE, "activation": activation,
-            "n_cores": n_cores,
-            "xclbin": xclbin.name, "insts": insts.name}
+    return entry
 
 
 def main():
@@ -208,15 +261,16 @@ def main():
     ap.add_argument("--out", type=Path, default=ROOT / "kernels" / "build")
     ap.add_argument("--max-batch", type=int, default=16, help="prefill GEMM batch B")
     ap.add_argument("--no-gemm", action="store_true", help="skip prefill GEMM shapes")
+    ap.add_argument("--force", action="store_true", help="recompile xclbin even if present")
     args = ap.parse_args()
 
-    # Initialize the IRON NPU device context (required before compilation)
+    # Initialize the IRON NPU device context for npu2
     import aie.iron as iron
-    _ = iron.tensor([0], device="npu")
+    from aie.iron.device import from_name
+    iron.set_current_device(from_name("npu2", n_cols=None))
 
     cfg = json.loads((args.weights_dir / "config.json").read_text())
     num_layers = cfg.get("num_hidden_layers", 48)
-    # Default to gelu, though llama uses silu (hidden_act = "silu")
     activation = cfg.get("hidden_act", "gelu") 
     
     args.out.mkdir(parents=True, exist_ok=True)
@@ -232,23 +286,46 @@ def main():
     for H, I in ffn_shapes:
         print(f"  FFN  H={H:6d} I={I:6d}  activation={activation}")
 
-    # Decision #2 sanity check: decode must fit the ~8-context budget resident.
-    if total_shapes > 8:
-        print(f"\n[!] {total_shapes} > 8 hardware contexts: the C++ registry must "
-              f"bucket-pad these into <=8 resident contexts (plan decision #2) to "
-              f"avoid xclbin reloads inside the decode loop.")
+    # 1. Collect existing manifest entries and xclbins on disk to form a superset
+    kernel_map = {}
+    manifest_path = args.out / "manifest.json"
+    if manifest_path.exists():
+        try:
+            m_old = json.loads(manifest_path.read_text())
+            for e in m_old.get("kernels", []):
+                xcl = args.out / e.get("xclbin", "")
+                inst = args.out / e.get("insts", "")
+                if xcl.exists() and inst.exists():
+                    kernel_map[kernel_key(e)] = e
+        except Exception as err:
+            print(f"Warning: could not parse existing manifest.json: {err}")
 
-    entries = []
+    # 2. Scan all .xclbin files in args.out to recover any unlisted kernels
+    for xclbin_file in args.out.glob("*.xclbin"):
+        parsed = parse_xclbin_filename(xclbin_file)
+        if parsed:
+            k_key = kernel_key(parsed)
+            if k_key not in kernel_map:
+                kernel_map[k_key] = parsed
+
+    # 3. Compile or reuse shapes for the current model
     for N, K in gemv_shapes:
-        print(f"Compiling gemv {N}x{K} ...")
-        entries.append(compile_gemv(N, K, args.out))
+        print(f"Checking/compiling gemv {N}x{K} ...")
+        entry = compile_gemv(N, K, args.out, force=args.force)
+        kernel_map[kernel_key(entry)] = entry
         if not args.no_gemm:
-            print(f"Compiling gemm {N}x{K} b{args.max_batch} ...")
-            entries.append(compile_gemm(args.max_batch, N, K, args.out))
+            print(f"Checking/compiling gemm {N}x{K} b{args.max_batch} ...")
+            entry_gemm = compile_gemm(args.max_batch, N, K, args.out, force=args.force)
+            kernel_map[kernel_key(entry_gemm)] = entry_gemm
             
     for H, I in ffn_shapes:
-        print(f"Compiling ffn_fused {H}x{I} ({activation}) ...")
-        entries.append(compile_ffn_fused(H, I, activation, args.out))
+        print(f"Checking/compiling ffn_fused {H}x{I} ({activation}) ...")
+        entry_ffn = compile_ffn_fused(H, I, activation, args.out, force=args.force)
+        kernel_map[kernel_key(entry_ffn)] = entry_ffn
+
+    sorted_entries = sorted(kernel_map.values(), key=lambda e: (
+        e.get("kind", ""), e.get("N", e.get("H", 0)), e.get("K", e.get("I", 0)), e.get("B", 0)
+    ))
 
     manifest = {
         "model_type": cfg.get("model_type"),
@@ -256,10 +333,10 @@ def main():
         "m": M, "k_tile": K_TILE, "max_batch": args.max_batch,
         "kernel_name": "MLIR_AIE",   # xrt::kernel entry (see meta.json ABI)
         "opcode": 3,
-        "kernels": entries,
+        "kernels": sorted_entries,
     }
-    (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print(f"\nWrote {args.out / 'manifest.json'} with {len(entries)} kernels.")
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    print(f"\nWrote {manifest_path} with {len(sorted_entries)} total kernels (superset).")
 
 
 if __name__ == "__main__":
