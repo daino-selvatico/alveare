@@ -23,6 +23,15 @@ int Generator::sample(const std::vector<float>& logits, const GenerationParams& 
             best_token = static_cast<int>(i);
         }
     }
+    if (std::getenv("ALVEARE_DUMP_TOPK")) {
+        std::vector<int> idx(logits.size());
+        for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int)i;
+        std::partial_sort(idx.begin(), idx.begin() + 6, idx.end(),
+                          [&](int a, int b){ return logits[a] > logits[b]; });
+        std::cerr << "[topk]";
+        for (int j = 0; j < 6; ++j) std::cerr << " " << idx[j] << ":" << logits[idx[j]];
+        std::cerr << "\n";
+    }
     return best_token;
 }
 
