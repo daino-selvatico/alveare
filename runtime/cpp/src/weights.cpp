@@ -335,22 +335,24 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             free_npy(v_arr);
         }
 
-        if (config.model_type == "gemma4-e4b") {
-            lw.w_o_bytes = load_uint8_npy(o_path);
-        } else if (config.is_gemma4() && is_sliding && lw.n_qkv == 8192) {
-            NpyArray o_arr = load_npy(o_path);
-            int row_bytes = o_arr.data_size / K_attn_padded;   // K_attn/32*20
-            lw.o_gemv_n = 8192;
-            std::vector<uint8_t> o_pad(size_t(8192) * row_bytes, 0);
-            std::memcpy(o_pad.data(), o_arr.data, o_arr.data_size);
-            lw.w_o = reg.create_gemv_weight(8192, l_N_q, o_pad.data(), o_pad.size());
-            free_npy(o_arr);
+        NpyArray o_arr = load_npy(o_path);
+        if (config.is_gemma4()) {
+            int target_N = 4096;
+            int row_bytes = o_arr.data_size / l_N_out;
+            if (row_bytes > 0 && reg.has_gemv(target_N, l_N_q)) {
+                lw.o_gemv_n = target_N;
+                std::vector<uint8_t> o_pad(size_t(target_N) * row_bytes, 0);
+                std::memcpy(o_pad.data(), o_arr.data, o_arr.data_size);
+                lw.w_o = reg.create_gemv_weight(target_N, l_N_q, o_pad.data(), o_pad.size());
+            } else {
+                lw.o_gemv_n = l_N_out;
+                lw.w_o = reg.create_gemv_weight(l_N_out, l_N_q, o_arr.data, o_arr.data_size);
+            }
         } else {
-            NpyArray o_arr = load_npy(o_path);
             lw.o_gemv_n = K_attn_padded;
             lw.w_o = reg.create_gemv_weight(K_attn_padded, l_N_q, o_arr.data, o_arr.data_size);
-            free_npy(o_arr);
         }
+        free_npy(o_arr);
 
         // FFN Fused
         int H_padded = config.get_padded_hidden_size();

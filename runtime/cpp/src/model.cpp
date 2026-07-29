@@ -552,13 +552,15 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
         int down_stride = (I_padded / 32) * 20;
         int intermediate_size = config_.intermediate_size;
         std::vector<float> geglu(I_padded, 0.0f);
+        std::vector<float> x_norm2_f(K_padded);
+        for (int i = 0; i < K_padded; ++i) x_norm2_f[i] = x_norm2[i].to_float();
 
         #pragma omp parallel for schedule(static)
         for (int r = 0; r < intermediate_size; ++r) {
             const uint8_t* row_g = lw.ffn_gate_bytes.data() + static_cast<size_t>(r) * gate_stride;
             const uint8_t* row_u = lw.ffn_up_bytes.data() + static_cast<size_t>(r) * gate_stride;
-            float g = q4_0_dot_product(row_g, x_norm2.data(), K_padded);
-            float u = q4_0_dot_product(row_u, x_norm2.data(), K_padded);
+            float g = q4_0_dot_product(row_g, x_norm2_f.data(), K_padded);
+            float u = q4_0_dot_product(row_u, x_norm2_f.data(), K_padded);
             float a = 0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f));
             geglu[r] = a * u;
         }
@@ -593,11 +595,13 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
 
         // Gate: GELU(inp_gate * x_post_ffn)
         std::vector<float> z(n_ple);
+        std::vector<float> x_post_ffn_f(K);
+        for (int i = 0; i < K; ++i) x_post_ffn_f[i] = x_post_ffn[i].to_float();
         const uint8_t* gate_base = lw.inp_gate_bytes.data();
         const int gate_row_bytes = (K / 32) * 20;
         for (int r = 0; r < n_ple; ++r) {
             const uint8_t* row = gate_base + static_cast<size_t>(r) * gate_row_bytes;
-            float g = q4_0_dot_product(row, x_post_ffn.data(), K);
+            float g = q4_0_dot_product(row, x_post_ffn_f.data(), K);
             float a = 0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f));
             z[r] = a * h_l[r];
         }

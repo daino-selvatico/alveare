@@ -54,6 +54,8 @@ struct LayerWeights {
     std::vector<uint8_t> ffn_gate_bytes;
     std::vector<uint8_t> ffn_up_bytes;
     std::vector<uint8_t> ffn_down_bytes;
+
+    std::vector<uint8_t> w_o_bytes;
 };
 
 struct ModelWeights {
