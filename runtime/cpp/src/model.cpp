@@ -419,17 +419,17 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
             reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
             std::memcpy(q.data(), qkv.data(), size_t(N_q) * sizeof(bf16));
             std::memcpy(k.data(), qkv.data() + N_q, size_t(N_kv) * sizeof(bf16));
-            if (is_sliding)
+            if (is_sliding || config_.model_type == "gemma4-e4b")
                 std::memcpy(v.data(), qkv.data() + N_q + N_kv, size_t(N_kv) * sizeof(bf16));
             else
-                v = k; // Gemma4 global layers use K for V
+                v = k; // 12B gemma4 global layers are MQA: reuse K for V
         } else {
             reg_.run_gemv(N_q, K_padded, lw.w_q, x_norm.data(), q.data());
             reg_.run_gemv(N_kv, K_padded, lw.w_k, x_norm.data(), k.data());
-            if (!config_.is_gemma4() || is_sliding) {
+            if (!config_.is_gemma4() || is_sliding || config_.model_type == "gemma4-e4b") {
                 reg_.run_gemv(N_kv, K_padded, lw.w_v, x_norm.data(), v.data());
             } else {
-                v = k; // Gemma4 global layers use K for V
+                v = k; // 12B gemma4 global layers are MQA: reuse K for V
             }
         }
     } else {
@@ -506,7 +506,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
         }
     }
 
-    // 6. Attention
+    // 6. Attention. (run_attention_host maps shared-KV layers to their source
+    // cache internally via target_layer, so pass the real layer index.)
     std::vector<bf16> attn_out(N_q);
     auto t_attn = pclock::now();
     run_attention_host(q_rope.data(), pos, layer, attn_out.data());

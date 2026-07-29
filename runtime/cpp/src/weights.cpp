@@ -295,8 +295,10 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 // Layers 24-41 (shared KV) only have Q projection
                 lw.n_qkv = l_N_q;
                 lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_attn_padded, q_arr.data, q_arr.data_size);
-            } else if (is_sliding) {
-                // q ++ k ++ v  (N_qkv = N_q + 2*N_kv)
+            } else if (is_sliding || config.model_type == "gemma4-e4b") {
+                // q ++ k ++ v  (N_qkv = N_q + 2*N_kv). e4b has a real V on EVERY
+                // layer (kv_heads=2 uniformly); only the 12B's global layers are
+                // MQA and tie V=K (the `else` branch below).
                 NpyArray k_arr = load_npy(k_path);
                 NpyArray v_arr = load_npy(v_path);
                 const uint8_t* kd = static_cast<const uint8_t*>(k_arr.data);
