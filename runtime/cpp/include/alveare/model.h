@@ -18,16 +18,20 @@ public:
     // Access to the NPU registry (e.g. for the LM head gemv driven by Generator).
     NpuRegistry& registry() { return reg_; }
 
+    // Compute Gemma-4-E4B per-layer input embeddings for a token
+    void compute_per_layer_inputs(int token_id, const float* inpL, std::vector<float>& out_per_layer);
+
     // Run a single layer decode natively.
     // Returns true on success.
-    void run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16);
+    void run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16,
+                   const float* inp_per_layer = nullptr);
 
     // Batched prefill of one layer over `nrows` (<= 16) consecutive positions
     // starting at pos_start. x_batch/out_batch are (nrows, hidden_size) row-major.
     // Uses the GEMM kernels (resident attn weights, streamed FFN weights) with
     // CPU RMSNorm/RoPE/causal attention. gemma4 only.
     void run_layer_batch(const bf16* x_batch, int nrows, int pos_start, int layer,
-                         bf16* out_batch);
+                         bf16* out_batch, const float* inp_per_layer = nullptr);
 
     void reset_caches();
 

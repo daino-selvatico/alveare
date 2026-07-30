@@ -54,3 +54,8 @@ target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)
 add_executable(layer_test test/layer_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(layer_test PRIVATE ${XRT_INCLUDE_DIRS})
 target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)
+
+# Gemma-4-E4B oracle test
+add_executable(e4b_test test/e4b_test.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(e4b_test PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)

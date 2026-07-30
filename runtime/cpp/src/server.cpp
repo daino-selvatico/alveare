@@ -27,7 +27,7 @@ void ApiServer::start(int port) {
             // its special turn/channel tokens (the tokenizer matches them atomically);
             // other models just concatenate message contents.
             const std::string& model_type = generator_.config().model_type;
-            bool is_gemma = (model_type == "gemma3" || model_type == "gemma4");
+            bool is_gemma = (model_type == "gemma3" || generator_.config().is_gemma4());
 
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
                 if (is_gemma) {

@@ -43,18 +43,30 @@ struct LayerWeights {
     // at the end of the block. 1.0 for models without a per-layer output scale.
     float output_scale = 1.0f;
 
+    // Gemma-4-E4B PLE per-layer injection tensors
+    std::vector<uint8_t> inp_gate_bytes;
+    std::vector<uint8_t> proj_bytes;
+    std::vector<float> post_norm;
+
     // Host-resident Q4_0 packed FFN weights, kept for batched prefill (GEMM):
     // gate/up are (I=16384, K=4096), down is (H=4096, I=16384). The decode path
     // uses only the fused device weight above; these feed run_gemm_streamed.
     std::vector<uint8_t> ffn_gate_bytes;
     std::vector<uint8_t> ffn_up_bytes;
     std::vector<uint8_t> ffn_down_bytes;
+
+    std::vector<uint8_t> w_o_bytes;
 };
 
 struct ModelWeights {
     std::vector<LayerWeights> layers;
     std::vector<float> token_embd;
     std::vector<float> output_norm;
+
+    // Gemma-4-E4B PLE model-level tensors
+    std::vector<uint16_t> per_layer_token_embd_f16;
+    std::vector<uint8_t> per_layer_model_proj_packed;
+    std::vector<float> per_layer_proj_norm;
 
     // LM head. When a matching NPU gemv kernel exists, the packed weight is
     // uploaded to the device split into `lm_head_chunks` row-tiles of

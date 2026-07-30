@@ -23,6 +23,15 @@ int Generator::sample(const std::vector<float>& logits, const GenerationParams& 
             best_token = static_cast<int>(i);
         }
     }
+    if (std::getenv("ALVEARE_DUMP_TOPK")) {
+        std::vector<int> idx(logits.size());
+        for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int)i;
+        std::partial_sort(idx.begin(), idx.begin() + 6, idx.end(),
+                          [&](int a, int b){ return logits[a] > logits[b]; });
+        std::cerr << "[topk]";
+        for (int j = 0; j < 6; ++j) std::cerr << " " << idx[j] << ":" << logits[idx[j]];
+        std::cerr << "\n";
+    }
     return best_token;
 }
 
@@ -72,7 +81,7 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
     // scale (bytes 16..17) and 2 pad bytes. K = K_blocks * 32 is padded (4096 for
     // Gemma-4, vs hidden_size 3840), so x is treated as zero-padded past hidden_size.
     const int block_bytes = 20;
-    const int K_padded = (cfg.model_type == "gemma4") ? 4096 : hidden_size;
+    const int K_padded = cfg.get_padded_hidden_size();
     const int K_blocks = K_padded / 32;
     const int row_bytes = K_blocks * block_bytes;
     int vocab_size = static_cast<int>(weights_.lm_head.size() / row_bytes);
@@ -111,7 +120,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
     const ModelConfig& cfg = model_.get_config();
     int hidden_size = cfg.hidden_size;
-    bool is_gemma = (cfg.model_type == "gemma3" || cfg.model_type == "gemma4");
+    bool is_gemma = (cfg.model_type == "gemma3" || cfg.is_gemma4());
     float embed_scale = is_gemma ? std::sqrt(static_cast<float>(hidden_size)) : 1.0f;
 
     std::vector<int> input_tokens = tokenizer_.encode(prompt);
@@ -141,14 +150,22 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
     double lm_head_ms = 0.0;  // profiling: last forward's LM-head wall time
 
+    std::vector<float> inp_per_layer;
+
     // Run one token through the embedding + all transformer layers. When
     // want_logits is set, also apply the final norm and LM head into `logits`.
     auto forward = [&](int token, int pos, bool want_logits) {
+        std::vector<float> inpL_f(hidden_size);
         for (int i = 0; i < hidden_size; ++i) {
-            x[i] = bf16(weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale);
+            float val = weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale;
+            x[i] = bf16(val);
+            inpL_f[i] = val;
+        }
+        if (cfg.per_layer_input > 0) {
+            model_.compute_per_layer_inputs(token, inpL_f.data(), inp_per_layer);
         }
         for (int l = 0; l < cfg.num_hidden_layers; ++l) {
-            model_.run_layer(x.data(), pos, l, out.data());
+            model_.run_layer(x.data(), pos, l, out.data(), inp_per_layer.empty() ? nullptr : inp_per_layer.data());
             x = out;
         }
         if (!want_logits) return;

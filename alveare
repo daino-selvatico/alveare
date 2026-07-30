@@ -184,6 +184,7 @@ resolve_weights_dir() {
     llama|llama-3.2-1b|llama3.2)   echo "$ROOT/quantized_weights_llama" ;;
     gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/quantized_weights_gemma" ;;
     gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
+    gemma4-e4b|e4b)                echo "$ROOT/quantized_weights_gemma4-e4b" ;;
     *)
       if [ -d "$model" ]; then
         echo "$model"
@@ -200,6 +201,7 @@ resolve_quantizer() {
     llama|llama-3.2-1b|llama3.2)   echo "$ROOT/tools/quantize_model.py" ;;
     gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/tools/quantize_gemma.py" ;;
     gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/tools/quantize_gemma4.py" ;;
+    gemma4-e4b|e4b)                echo "$ROOT/tools/quantize_gemma4e.py" ;;
     *)                             echo "" ;;
   esac
 }
