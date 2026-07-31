@@ -22,6 +22,9 @@ public:
     // Callback should return true to continue, false to stop.
     void generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token);
 
+    // Resets both the underlying model KV cache and the generator's cached_tokens_ tracker.
+    void reset_cache();
+
     // Model config (used e.g. by the server to pick the chat template).
     const ModelConfig& config() const { return model_.get_config(); }
 

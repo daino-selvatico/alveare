@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
             std::cout << "Running " << tc.name << ": \"" << tc.prompt << "\"\n";
             
             // Reset KV cache between prompts to ensure clean state
-            model.reset_caches();
+            generator.reset_cache();
 
             GenerationParams params;
             params.max_tokens = static_cast<int>(tc.expected_tokens.size());
