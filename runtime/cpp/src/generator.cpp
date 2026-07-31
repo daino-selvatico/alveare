@@ -161,7 +161,8 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
             x[i] = bf16(val);
             inpL_f[i] = val;
         }
-        if (cfg.per_layer_input > 0) {
+        static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
+        if (cfg.per_layer_input > 0 && !no_ple) {
             model_.compute_per_layer_inputs(token, inpL_f.data(), inp_per_layer);
         }
         for (int l = 0; l < cfg.num_hidden_layers; ++l) {
