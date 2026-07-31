@@ -177,15 +177,21 @@ void Model::precompute_rope() {
         cos_sin_table_sliding_.resize(max_seq_len * config_.head_dim);
         cos_sin_table_full_.resize(max_seq_len * config_.head_dim_global);
         
+        // Gemma-4 applies FULL RoPE to every head dim (n_rot == head_dim): llama.cpp
+        // sets n_rot_full = rope.dimension_count = 512 and ASSERTS it equals the head
+        // dim (llama-model.cpp ~L816-822). The `0.25 * dim/2` partial-RoPE on global
+        // layers is a bug vs that reference. FULL RoPE is used for e4b; the 12B keeps
+        // the old partial path for now (released v1.5.0 behavior — same latent bug,
+        // needs a proper llama.cpp revalidation before changing). NOTE: fixing this did
+        // NOT resolve the e4b echo (partial vs full is negligible at small positions).
+        const bool full_rope = (config_.model_type == "gemma4-e4b");
         auto precompute = [&](float base, int dim, std::vector<bf16>& table) {
             for (int pos = 0; pos < max_seq_len; ++pos) {
                 for (int i = 0; i < dim / 2; ++i) {
                     float inv_freq = 0.0f;
-                    if (dim == config_.head_dim_global) {
+                    if (!full_rope && dim == config_.head_dim_global) {
                         int rope_angles = static_cast<int>(0.25f * dim / 2.0f);
-                        if (i < rope_angles) {
-                            inv_freq = 1.0f / std::pow(base, float(i * 2) / dim);
-                        }
+                        if (i < rope_angles) inv_freq = 1.0f / std::pow(base, float(i * 2) / dim);
                     } else {
                         inv_freq = 1.0f / std::pow(base, float(i * 2) / dim);
                     }
@@ -512,6 +518,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     auto t_attn = pclock::now();
     run_attention_host(q_rope.data(), pos, layer, attn_out.data());
     g_prof.attn += ms_since(t_attn);
+
 
     // 7. Output Projection
     int N_out = K;
