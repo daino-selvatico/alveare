@@ -10,7 +10,7 @@ class Tokenizer {
 public:
     virtual ~Tokenizer() = default;
 
-    virtual std::vector<int> encode(const std::string& text) const = 0;
+    virtual std::vector<int> encode(const std::string& text, bool add_bos = true) const = 0;
     virtual std::string decode(const std::vector<int>& tokens) const = 0;
     virtual std::string decode(int token) const = 0;
     virtual int bos_token_id() const = 0;
@@ -25,7 +25,7 @@ class StubTokenizer : public Tokenizer {
 public:
     StubTokenizer() {}
 
-    std::vector<int> encode(const std::string& text) const override;
+    std::vector<int> encode(const std::string& text, bool add_bos = true) const override;
     std::string decode(const std::vector<int>& tokens) const override;
     std::string decode(int token) const override;
     int bos_token_id() const override { return 1; }
@@ -41,7 +41,7 @@ class GemmaTokenizer : public Tokenizer {
 public:
     explicit GemmaTokenizer(const std::string& tokenizer_json_path);
 
-    std::vector<int> encode(const std::string& text) const override;
+    std::vector<int> encode(const std::string& text, bool add_bos = true) const override;
     std::string decode(const std::vector<int>& tokens) const override;
     std::string decode(int token) const override;
     int bos_token_id() const override { return bos_id_; }

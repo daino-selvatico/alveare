@@ -139,8 +139,13 @@ void GemmaTokenizer::bpe_segment(const std::string& s, std::vector<int>& out) co
     }
 }
 
-std::vector<int> GemmaTokenizer::encode(const std::string& text) const {
+std::vector<int> GemmaTokenizer::encode(const std::string& text, bool add_bos) const {
     std::vector<int> out;
+    if (add_bos && bos_id_ >= 0) {
+        if (text.rfind("<bos>", 0) != 0) {
+            out.push_back(bos_id_);
+        }
+    }
     std::string pending; // raw text awaiting normalization + BPE
 
     auto flush = [&]() {
