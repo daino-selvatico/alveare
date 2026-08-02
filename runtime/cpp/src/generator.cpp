@@ -7,11 +7,18 @@
 #include <iomanip>
 #include <chrono>
 #include <atomic>
+#include <fstream>
 
 namespace alveare {
 
 Generator::Generator(Model& model, const ModelWeights& weights, const Tokenizer& tokenizer)
     : model_(model), weights_(weights), tokenizer_(tokenizer) {}
+
+void Generator::reset_cache() {
+    std::lock_guard<std::mutex> gen_lock(gen_mutex_);
+    model_.reset_caches();
+    cached_tokens_.clear();
+}
 
 int Generator::sample(const std::vector<float>& logits, const GenerationParams& params) {
     // Greedy search for now
@@ -130,6 +137,10 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
         return;
     }
 
+    std::cout << "[input_tokens]";
+    for (int t : input_tokens) std::cout << " " << t;
+    std::cout << "\n" << std::flush;
+
     // KV-cache reuse: the model's cache already holds valid state for the tokens
     // of the previous request (cached_tokens_). Reuse the longest common prefix
     // and only prefill from there — for multi-turn chat this skips re-prefilling
@@ -161,7 +172,8 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
             x[i] = bf16(val);
             inpL_f[i] = val;
         }
-        if (cfg.per_layer_input > 0) {
+        static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
+        if (cfg.per_layer_input > 0 && !no_ple) {
             model_.compute_per_layer_inputs(token, inpL_f.data(), inp_per_layer);
         }
         for (int l = 0; l < cfg.num_hidden_layers; ++l) {

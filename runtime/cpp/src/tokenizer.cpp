@@ -2,7 +2,7 @@
 
 namespace alveare {
 
-std::vector<int> StubTokenizer::encode(const std::string& text) const {
+std::vector<int> StubTokenizer::encode(const std::string& text, bool /*add_bos*/) const {
     std::vector<int> tokens;
     // For stub, cast char to unsigned char first to avoid negative tokens
     for (char c : text) {
