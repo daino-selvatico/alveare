@@ -63,8 +63,16 @@ def ffn_fused_npu(
     # in act_all (DIM_IC = I/n_cores bf16). The down projection then runs in
     # N_PASSES passes over the H output, so the fp32 output accumulator only needs
     # y_accum[H/N_PASSES] and — together with act_all — fits the core .bss (a full
-    # fp32 y_accum[H] overflows). N_PASSES=4 keeps y_accum[H/4] fp32 within budget.
-    N_PASSES = 4
+    # fp32 y_accum[H] overflows). y_accum[H/N_PASSES] <= 1024 keeps it within budget.
+    #
+    # N_PASSES MUST divide H//m_H exactly, else the per-pass down-tile count
+    # (down_tiles_per_pass) drops the remainder and the kernel consumes fewer down
+    # tiles than the DMA streams -> the DMA blocks -> HANG. (H=4096 -> 4; the old
+    # hardcoded 4 hung on e4b's H=2560 since 2560/4/256=2 covers only 8 of 10 tiles.)
+    # Pick the smallest divisor of (H//m_H) that keeps y_accum[H/N_PASSES] <= 1024.
+    n_down_tiles = H // m_H
+    N_PASSES = next(p for p in range(1, n_down_tiles + 1)
+                    if n_down_tiles % p == 0 and H // p <= 1024)
     H_out = H // N_PASSES
     down_tiles_per_pass = H_out // m_H  # down output-row tiles handled per pass
 
@@ -334,8 +342,13 @@ def pack_ffn_fused_weights(w_gate, w_up, w_down, H, I, m_I, k_tile):
     traversal order of the fused FFN kernel.
     """
     m_H = k_tile
-    
-    if I % (8 * m_I) == 0:
+
+    # n_cores MUST match the kernel (ffn_fused_npu) exactly: up to 32.
+    if I % (32 * m_I) == 0:
+        n_cores = 32
+    elif I % (16 * m_I) == 0:
+        n_cores = 16
+    elif I % (8 * m_I) == 0:
         n_cores = 8
     elif I % (4 * m_I) == 0:
         n_cores = 4
@@ -364,8 +377,12 @@ def pack_ffn_fused_weights(w_gate, w_up, w_down, H, I, m_I, k_tile):
         
         core_bytes = []
 
-        n_passes = 4
-        down_tiles_per_pass = (H // m_H) // n_passes
+        # N_PASSES must match ffn_fused_npu (smallest divisor of H//m_H with
+        # H/N_PASSES <= 1024). Hard-coding 4 hung/mismatched on e4b's H=2560.
+        n_down_tiles = H // m_H
+        n_passes = next(p for p in range(1, n_down_tiles + 1)
+                        if n_down_tiles % p == 0 and H // p <= 1024)
+        down_tiles_per_pass = n_down_tiles // n_passes
 
         # Phase 1: gate + up tiles for every I-block (streamed once).
         for b_I in range(num_blocks_I):
@@ -391,7 +408,24 @@ def pack_ffn_fused_weights(w_gate, w_up, w_down, H, I, m_I, k_tile):
 
         core_buf = np.frombuffer(b"".join(core_bytes), dtype=np.uint8)
         core_buffers.append(core_buf)
-        
+
+    # For 16/32 cores the kernel fills each of the 8 columns from a per-column
+    # memtile funnel, so the rows_per_col (2 or 4) cores of a column must be
+    # interleaved tile-by-tile (must match pack_ffn_fused_weights in weights.cpp).
+    if n_cores in (16, 32):
+        tile_size = m_I * (k_tile // 32) * 20
+        n_cols = 8
+        rows_per_col = n_cores // n_cols
+        n_tiles = core_buffers[0].size // tile_size
+        parts = []
+        for col in range(n_cols):
+            for t in range(n_tiles):
+                off = t * tile_size
+                for r in range(rows_per_col):
+                    s = core_buffers[rows_per_col * col + r]
+                    parts.append(s[off:off + tile_size])
+        return np.concatenate(parts)
+
     return np.stack(core_buffers)
 
 def _resolve_full_device(opts):
@@ -453,8 +487,12 @@ def _run_and_verify(opts):
     w_fused_t = iron.tensor(w_fused_combined.reshape(-1), dtype=np.uint8, device="npu")
     x_t = iron.tensor(x_np.astype(bfloat16), dtype=bfloat16, device="npu")
     
-    # Select n_cores
-    if opts.intermediate_size % (8 * opts.m_I) == 0:
+    # Select n_cores (must match ffn_fused_npu / pack_ffn_fused_weights: up to 32).
+    if opts.intermediate_size % (32 * opts.m_I) == 0:
+        n_cores = 32
+    elif opts.intermediate_size % (16 * opts.m_I) == 0:
+        n_cores = 16
+    elif opts.intermediate_size % (8 * opts.m_I) == 0:
         n_cores = 8
     elif opts.intermediate_size % (4 * opts.m_I) == 0:
         n_cores = 4
