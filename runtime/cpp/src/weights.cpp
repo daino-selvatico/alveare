@@ -109,8 +109,15 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
     std::vector<std::vector<uint8_t>> per_core(n_cores);
     for (auto& v : per_core) v.reserve(size_t((w_gate.size() + w_up.size() + w_down.size()) / n_cores + tile_size));
 
-    const int n_passes = 4;
-    int down_tiles_per_pass = (H / m_H) / n_passes;
+    // N_PASSES MUST match ffn_fused.py exactly (smallest divisor of H//m_H with
+    // H/N_PASSES <= 1024) — else the packed down-tile layout mismatches the kernel's
+    // per-pass consumption and the NPU DMA hangs. 12B (H=4096) -> 4; e4b (H=2560) -> 5.
+    const int n_down_tiles = H / m_H;
+    int n_passes = 4;
+    for (int p = 1; p <= n_down_tiles; ++p) {
+        if (n_down_tiles % p == 0 && H / p <= 1024) { n_passes = p; break; }
+    }
+    int down_tiles_per_pass = n_down_tiles / n_passes;
 
     for (int c = 0; c < n_cores; ++c) {
         std::vector<uint8_t>& stream = per_core[c];
@@ -394,12 +401,11 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             // fallback. (The old `H_padded % 1024 == 0` gate wrongly excluded e4b's
             // H=2560, forcing a ~17s/token CPU FFN even though the 2560x10240 kernel
             // is built.)
-            // TODO(e4b): the e4b FFN kernel (H=2560, non-power-of-2) currently HANGS
-            // the NPU — force the CPU fallback for e4b until the kernel is fixed;
-            // override with ALVEARE_E4B_NPU_FFN=1 to debug the kernel.
-            bool e4b_ffn_blocked = (config.model_type == "gemma4-e4b" &&
-                                    std::getenv("ALVEARE_E4B_NPU_FFN") == nullptr);
-            if (reg.has_ffn_fused(H_padded, I_padded, act_type) && !e4b_ffn_blocked) {
+            // The e4b FFN kernel (H=2560) previously hung because N_PASSES was
+            // hard-coded to 4 (didn't divide H//m_H=10) — now fixed (adaptive
+            // N_PASSES=5 for e4b) in ffn_fused.py + pack_ffn_fused_weights above, so
+            // the NPU FFN is used by default like every other model.
+            if (reg.has_ffn_fused(H_padded, I_padded, act_type)) {
                 lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, fused.data(), fused.size());
             } else {
                 lw.w_ffn_fused = kInvalidWeight;
