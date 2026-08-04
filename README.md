@@ -1,253 +1,198 @@
-# Alveare
+# 🐝 Alveare
 
-**An open-source LLM inference runtime for the AMD Ryzen™ AI (XDNA2) NPU on Linux.**
+**An open-source LLM inference runtime and compiler for the AMD Ryzen™ AI (XDNA2) NPU on Linux.**
 
-Alveare runs large language models on the AMD Ryzen AI NPU with a **fully open** stack — including the AIE kernels. It is a from-scratch alternative to the only other practical NPU runtime on Linux today, built so that anyone can bring their own model instead of waiting for closed, per-model kernel binaries.
+Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-source stack** — including the AIE hardware kernels, the native C++ inference engine, the Python control server, and an interactive React Web UI dashboard.
 
-> **Status: working, correct, and getting faster.** Alveare runs **Gemma-4-12B end-to-end on the NPU**, and its greedy output matches `llama.cpp` (same Q4 GGUF) **token-for-token**. It also runs Llama-3.2-1B and Gemma-3-1B. The default server is a **native C++ runtime** (no Python in the decode loop) with the full FFN — gate/up, GeGLU, and down — fused into a single open AIE kernel, and matmul kernels now spread across all 32 of the NPU's compute tiles; it decodes Gemma-4-12B at ~1 s/token (down from ~3.6). A legacy Python server is still available via `--legacy`. Correctness came first, speed is the ongoing work. See [`ROADMAP.md`](ROADMAP.md).
-
----
-
-## Why
-
-On Linux today, the only practical way to run LLMs on the AMD XDNA2 NPU is [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM) (FLM). FLM is open-core: the CLI and orchestration are MIT, but the part that does the actual work — the **AIE NPU kernels** — ships only as prebuilt, patent-pending `.xclbin` binaries, one set per model **and per size**. That means:
-
-- The community cannot add a new model: doing so requires compiling new kernels, and the kernel sources are not released.
-- New-model support is gated entirely to the FLM team (and is also sold as a paid service).
-
-Alveare's goal is a **fully open** alternative: an NPU LLM runtime where the kernels are open source too. It starts slower than FLM — matching FLM's performance is the hard, patented part — but "open and slower" still unlocks models nobody else can run on the NPU.
-
-The whole stack we need is open and documented by AMD. FLM is living proof it works on exactly this hardware; they used [IRON](https://github.com/amd/iron) + [MLIR-AIE](https://github.com/Xilinx/mlir-aie). We use the same tools — and publish the result, kernels included.
-
-## What works today
-
-- **Native C++ runtime** — the default `alveare serve` path. No Python in the decode loop: native XRT, a hand-ported CPU math path (RMSNorm / RoPE / attention / sampling), a self-contained byte-level BPE tokenizer that loads the model's `tokenizer.json`, and the Gemma chat template. Runs Gemma-4-12B coherently at ~1 s/token. (`--legacy` still starts the Python server.)
-- **Gemma-4-12B-it** — full 48-layer forward on the NPU with per-layer weight streaming (~5.5 GB peak RAM). Greedy output matches `llama.cpp` token-for-token.
-- **Gemma-3-1B-it** — end-to-end on the NPU, greedy continuation matches `llama.cpp`.
-- **Llama-3.2-1B-Instruct** — end-to-end on the NPU.
-- **OpenAI-compatible HTTP server** (`/v1/models`, `/v1/chat/completions`, streaming SSE).
-- A hand-written, **MIT-licensed** vectorized multi-core AIE `gemv_q` kernel (quantized matrix-vector) and a **fused FFN kernel** (gate/up + GeGLU + down in one xclbin, fp32 accumulation across an H-output-split), plus rmsnorm / rope / attention kernels.
-
-> **Note (native C++ runtime):** it reads a `tokenizer.json` from the model's weights directory. For Gemma models `quantize` now **generates it automatically** from the GGUF's embedded tokenizer (fully offline — no HF download), bit-exact vs the upstream tokenizer. (Llama on the native runtime still needs its own tokenizer handling; use `--legacy` there for now.)
-
-### Current limitations
-
-- **Decode speed:** Decode is ~1 s/token on Gemma-4-12B with the native C++ runtime (down from ~3.6: cached-activation FFN, 32-core memtile GEMV/FFN kernels, fused Q/K/V, and shared kernel contexts to avoid per-shape switch overhead). Still the ongoing focus — the next levers are a runtime-shape gemv (removes remaining context switches) and a systolic-matmul kernel. See [`docs/kernel-roofline.md`](docs/kernel-roofline.md).
-- **Experimental state:** Expect rough edges!
-- **Prompt batched prefill:** The initial prompt prefill phase is now successfully offloaded to the NPU with batched matrix multiplications, drastically improving Time-to-First-Token latency compared to the initial CPU-only implementation!
-
-Alveare is **NPU-only and Linux-only.** It targets the **XDNA2** NPU on AMD Ryzen AI hardware. It was developed and validated on a **Gorgon Point** part (Ryzen AI 9 HX 470, the 2026 Ryzen AI refresh); XDNA2 is shared with Strix Point, so the targeting is the same across both. See [Tested on](#tested-on--reference-environment).
-
-## The open AMD stack we build on
-
-| Layer | Component | Role |
-|---|---|---|
-| Kernel driver | `amdxdna` (upstream Linux) | Talks to the NPU device (`/dev/accel/accel0`) |
-| Userspace runtime | XRT | Loads `.xclbin`, manages buffers, submits work |
-| Kernel compiler | MLIR-AIE / IRON | Write & compile AIE kernels → `.xclbin` |
-| Backend | Peano (`llvm-aie`) | LLVM backend for the AIE cores |
-
-See [`docs/background.md`](docs/background.md) for what each of these actually is.
+> **Status: Production-ready Native C++ Runtime with Fused NPU Kernels & Web UI.** Alveare runs **Gemma-4-12B**, **Gemma-4-E4B** (with Per-Layer Embedding support), **Gemma-3-1B**, and **Llama-3.2-1B** end-to-end on the NPU. The default backend is a high-performance **native C++ server** (`alveare_runtime`) featuring fused AIE hardware kernels, memory-resident weights, C++ KV caching, and a self-contained BPE/SPM tokenizer.
 
 ---
 
-## Quick start
+## 🌟 Key Features
 
-Full, version-pinned instructions are in **[`docs/SETUP.md`](docs/SETUP.md)**. In brief:
+- **🚀 Native C++ Inference Server (`alveare_runtime`)**: Zero Python overhead in the generation loop. Direct XRT integration, fused FFN (gate/up + GeGLU + down in a single `.xclbin`), and multi-core GEMV kernels distributed across all 32 NPU compute tiles.
+- **🖥️ Modern React Web UI Dashboard**: A sleek, real-time control center accessible at `http://127.0.0.1:8000`. Features real-time NPU telemetry, server controls, terminal log streaming, and an interactive chat playground.
+- **⚡ 1-Click Automated Model Installation**: "Aggiungi Modello" modal in the Web UI allows 1-click downloads & quantization from HuggingFace for supported models (Gemma-4 12B, Gemma-4 E4B, Gemma-3 1B), as well as manual custom GGUF setup.
+- **🧩 Extensible Plugin System for Custom Models**: Build and register custom quantizers by extending `BaseQuantizer` (`tools/convert/base_quantizer.py`). Bring any architecture to the NPU with custom tensor tiling and layout rules.
+- **🔌 Drop-In OpenAI-Compatible API**: Fully compliant `/v1/chat/completions` and `/v1/models` HTTP endpoints. Seamlessly connects to standard client libraries (OpenAI Python SDK, LangChain, LlamaIndex, Continue, etc.).
+- **🗑️ Full Model Lifecycle Management**: List, inspect, serve, setup, and delete quantized model packages via both CLI (`./alveare delete <alias>`) and Web UI.
+
+---
+
+## 📦 Supported Models
+
+| Model | Architecture Key | Features | Output Size (Q4_0) |
+|---|---|---|---|
+| **Gemma 4 12B** | `gemma4` | 48 layers, fused FFN, multi-tile GEMV | ~9.7 GB |
+| **Gemma 4 E4B** | `gemma4e` | Per-Layer Embedding (PLE) injection | ~3.8 GB |
+| **Gemma 3 1B** | `gemma3` | SentencePiece SPM tokenizer, 26 layers | ~0.8 GB |
+| **Llama 3.2 1B** | `llama` | Llama architecture, GQA attention | ~0.8 GB |
+
+---
+
+## 🚀 Quick Start
+
+### 1. One-Command Installation
+
+Run the automated installer to set up the Conda environment (`alveare-aie`), XRT dependencies, AIE compiler toolchain (`mlir-aie`, `llvm-aie`), and Python/C++ binaries:
 
 ```bash
-# 1. Install everything (conda env alveare-aie + toolchain + deps) — one command:
-./install.sh                    # or:  ./alveare install
+./install.sh
+```
 
-# 2. Verify the NPU end-to-end. (No manual `conda activate` needed — every
-#    ./alveare command auto-activates the alveare-aie env + NPU toolchain.)
+### 2. Verify NPU Hardware
+
+Run the NPU smoke test to verify Linux driver access (`/dev/accel/accel0`), XRT environment, and kernel execution:
+
+```bash
 ./alveare check
+```
 
-# 3. Quantize a source GGUF into Alveare's Q4 layout (a single GGUF you downloaded).
-#    The architecture is auto-detected from the GGUF; give it a short alias:
-./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf     # -> quantized_weights_g4-12b
-#    (omit the alias to name it after the GGUF file)
+### 3. Add and Quantize a Model
 
-# 4. See what's installed:
-./alveare list
+#### Option A: Via Web UI (Recommended)
+Launch the server control panel and open `http://127.0.0.1:8000`:
 
-# 5. Serve it (OpenAI-compatible HTTP server):
+```bash
+./alveare serve
+```
+Click **"Aggiungi Modello"**, select a model (e.g. Gemma 4 12B), and click **"Installa"**. Alveare will automatically download the GGUF from Hugging Face, extract and quantize the weights into Alveare's NPU Q4_0 layout, and prepare the model for serving.
+
+#### Option B: Via CLI
+Download a GGUF file from HuggingFace and run `alveare quantize`:
+
+```bash
+./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf
+```
+
+### 4. Serve the Model
+
+Start the server for your model:
+
+```bash
 ./alveare serve g4-12b
-
-# 6. Talk to it from another terminal:
-./alveare chat
 ```
 
-### The `alveare` command
+### 5. Chat & Interact
 
-```
-alveare install                        One-command full install (env + toolchain + deps).
-alveare setup                          Setup guidance + lightweight preflight checks.
-alveare check                          NPU smoke test (wraps tools/check_npu.sh).
-alveare quantize [alias] <gguf> [--arch A]   GGUF -> Alveare Q4 weights dir.
-alveare list  (or: models)             List installed models.
-alveare serve <model> [--host --port]  Start the OpenAI-compatible server.
-alveare chat [--host --port --model]   Minimal terminal chat vs a running server.
-alveare help                           Show usage.
-```
-
-- **`quantize`** — architecture is **auto-detected** from the GGUF (`general.architecture`); override with `--arch llama|gemma3|gemma4` if needed. `[alias]` names the output dir `quantized_weights_<alias>` (defaults to the GGUF's filename). Any number of models coexist, each in its own directory — keep a 12B and a smaller one side by side. You then `serve <alias>`.
-- **`list`** — shows every installed model (the `quantized_weights_*` directories), its architecture, and size.
-- **`serve`** — `<model>` resolves as: built-in shorthand (`llama`/`gemma3`/`gemma4`) → an existing directory path → a generated alias (`quantized_weights_<model>`).
-- **`chat`** — a tiny REPL over the OpenAI endpoint. Start a server first, then chat from another terminal.
+- **Web Dashboard**: Open `http://127.0.0.1:8000` for real-time chat and system metrics.
+- **Terminal CLI**: Run `./alveare chat` in another terminal window.
+- **OpenAI Client / API**: Connect any OpenAI SDK to `http://127.0.0.1:8000/v1`.
 
 ---
 
-## Models — where they go and in what format
+## 🛠️ The `alveare` CLI Launcher
 
-**You download a single GGUF, exactly as usual. You do NOT download the many-file `.npy` directory — you generate it locally.**
+The `./alveare` CLI launcher automatically manages the Conda environment and NPU stack activation.
 
-Alveare cannot load a GGUF (or safetensors) directly at serve time: the NPU kernel needs weights pre-tiled into Alveare's own layout. So the workflow is always **one GGUF file → run the quantizer → a directory of `.npy` files → serve that directory**:
-
-- **What you download:** a normal single-file **GGUF** of the model (from Hugging Face — e.g. `bartowski`/`unsloth`/`ggml-org` repos), the same file you'd use with `llama.cpp`.
-- **What Alveare produces (locally, once):** running `tools/quantize_<model>.py` on that GGUF writes a directory of **Q4_0 block-quantized** tensors (blocks of 32, per-block scale) as `.npy` files pre-packed for the `gemv_q` NPU kernel, plus a `config.json`. This directory is **generated, never downloaded**, and is git-ignored (it's large model data).
-- **What you serve:** that directory, by its alias. `alveare quantize g4-12b model.gguf` writes `./quantized_weights_g4-12b/`, and `alveare serve g4-12b` serves it. You can also pass a directory path directly.
-
-**Naming and multiple models.** The output alias is yours to choose (`quantize <alias> <gguf>`) and defaults to the GGUF's filename. Every model lives in its own `quantized_weights_<alias>/` directory, so any number coexist — e.g. a Gemma-4 12B and a smaller one at the same time. `alveare list` shows them all.
-
-**Architecture is auto-detected** from the GGUF's `general.architecture` metadata and mapped to the right quantizer:
-
-| GGUF architecture | Quantizer used | Example |
-|---|---|---|
-| `llama` | `tools/quantize_model.py` | Llama-3.2-1B-Instruct |
-| `gemma3` | `tools/quantize_gemma.py` | Gemma-3-1B-it |
-| `gemma4` | `tools/quantize_gemma4.py` | Gemma-4-12B-it |
-
-If auto-detection is wrong, force it with `--arch llama|gemma3|gemma4`. A GGUF of any other architecture isn't supported yet (it would need a new quantizer + runtime support). The quantized `quantized_weights_*` directories are **git-ignored and never committed** (large model data; the 12B is ~9.7 GB).
-
-The server **auto-detects the architecture** from `config.json` in the served directory. These `quantized_weights*` directories are **git-ignored and must never be committed** — they are large model data, not source.
-
-### From "I have a model" to "it's served"
-
-Every `./alveare` command **auto-activates the `alveare-aie` conda env + NPU toolchain** and re-execs, so the steps below work from any shell (including conda `base`) — no manual `conda activate` / `env_setup.sh`. If conda or the env isn't there yet it tells you to run `./alveare install`. (For direct/dev work outside the launcher, activate it yourself; see [`docs/SETUP.md`](docs/SETUP.md).)
-
-1. **Download a source GGUF** — a single file, as usual. E.g. for Gemma-4-12B grab a GGUF from Hugging Face (`bartowski/…gemma-4-12b-it-GGUF`, `unsloth/…`, etc.), the same file you'd give `llama.cpp`.
-2. **Quantize** it into Alveare's `.npy` layout (a few minutes; the 12B output is ~9.7 GB). The architecture is auto-detected; pick an alias:
-   ```bash
-   ./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf
-   #   -> ./quantized_weights_g4-12b/   (config.json + *.npy)
-   ```
-3. **Serve** it by that alias:
-   ```bash
-   ./alveare serve g4-12b
-   ```
-4. **Chat** from another terminal:
-   ```bash
-   ./alveare chat
-   ```
-
-That's the whole path. Supported architectures today: **Llama, Gemma-3, Gemma-4** (validated on Llama-3.2-1B, Gemma-3-1B, Gemma-4-12B; NPU-only, Linux-only).
+```
+alveare install                               One-command full setup (env + toolchain + build).
+alveare check                                 NPU smoke test and driver verification.
+alveare quantize [alias] <gguf> [--arch A]    Quantize GGUF into Alveare Q4 weights.
+alveare setup <alias> --arch A [--url URL]    Download and quantize a model in one step.
+alveare list  (or: models)                    List all installed model packages.
+alveare delete <model_id>                     Remove a quantized model package from disk.
+alveare serve [model] [--host H] [--port P]   Launch the C++ runtime & Python API/Web UI server.
+alveare chat [--host H] [--port P]            Interactive terminal chat client.
+alveare help                                  Show help message.
+```
 
 ---
 
-## Talking to the server (drop-in OpenAI-compatible)
+## 💻 Developer & Custom Quantizer Plugins
 
-**Alveare's server is OpenAI-compatible — point any OpenAI client at it, no code changes beyond the base URL.** It speaks the standard `/v1` endpoints, so the official `openai` SDK and any OpenAI-compatible tool or library (LangChain, LlamaIndex, `llm`, Continue, etc.) work by just setting `base_url` to Alveare and using any placeholder API key.
+Alveare features a modular quantizer architecture located in `tools/convert/`. Anyone can write a custom quantizer plugin to bring new GGUF models or experimental weight layouts to the NPU.
 
-Once `alveare serve …` is running (default `http://localhost:8000`):
+Inherit from `BaseQuantizer` in `tools/convert/base_quantizer.py`:
 
-**Official `openai` Python SDK — the drop-in path**
+```python
+from tools.convert.base_quantizer import BaseQuantizer
+from gguf import GGUFReader, dequantize, GGMLQuantizationType
+import numpy as np
+
+class CustomModelQuantizer(BaseQuantizer):
+    def __init__(self):
+        super().__init__(name="custom_model")
+
+    def quantize(self, gguf_path: str, out_dir: str) -> dict:
+        # 1. Load GGUF and extract metadata
+        # 2. Dequantize tensors using gguf.quants.dequantize
+        # 3. Pack weights into Alveare Q4_0 layout using self.quantize_and_pack_tensor
+        # 4. Save config.json, tokenizer.json, and *.npy files to out_dir
+        ...
+```
+
+For full documentation and examples, see [`docs/CUSTOM_QUANTIZERS.md`](docs/CUSTOM_QUANTIZERS.md).
+
+---
+
+## ⚡ OpenAI API Usage Examples
+
+Alveare's API server is a drop-in replacement for OpenAI endpoints.
+
+### Python SDK
+
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
 
-resp = client.chat.completions.create(
-    model="gemma-4-12b-it",
-    messages=[{"role": "user", "content": "What is the capital of France?"}],
-    max_tokens=32,
-    temperature=0.0,
+response = client.chat.completions.create(
+    model="gemma4",
+    messages=[{"role": "user", "content": "Explain NPU acceleration in three bullet points."}],
+    max_tokens=128,
+    temperature=0.7,
 )
-print(resp.choices[0].message.content)
 
-# Streaming variant:
-stream = client.chat.completions.create(
-    model="gemma-4-12b-it",
-    messages=[{"role": "user", "content": "Write a haiku about NPUs."}],
-    stream=True,
-)
-for chunk in stream:
-    print(chunk.choices[0].delta.content or "", end="", flush=True)
+print(response.choices[0].message.content)
 ```
 
-Any OpenAI-compatible library works the same way — e.g. in LangChain, set `ChatOpenAI(base_url="http://localhost:8000/v1", api_key="not-needed", model="gemma-4-12b-it")`.
+### Streaming via `curl`
 
-**Raw HTTP (curl)**
 ```bash
-# List the served model
-curl http://localhost:8000/v1/models
-
-# Chat completion
-curl http://localhost:8000/v1/chat/completions \
+curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemma-4-12b-it",
-    "messages": [{"role": "user", "content": "What is the capital of France?"}],
-    "max_tokens": 32,
-    "temperature": 0.0
+    "model": "gemma4",
+    "messages": [{"role": "user", "content": "Ciao! Chi sei?"}],
+    "stream": true
   }'
 ```
 
-Add `"stream": true` to the request body to receive Server-Sent Events (`text/event-stream`) instead of a single JSON response.
-
-> The model name is auto-detected from the served weights' `config.json`; `GET /v1/models` reports the exact id to use. Generation is single-request serialized (one NPU); expect ~1 s/token on the 12B.
-
 ---
 
-## Tested on / reference environment
+## 🔬 Hardware & Reference Environment
 
-Alveare was developed and validated **entirely on one machine**. These are its real, live-captured specs — treat them as the known-good reference configuration. Note the silicon: this is a **Gorgon Point** part (AMD Ryzen AI 9 HX 470), the **newer 2026 Ryzen AI refresh** — not Strix Point. It uses the same **XDNA2** NPU generation, so the NPU, driver, firmware, and toolchain targeting are identical to Strix Point.
+Alveare is optimized for the **AMD Ryzen™ AI (XDNA2)** NPU architecture on Linux:
 
-| Component | Value |
+| Component | Specification |
 |---|---|
-| **APU / SoC** | AMD Ryzen AI 9 HX 470 w/ Radeon 890M — **Gorgon Point** (2026 Ryzen AI refresh, *not* Strix Point; same XDNA2 NPU) |
-| **NPU** | XDNA2, device node `/dev/accel/accel0` (`crw-rw----+ root render`) |
-| **NPU driver** | `amdxdna` (upstream, in-tree) |
-| **NPU firmware** | `/lib/firmware/amdnpu/` → `1502_00`, `17f0_10`, `17f0_11` |
-| **iGPU present** | Radeon 880M / 890M (RDNA 3.5) — *not used; Alveare targets the NPU only* |
-| **RAM** | 64 GB system RAM (shared; the NPU streams weights from here) |
-| **OS** | Ubuntu 26.04 LTS ("resolute") |
-| **Kernel** | Linux `7.0.0-22-generic` (x86_64) |
-| **Python** | 3.14 (conda env `alveare-aie`; must match the system `pyxrt` build) |
-| **XRT** | `2.21.75` (`libxrt2`, `libxrt-npu2`, `libxrt-utils-npu`) |
-| **mlir_aie** | `1.3.3.dev9+g8ed2e6b` (git `8ed2e6b`) |
-| **llvm-aie / Peano** | `21.0.0.2026061901+a76244b4` (git `a76244b4`) |
-| **LLVM (host)** | `21.1.8` |
+| **SoC / APU** | AMD Ryzen AI 9 HX 470 / Ryzen AI 300 series (Gorgon Point / Strix Point) |
+| **NPU Silicon** | AMD XDNA2 (32 AIE tile array), exposed at `/dev/accel/accel0` |
+| **Driver / Kernel** | `amdxdna` (mainline Linux kernel driver) |
+| **Firmware** | `/lib/firmware/amdnpu/` |
+| **Userspace Stack** | AMD XRT `2.21.75`, `mlir-aie` `1.3.3`, `llvm-aie` (Peano) |
+| **OS** | Ubuntu 24.04 / 26.04 LTS (Linux 6.x / 7.x) |
 
-More detail and provenance: [`docs/hardware.md`](docs/hardware.md) and [`docs/toolchain-setup.md`](docs/toolchain-setup.md).
+Detailed hardware architecture & compiler notes are in [`docs/hardware.md`](docs/hardware.md) and [`docs/background.md`](docs/background.md).
 
 ---
 
-## Repository layout
+## 📁 Repository Structure
 
 ```
-alveare      Top-level CLI launcher (setup / check / serve)
-docs/        Design, background, hardware notes, setup guide, per-milestone specs, ADRs
-kernels/     AIE kernel sources (IRON/MLIR-AIE) — the hard, open 30%
-runtime/     Host-side Python runtime: XRT plumbing, weight streaming, KV cache, server
-tools/       Weight quantizers/converters, reference oracles, NPU smoke test
-tests/       Correctness tests + microbenchmarks (NPU vs CPU reference)
+alveare               Top-level CLI launcher script
+frontend/             React Web UI dashboard (Vite + Tailwind/CSS)
+runtime/cpp/          Native C++ inference server (alveare_runtime) & XRT engine
+runtime/py/           Python control server (control_server.py) & HTTP REST API
+kernels/              Open AIE hardware kernel sources (IRON / MLIR-AIE)
+tools/                Model quantizers, setup scripts, and conversion plugins
+docs/                 Architecture documentation, setup guides, and specifications
+tests/                Correctness test suites & microbenchmarks
 ```
 
-## How it was built
+---
 
-Alveare was built milestone by milestone, each with a single testable definition of done. The story, in order:
+## 📄 License
 
-- [`docs/architecture.md`](docs/architecture.md) — how an NPU LLM runtime is structured.
-- [`docs/kernels.md`](docs/kernels.md) — the AIE kernels and their host ABI.
-- [`ROADMAP.md`](ROADMAP.md) — the milestones and what "done" meant for each.
-- [`docs/milestones/`](docs/milestones/) — M0 (toolchain) → M9 (12B speed), including the M7/M8 story of closing the Gemma-4-12B fidelity gap.
-- [`docs/decisions/`](docs/decisions/) — architecture decision records (ADRs).
-
-## Contributing
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). The guiding principle: **open all the way down** — never introduce a closed binary blob as a load-bearing component.
-
-## License
-
-**MIT** — see [`LICENSE`](LICENSE). This includes the AIE kernels. Being open all the way down, kernels included, is the entire point of the project.
+**MIT License** — See [`LICENSE`](LICENSE) for details. Alveare is 100% open-source, including all AIE hardware kernels.

@@ -1,25 +1,25 @@
 # Contributing
 
-Private/solo for now, but written so it can go public later.
+Thank you for your interest in contributing to Alveare!
 
 ## Principles
 
-- **Open all the way down.** The reason this project exists is that the kernels are open. Never introduce a closed binary blob as a load-bearing component. (Studying FLM's *behavior* is fine; copying its closed kernels is not, and would defeat the purpose besides being patent-encumbered.)
-- **Correct first, fast later.** Every kernel ships with a CPU reference and a correctness test before any optimization.
-- **Gate by milestone.** Don't start M(n+1) work before M(n)'s definition-of-done passes. See `ROADMAP.md`.
-- **Write down decisions.** Forced choices → an ADR in `docs/decisions/`.
+- **Open all the way down.** The primary reason this project exists is to provide a 100% open-source NPU LLM stack. Never introduce a closed binary blob or proprietary kernel as a load-bearing component.
+- **Correct first, fast later.** Every kernel ships with a CPU reference implementation and a correctness verification test before any performance optimization.
+- **Gate by milestone.** Work is organized into clear milestones. Do not proceed to M(n+1) work until M(n)'s definition of done passes. See `ROADMAP.md`.
+- **Write down decisions.** Major architectural choices and trade-offs are recorded as Architecture Decision Records in `docs/decisions/`.
 
-## Working rhythm
+## Working Rhythm
 
-- Each kernel lives in `kernels/<name>/` with a `README.md` documenting its host ABI (shapes, dtypes, layout, tolerance) and a reference + test.
-- Benchmarks go in `tests/bench/` with the shape and the machine noted.
-- Keep `docs/toolchain-setup.md` (created in M0) authoritative and version-pinned — toolchain drift is the #1 reproducibility risk here.
+- Each kernel lives in `kernels/<name>/` with documentation on its host ABI (buffer shapes, dtypes, layout, tolerance) and a reference test suite.
+- Benchmarks are placed in `tests/` with the shape and target hardware details noted.
+- Keep `docs/toolchain-setup.md` and `docs/SETUP.md` authoritative and version-pinned — toolchain drift is the #1 reproducibility risk for AIE compilation.
 
-## Commit hygiene
+## Commit Hygiene
 
-- Small, focused commits. Reference the milestone (e.g. `M1: gemv_q single-tile correctness`).
-- Don't commit model weights or `.xclbin` build artifacts (see `.gitignore`); commit the *sources* and build instructions.
+- Keep commits small and focused. Reference the task or milestone in commit messages.
+- Do not commit large model weight files or compiled binary `.xclbin` build artifacts (see `.gitignore`); commit sources, quantizers, and build scripts.
 
-## Legal note
+## Legal Note
 
-This project must not incorporate FastFlowLM's proprietary kernels or any patent-encumbered code. It is a clean-room, from-the-open-stack effort.
+Alveare is built as a clean-room, open-source stack targeting the AMD XDNA2 NPU using open-source tools provided by AMD and Xilinx (`mlir-aie`, `llvm-aie`, `XRT`).

@@ -1,66 +1,60 @@
-# Background: the XDNA2 NPU and the open AMD AIE stack
+# Background: The XDNA2 NPU and the Open AMD AIE Stack
 
-This document explains the pieces we build on, for anyone (including future us) who hasn't lived inside the Ryzen AI NPU world.
+This document explains the hardware, driver, and compiler stack that Alveare builds on for AMD Ryzen AI NPU acceleration on Linux.
 
-## The hardware: XDNA2 / AIE
+---
 
-AMD Ryzen AI laptop/mini-PC chips (Strix Point and later) include an **NPU** based on the **AI Engine (AIE)** architecture, inherited from Xilinx/Versal. The NPU is **not** a GPU:
+## 🏛️ The Hardware: AMD XDNA2 / AIE Architecture
 
-- It is a 2D **array of small VLIW/SIMD processor tiles** ("AIE cores"), each with its own tiny local memory, connected by a configurable on-chip network and DMA engines. Think of it as a programmable systolic/dataflow fabric, not a SIMT machine.
-- Compute is organized as **dataflow**: you place kernels on cores, stream data through them via DMA, and overlap movement with compute. Performance comes almost entirely from *how well you orchestrate data movement*, not from raw FLOPs.
-- On-chip memory is **small** (a few MB total across memtiles). LLM weights (gigabytes) cannot live on-chip — they must be **streamed from DRAM** layer by layer. This is the central performance problem for LLM inference on the NPU, and the main thing a good runtime must hide.
+AMD Ryzen AI processors (Strix Point, Gorgon Point, and Ryzen AI 300 series) feature a dedicated **NPU** based on the **AI Engine (AIE)** architecture. The NPU is distinct from standard GPUs:
 
-This "beehive of tiny cores" is where the project name comes from.
+- **Array of VLIW/SIMD Processor Tiles**: The NPU consists of 32 independent AIE compute tiles, each with dedicated vector units, local data memory, and a configurable stream/DMA interconnect.
+- **Dataflow Compute Model**: Work is structured as dataflow graphs. Kernels execute on AIE cores while DMA engines stream activation vectors and matrix tiles through local memory hierarchy.
+- **Weight Streaming from DRAM**: On-chip memory is intentionally small (a few megabytes). Large language model weights (gigabytes) are streamed layer-by-layer from DRAM during decode and prefill. Hiding streaming latency behind compute is a primary optimization objective.
 
-## The software stack (all open)
+---
 
-From lowest to highest level:
+## 🛠️ The Open Software Stack
 
-### 1. `amdxdna` — the kernel driver
-Upstreamed into mainline Linux. Exposes the NPU as an accel device: `/dev/accel/accel0`. Loads NPU firmware (`/lib/firmware/amdnpu/...`). This is what makes NPU compute possible on Linux at all (and why FLM can run on Linux while AMD's ONNX/OGA LLM path is still Windows-only).
+From hardware to high-level API:
 
-### 2. XRT — Xilinx/AMD Runtime
-Userspace library to talk to the device: create buffer objects (BOs), move data host↔device, load an `.xclbin` (the compiled NPU program), and submit/sync execution. Our host runtime links against XRT (or its AIE-specific API).
+### 1. `amdxdna` — Mainline Linux Kernel Driver
+Upstreamed into Linux kernel (`drivers/accel/amdxdna`). Exposes the NPU device node at `/dev/accel/accel0` and manages NPU firmware (`/lib/firmware/amdnpu/`).
 
-### 3. The `.xclbin` — a compiled NPU program
-An AXLF container holding the configured AIE array program: core binaries, DMA/stream configuration, and metadata. **This is the unit FLM ships closed.** It is the *output* of the kernel compiler — and producing our own is the entire point of this project.
+### 2. XRT — AMD Xilinx Runtime
+Userspace library providing low-level device control: allocating host and device memory buffer objects (BOs), loading `.xclbin` binaries, submitting execution packets, and managing multi-core synchronization.
 
-### 4. MLIR-AIE — the kernel compiler/framework
-The open ([Xilinx/mlir-aie](https://github.com/Xilinx/mlir-aie)) framework for programming the AIE array. You describe: which cores run which compute, how buffers are placed, how DMAs/streams connect them. It lowers through MLIR to an `.xclbin`.
+### 3. `.xclbin` — Open Hardware Kernel Binaries
+AXLF containers holding compiled AIE array configurations: core machine code, DMA stream routes, memory tile allocations, and execution metadata. Alveare builds and packages all `.xclbin` files directly from open source MLIR-AIE designs.
 
-### 5. IRON — the Python frontend
-[amd/iron](https://github.com/amd/iron): a higher-level Python API on top of MLIR-AIE for expressing AIE designs without writing MLIR by hand. The most ergonomic entry point. Comes with example designs (vector add, GEMM, matrix-vector, softmax).
+### 4. MLIR-AIE / IRON — Open Kernel Compiler & Frontend
+Open-source compiler framework ([Xilinx/mlir-aie](https://github.com/Xilinx/mlir-aie) and [amd/iron](https://github.com/amd/iron)) for programming AIE core arrays. Translates high-level Python/MLIR dataflow descriptions into `.xclbin` binaries.
 
-### 6. Peano (`llvm-aie`) — the AIE backend
-The LLVM backend that compiles the per-core compute kernels (C/C++ or generated code) down to AIE machine code. Alternative to the proprietary Chess compiler; being open is why we can stay fully open.
+### 5. Peano (`llvm-aie`) — AIE Core LLVM Compiler
+Open LLVM backend compiler targeting AIE SIMD cores, compiling C++ kernel compute routines directly into AIE machine code.
 
-## How a model actually runs (the loop we must build)
+---
 
-For autoregressive decode (one token at a time):
+## ⚡ Inference Execution Loop
 
-1. Embedding lookup for the current token → activation vector.
-2. For each layer (streaming its weights from DRAM):
+For autoregressive decode:
+
+1. **Embedding Lookup**: Current token ID → activation vector.
+2. **Layer Execution Loop** (streaming layer weights from DRAM):
+   - CPU / NPU RMSNorm
+   - QKV projection (NPU multi-core GEMV) → Attention (QKᵀ · softmax · V over KV cache) → Output projection
    - RMSNorm
-   - QKV projections (quantized GEMV) → attention (QK·softmax·V over the KV cache) → output projection
-   - RMSNorm
-   - MLP (gate/up/down GEMVs + activation)
-   - residual adds
-3. Final norm + LM head (big GEMV over vocab) → logits → sample next token.
-4. Append new K/V to the KV cache; repeat.
+   - Fused FFN (fused gate/up + GeGLU + down AIE hardware kernel)
+   - Residual additions
+3. **Final RMSNorm + LM Head**: Quantized GEMV over vocabulary → logits → token sampling.
+4. **KV Cache Update**: Append new Key/Value states; repeat for next token.
 
-Prefill (processing the prompt) is the same math but matrix-*matrix* (many tokens at once), which is more compute-bound and benefits from different kernels/tiling.
+---
 
-Almost all the time is in the quantized matmuls and in moving weights. That's why **M1 is a quantized GEMV** — nail the dominant primitive first.
+## 📚 References & Upstream Projects
 
-## Why FLM is fast (what we're up against)
-
-FLM's value is in the kernels and the orchestration: tiling that keeps the AIE array busy, DMA prefetch that hides weight streaming behind compute, fused operations, and quantization formats (their "Q4NX") laid out for efficient on-chip access. Those optimizations are patent-pending and closed. We will not match them quickly — and that's fine (see ROADMAP performance philosophy).
-
-## References
-
-- MLIR-AIE: https://github.com/Xilinx/mlir-aie
-- IRON: https://github.com/amd/iron
-- Peano / llvm-aie: https://github.com/Xilinx/llvm-aie
-- XDNA driver: in mainline Linux (`drivers/accel/amdxdna`)
-- Riallto (tutorial framework for Ryzen AI NPU): https://riallto.ai
-- FLM (the closed-kernel reference we study for behavior): https://github.com/FastFlowLM/FastFlowLM
+- **MLIR-AIE**: https://github.com/Xilinx/mlir-aie
+- **IRON**: https://github.com/amd/iron
+- **Peano / llvm-aie**: https://github.com/Xilinx/llvm-aie
+- **XDNA Driver**: Mainline Linux kernel (`drivers/accel/amdxdna`)
+- **Riallto**: https://riallto.ai

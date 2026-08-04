@@ -6,7 +6,7 @@
 ## Context
 
 For Milestone M3, we need to implement a complete end-to-end Llama-3.2-1B model served over an OpenAI-compatible server.
-While the ultimate goal is a high-performance C++ runtime (similar to llama.cpp or FLM), building the full graph orchestration, KV cache management, HTTP server, and tensor manipulation directly in C++ at this stage introduces a high risk of programming errors and slow iteration cycles.
+While the ultimate goal is a high-performance C++ runtime (similar to llama.cpp), building the full graph orchestration, KV cache management, HTTP server, and tensor manipulation directly in C++ at this stage introduces a high risk of programming errors and slow iteration cycles.
 Additionally, we need to ensure that the mathematical output matches references precisely and that kernel JIT-compilations are handled safely.
 
 ## Decision
