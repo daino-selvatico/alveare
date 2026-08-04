@@ -66,7 +66,9 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(1.0, ge=0.0)
     top_k: int = Field(50, ge=0)
     top_p: float = Field(0.9, ge=0.0, le=1.0)
-    max_tokens: int = Field(128, ge=1)
+    max_tokens: int = Field(512, ge=1)
+    max_context_length: Optional[int] = 4096
+    enable_thinking: bool = True
     stream: bool = False
 
 @app.get("/v1/models")

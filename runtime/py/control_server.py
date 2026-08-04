@@ -178,7 +178,8 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
             text=True,
             bufsize=1,
             cwd=str(ROOT_DIR),
-            env=env
+            env=env,
+            start_new_session=True
         )
         state.start_time = time.time()
         
@@ -208,10 +209,15 @@ def stop_inference_server():
     if state.process and state.process.poll() is None:
         append_log("Stopping inference server process...")
         try:
-            state.process.terminate()
-            state.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            state.process.kill()
+            pgid = os.getpgid(state.process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            state.process.wait(timeout=1.5)
+        except Exception:
+            try:
+                pgid = os.getpgid(state.process.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except Exception:
+                pass
         state.process = None
     state.status = "stopped"
     append_log("Inference server stopped.")
@@ -435,6 +441,21 @@ async def npu_check():
 async def get_logs():
     return {"logs": state.log_buffer}
 
+import atexit
+atexit.register(stop_inference_server)
+
+@app.on_event("shutdown")
+def on_shutdown():
+    stop_inference_server()
+
+def handle_control_signal(sig, frame):
+    print(f"\n[ControlServer] Signal {sig} received, stopping inference server and shutting down...")
+    stop_inference_server()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, handle_control_signal)
+signal.signal(signal.SIGTERM, handle_control_signal)
+
 # WebSocket Chat Bridge
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
@@ -450,6 +471,8 @@ async def websocket_chat(websocket: WebSocket):
             top_p = data.get("top_p", 0.9)
             top_k = data.get("top_k", 50)
             max_tokens = data.get("max_tokens", 512)
+            max_context_length = data.get("max_context_length", 4096)
+            enable_thinking = data.get("enable_thinking", True)
 
             # Check if inference server is running
             if not (state.process and state.process.poll() is None):
@@ -468,6 +491,8 @@ async def websocket_chat(websocket: WebSocket):
                 "top_p": top_p,
                 "top_k": top_k,
                 "max_tokens": max_tokens,
+                "max_context_length": max_context_length,
+                "enable_thinking": enable_thinking,
                 "stream": True
             }).encode("utf-8")
 

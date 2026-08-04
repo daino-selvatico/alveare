@@ -1,5 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Bot, User, Trash2, Sliders, RefreshCw, Cpu, Zap, StopCircle, Copy, Check } from 'lucide-react';
+import { Send, Bot, User, Trash2, Sliders, Cpu, Zap, StopCircle, Copy, Check, Brain, ChevronDown, ChevronUp, ToggleLeft, ToggleRight } from 'lucide-react';
+
+function parseThinking(content) {
+  if (!content) return { thinking: '', text: '' };
+
+  // 1. Gemma 4 channel tokens format: <|channel>thought...<channel|> or <channel>thought...
+  const gemmaRegex = /(?:<\|channel\|?>thought\n?|<channel>thought\n?)([\s\S]*?)(?:<channel\|?>|<\|channel\|?>text\n?|<channel>text\n?|$)/i;
+  const gemmaMatch = content.match(gemmaRegex);
+  if (gemmaMatch) {
+    const thinking = gemmaMatch[1].trim();
+    let text = content.replace(gemmaRegex, '').trim();
+    text = text.replace(/^(?:<\|channel\|?>text\n?|<channel>text\n?)/i, '').trim();
+    return { thinking, text };
+  }
+
+  // 2. XML tags: <thought>...</thought> or <thinking>...</thinking>
+  const xmlRegex = /<(?:thought|thinking)>([\s\S]*?)(?:<\/(?:thought|thinking)>|$)/i;
+  const xmlMatch = content.match(xmlRegex);
+  if (xmlMatch) {
+    const thinking = xmlMatch[1].trim();
+    const text = content.replace(/<(?:thought|thinking)>[\s\S]*?(?:<\/(?:thought|thinking)>|$)/gi, '').trim();
+    return { thinking, text };
+  }
+
+  // 3. Simple inline thinking section: "Thinking Process:\n..."
+  const headerRegex = /(?:Thinking Process|Pensiero):\n([\s\S]*?)(?:\n\n(?:Response|Risposta):\n|$)/i;
+  const headerMatch = content.match(headerRegex);
+  if (headerMatch) {
+    const thinking = headerMatch[1].trim();
+    const text = content.replace(headerRegex, '').trim();
+    return { thinking, text };
+  }
+
+  return { thinking: '', text: content };
+}
 
 export default function ChatPlayground({ apiBase, activeModel, isServerRunning }) {
   const [messages, setMessages] = useState([
@@ -8,6 +42,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
+  const [expandedThinking, setExpandedThinking] = useState({});
   
   // Generation parameters
   const [systemPrompt, setSystemPrompt] = useState('Sei un assistente AI esperto ed utile.');
@@ -15,6 +50,8 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const [topP, setTopP] = useState(0.9);
   const [topK, setTopK] = useState(50);
   const [maxTokens, setMaxTokens] = useState(512);
+  const [maxContextLength, setMaxContextLength] = useState(4096);
+  const [enableThinking, setEnableThinking] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
 
   // Performance metrics
@@ -29,6 +66,10 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const toggleThinking = (idx) => {
+    setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
   const handleSend = () => {
@@ -68,7 +109,9 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
         temperature,
         top_p: topP,
         top_k: topK,
-        max_tokens: maxTokens
+        max_tokens: maxTokens,
+        max_context_length: maxContextLength,
+        enable_thinking: enableThinking
       }));
     };
 
@@ -135,6 +178,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       { role: 'assistant', content: 'Conversazione azzerata. Come posso aiutarti?' }
     ]);
     setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setExpandedThinking({});
   };
 
   const copyToClipboard = (text, idx) => {
@@ -186,62 +230,143 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
         {/* Message Stream */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-          {messages.map((msg, idx) => (
-            <div key={idx} style={{
-              display: 'flex',
-              gap: '1rem',
-              maxWidth: '85%',
-              alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              flexDirection: msg.role === 'user' ? 'row-reverse' : 'row'
-            }}>
-              <div style={{
-                width: '36px',
-                height: '36px',
-                borderRadius: '50%',
-                background: msg.role === 'user' ? 'var(--gradient-brand)' : 'rgba(139, 92, 246, 0.2)',
-                border: msg.role === 'assistant' ? '1px solid var(--accent-purple)' : 'none',
+          {messages.map((msg, idx) => {
+            const isUser = msg.role === 'user';
+            const { thinking, text } = parseThinking(msg.content);
+            const isCurrentlyGeneratingThis = isGenerating && idx === messages.length - 1;
+            const isExpanded = !!expandedThinking[idx];
+
+            return (
+              <div key={idx} style={{
                 display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0
+                gap: '1rem',
+                maxWidth: '85%',
+                alignSelf: isUser ? 'flex-end' : 'flex-start',
+                flexDirection: isUser ? 'row-reverse' : 'row'
               }}>
-                {msg.role === 'user' ? <User size={18} color="white" /> : <Bot size={18} color="#c084fc" />}
-              </div>
+                <div style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '50%',
+                  background: isUser ? 'var(--gradient-brand)' : 'rgba(139, 92, 246, 0.2)',
+                  border: !isUser ? '1px solid var(--accent-purple)' : 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                }}>
+                  {isUser ? <User size={18} color="white" /> : <Bot size={18} color="#c084fc" />}
+                </div>
 
-              <div style={{
-                background: msg.role === 'user' ? 'rgba(139, 92, 246, 0.18)' : 'rgba(30, 41, 59, 0.7)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '12px',
-                padding: '0.85rem 1.1rem',
-                color: 'var(--text-main)',
-                fontSize: '0.95rem',
-                lineHeight: '1.6',
-                whiteSpace: 'pre-wrap',
-                position: 'relative'
-              }}>
-                {msg.content || (isGenerating && idx === messages.length - 1 ? <span className="pulse-icon">Generazione in corso...</span> : '')}
+                <div style={{
+                  background: isUser ? 'rgba(139, 92, 246, 0.18)' : 'rgba(30, 41, 59, 0.7)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '12px',
+                  padding: '0.85rem 1.1rem',
+                  color: 'var(--text-main)',
+                  fontSize: '0.95rem',
+                  lineHeight: '1.6',
+                  whiteSpace: 'pre-wrap',
+                  position: 'relative',
+                  minWidth: '240px'
+                }}>
+                  {/* Thinking Section */}
+                  {!isUser && thinking && (
+                    isCurrentlyGeneratingThis ? (
+                      <div style={{
+                        background: 'rgba(139, 92, 246, 0.12)',
+                        border: '1px solid rgba(139, 92, 246, 0.3)',
+                        borderRadius: '8px',
+                        padding: '0.6rem 0.85rem',
+                        marginBottom: '0.75rem',
+                        fontSize: '0.85rem'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--accent-purple)', fontWeight: 600, marginBottom: '0.3rem' }}>
+                          <Brain size={15} className="pulse-icon" /> Thinking in corso...
+                        </div>
+                        <div style={{ fontFamily: 'monospace', fontSize: '0.82rem', opacity: 0.9, whiteSpace: 'pre-wrap', maxHeight: '180px', overflowY: 'auto' }}>
+                          {thinking}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ marginBottom: text ? '0.75rem' : '0' }}>
+                        <button
+                          onClick={() => toggleThinking(idx)}
+                          style={{
+                            background: 'rgba(139, 92, 246, 0.15)',
+                            border: '1px solid rgba(139, 92, 246, 0.3)',
+                            borderRadius: '8px',
+                            padding: '0.45rem 0.8rem',
+                            color: '#c084fc',
+                            fontSize: '0.82rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.45rem',
+                            transition: 'all 0.2s ease'
+                          }}
+                        >
+                          <Brain size={15} />
+                          <span>{isExpanded ? 'Nascondi Thinking' : `Mostra Step Thinking (${thinking.length} car.)`}</span>
+                          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
 
-                {msg.role === 'assistant' && msg.content && (
-                  <button
-                    onClick={() => copyToClipboard(msg.content, idx)}
-                    style={{
-                      position: 'absolute',
-                      top: '0.5rem',
-                      right: '0.5rem',
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      opacity: 0.7
-                    }}
-                    title="Copia"
-                  >
-                    {copiedIndex === idx ? <Check size={14} color="var(--accent-green)" /> : <Copy size={14} />}
-                  </button>
-                )}
+                        {isExpanded && (
+                          <div style={{
+                            marginTop: '0.5rem',
+                            background: 'rgba(15, 23, 42, 0.85)',
+                            border: '1px dashed rgba(139, 92, 246, 0.4)',
+                            borderRadius: '8px',
+                            padding: '0.75rem 0.9rem',
+                            fontFamily: 'Consolas, Monaco, monospace',
+                            fontSize: '0.83rem',
+                            lineHeight: '1.5',
+                            color: 'var(--text-muted)',
+                            whiteSpace: 'pre-wrap',
+                            maxHeight: '300px',
+                            overflowY: 'auto'
+                          }}>
+                            {thinking}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  )}
+
+                  {/* Main Response / Text Content */}
+                  {text ? (
+                    <div>{text}</div>
+                  ) : (
+                    isCurrentlyGeneratingThis && (
+                      <span className="pulse-icon">
+                        {thinking ? 'Generazione risposta finale...' : 'Generazione in corso...'}
+                      </span>
+                    )
+                  )}
+
+                  {!isUser && msg.content && (
+                    <button
+                      onClick={() => copyToClipboard(msg.content, idx)}
+                      style={{
+                        position: 'absolute',
+                        top: '0.5rem',
+                        right: '0.5rem',
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--text-muted)',
+                        cursor: 'pointer',
+                        opacity: 0.7
+                      }}
+                      title="Copia"
+                    >
+                      {copiedIndex === idx ? <Check size={14} color="var(--accent-green)" /> : <Copy size={14} />}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div ref={messagesEndRef} />
         </div>
 
@@ -289,9 +414,9 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       {/* Settings Drawer */}
       {showSettings && (
         <div style={{
-          width: '320px',
+          width: '340px',
           borderLeft: '1px solid var(--border-color)',
-          background: 'rgba(19, 27, 46, 0.8)',
+          background: 'rgba(19, 27, 46, 0.85)',
           padding: '1.25rem',
           display: 'flex',
           flexDirection: 'column',
@@ -299,8 +424,38 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           overflowY: 'auto'
         }}>
           <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: 'white', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Sliders size={18} color="var(--accent-purple)" /> Parametri Sampling
+            <Sliders size={18} color="var(--accent-purple)" /> Opzioni & Parametri
           </h3>
+
+          {/* Thinking Toggle */}
+          <div style={{
+            background: 'rgba(139, 92, 246, 0.1)',
+            border: '1px solid rgba(139, 92, 246, 0.25)',
+            borderRadius: '10px',
+            padding: '0.85rem'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'white', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Brain size={16} color="var(--accent-purple)" /> Thinking (CoT)
+              </span>
+              <button
+                onClick={() => setEnableThinking(!enableThinking)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: enableThinking ? 'var(--accent-purple)' : 'var(--text-muted)',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+              >
+                {enableThinking ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+              </button>
+            </div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+              {enableThinking ? 'Abilitato: mostra i passaggi di ragionamento del modello.' : 'Disabilitato: il modello risponde direttamente senza thinking.'}
+            </div>
+          </div>
 
           <div>
             <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
@@ -322,10 +477,126 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
             />
           </div>
 
+          {/* Contesto Massimo */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+              <span>Contesto Massimo (Token)</span>
+              <input
+                type="number"
+                min="512"
+                max="131072"
+                step="512"
+                value={maxContextLength}
+                onChange={e => setMaxContextLength(Math.max(512, Math.min(131072, parseInt(e.target.value) || 4096)))}
+                style={{
+                  width: '80px',
+                  padding: '0.2rem 0.4rem',
+                  borderRadius: '6px',
+                  background: 'rgba(0,0,0,0.4)',
+                  border: '1px solid var(--border-color)',
+                  color: 'white',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  textAlign: 'right'
+                }}
+              />
+            </div>
+            <input
+              type="range"
+              min="512"
+              max="131072"
+              step="512"
+              value={maxContextLength}
+              onChange={e => setMaxContextLength(parseInt(e.target.value))}
+              style={{ width: '100%', cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
+              {[4096, 8192, 16384, 32768, 131072].map(val => (
+                <button
+                  key={val}
+                  onClick={() => setMaxContextLength(val)}
+                  style={{
+                    padding: '0.2rem 0.5rem',
+                    fontSize: '0.72rem',
+                    borderRadius: '4px',
+                    border: '1px solid var(--border-color)',
+                    background: maxContextLength === val ? 'var(--accent-purple)' : 'rgba(0,0,0,0.3)',
+                    color: maxContextLength === val ? 'white' : 'var(--text-muted)',
+                    cursor: 'pointer',
+                    fontWeight: 600
+                  }}
+                >
+                  {val >= 1024 ? `${val / 1024}K` : val}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.34rem' }}>
+              Gemma 4 supporta fino a 128k token (131.072) di finestra di contesto.
+            </div>
+          </div>
+
+          {/* Max Tokens Risposta */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+              <span>Max Tokens Risposta</span>
+              <input
+                type="number"
+                min="16"
+                max="32768"
+                step="64"
+                value={maxTokens}
+                onChange={e => setMaxTokens(Math.max(16, Math.min(32768, parseInt(e.target.value) || 512)))}
+                style={{
+                  width: '80px',
+                  padding: '0.2rem 0.4rem',
+                  borderRadius: '6px',
+                  background: 'rgba(0,0,0,0.4)',
+                  border: '1px solid var(--border-color)',
+                  color: 'white',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  textAlign: 'right'
+                }}
+              />
+            </div>
+            <input
+              type="range"
+              min="16"
+              max="16384"
+              step="64"
+              value={maxTokens}
+              onChange={e => setMaxTokens(parseInt(e.target.value))}
+              style={{ width: '100%', cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
+              {[512, 1024, 2048, 4096, 8192, 16384].map(val => (
+                <button
+                  key={val}
+                  onClick={() => setMaxTokens(val)}
+                  style={{
+                    padding: '0.2rem 0.5rem',
+                    fontSize: '0.72rem',
+                    borderRadius: '4px',
+                    border: '1px solid var(--border-color)',
+                    background: maxTokens === val ? 'var(--accent-purple)' : 'rgba(0,0,0,0.3)',
+                    color: maxTokens === val ? 'white' : 'var(--text-muted)',
+                    cursor: 'pointer',
+                    fontWeight: 600
+                  }}
+                >
+                  {val >= 1024 ? `${val / 1024}K` : val}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.34rem' }}>
+              Lunghezza massima dei token generati nella risposta dal modello.
+            </div>
+          </div>
+
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
               <span>Temperature</span>
-              <span>{temperature}</span>
+              <span style={{ color: 'white', fontWeight: 600 }}>{temperature}</span>
             </div>
             <input
               type="range"
@@ -341,7 +612,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
               <span>Top-P</span>
-              <span>{topP}</span>
+              <span style={{ color: 'white', fontWeight: 600 }}>{topP}</span>
             </div>
             <input
               type="range"
@@ -350,22 +621,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               step="0.05"
               value={topP}
               onChange={e => setTopP(parseFloat(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              <span>Max Tokens</span>
-              <span>{maxTokens}</span>
-            </div>
-            <input
-              type="range"
-              min="16"
-              max="2048"
-              step="16"
-              value={maxTokens}
-              onChange={e => setMaxTokens(parseInt(e.target.value))}
               style={{ width: '100%' }}
             />
           </div>

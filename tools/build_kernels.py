@@ -150,15 +150,20 @@ def enumerate_shapes(weights_dir: Path, num_layers: int, model_type: str = "") -
         pq = weights_dir / f"blk.{l}.attn_q.weight_packed.npy"
         pk = weights_dir / f"blk.{l}.attn_k.weight_packed.npy"
         pv = weights_dir / f"blk.{l}.attn_v.weight_packed.npy"
-        if model_type == "gemma4" and pq.exists() and pk.exists():
+        is_g4 = ("gemma4" in model_type or "gemma-4" in model_type or model_type == "e4b")
+        if is_g4 and pq.exists():
             nq, K = packed_shape_to_logical(pq)
-            nk, _ = packed_shape_to_logical(pk)
-            is_sliding = (l + 1) % 6 != 0
-            if is_sliding and pv.exists():
-                nv, _ = packed_shape_to_logical(pv)
-                gemv_shapes.add((nq + nk + nv, K))
+            if pk.exists():
+                nk, _ = packed_shape_to_logical(pk)
+                is_sliding = (l + 1) % 6 != 0
+                if is_sliding and pv.exists():
+                    nv, _ = packed_shape_to_logical(pv)
+                    gemv_shapes.add((nq + nk + nv, K))
+                else:
+                    gemv_shapes.add((nq + nk, K))
             else:
-                gemv_shapes.add((nq + nk, K))
+                # Shared-KV layers (layers 24-41 in 12B) only have Q projection
+                gemv_shapes.add((nq, K))
 
         # Handle FFN shapes for fusion. We read the gate projection to get (I, H).
         p_gate = weights_dir / f"blk.{l}.ffn_gate.weight_packed.npy"

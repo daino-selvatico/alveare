@@ -126,7 +126,7 @@ void Model::compute_per_layer_inputs(int token_id, const float* inpL, std::vecto
 }
 
 void Model::init_kv_caches() {
-    int max_seq_len = 2048; // For now hardcoded or passed in config
+    int max_seq_len = config_.max_position_embeddings;
     int n_layers = config_.num_hidden_layers;
 
     k_caches_.resize(n_layers);
@@ -156,7 +156,7 @@ void Model::reset_caches() {
 }
 
 void Model::precompute_rope() {
-    int max_seq_len = 2048; // Hardcoded for now
+    int max_seq_len = config_.max_position_embeddings;
     if (config_.model_type == "gemma3") {
         cos_sin_table_sliding_.resize(max_seq_len * config_.head_dim);
         cos_sin_table_full_.resize(max_seq_len * config_.head_dim);
@@ -310,7 +310,7 @@ void Model::run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out
     int dim = config_.head_dim;
     float scale = 1.0f / std::sqrt(static_cast<float>(dim));
     int window_size = 512;
-    int max_seq_len = 2048; // Must match init_kv_caches
+    int max_seq_len = config_.max_position_embeddings;
     
     if (config_.is_gemma4()) {
         bool is_sliding = ((layer + 1) % config_.sliding_pattern_period != 0);
@@ -514,7 +514,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
 
     // 5. Update KV Cache (only for layers that own KV states)
     if (has_kv) {
-        int max_seq_len = 2048;
+        int max_seq_len = config_.max_position_embeddings;
         h_dim = config_.head_dim;
         if (config_.is_gemma4()) {
             h_dim = is_sliding ? config_.head_dim : config_.head_dim_global;
@@ -756,7 +756,7 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
 
     // 5. Write KV cache (only for layers that own KV states)
     if (has_kv) {
-        const int max_seq_len = 2048;
+        const int max_seq_len = config_.max_position_embeddings;
         for (int b = 0; b < nrows; ++b) {
             for (int h = 0; h < n_kv_heads; ++h) {
                 int kv_idx = (h * max_seq_len + pos_start + b) * h_dim;

@@ -302,12 +302,15 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             lw.n_kv = has_kv ? l_N_kv : 0;
             std::vector<uint8_t> qkv;
             const uint8_t* qd = static_cast<const uint8_t*>(q_arr.data);
+            int K_q = (l_N_q > 0 && q_arr.data_size % l_N_q == 0)
+                    ? static_cast<int>((q_arr.data_size / l_N_q / 20) * 32)
+                    : K_attn_padded;
 
             if (!has_kv) {
                 // Layers 24-41 (shared KV) only have Q projection
                 lw.n_qkv = l_N_q;
-                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_attn_padded, q_arr.data, q_arr.data_size);
-            } else if (is_sliding || config.model_type == "gemma4-e4b") {
+                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, q_arr.data, q_arr.data_size);
+            } else if (is_sliding || config.model_type == "gemma4-e4b" || config.model_type == "e4b") {
                 // q ++ k ++ v  (N_qkv = N_q + 2*N_kv). e4b has a real V on EVERY
                 // layer (kv_heads=2 uniformly); only the 12B's global layers are
                 // MQA and tie V=K (the `else` branch below).
@@ -322,7 +325,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 qkv.insert(qkv.end(), vd, vd + v_arr.data_size);
                 free_npy(k_arr);
                 free_npy(v_arr);
-                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_attn_padded, qkv.data(), qkv.size());
+                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
             } else {
                 // q ++ k  (global layers reuse k for v; N_qkv = N_q + N_kv)
                 NpyArray k_arr = load_npy(k_path);
@@ -332,7 +335,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 qkv.insert(qkv.end(), qd, qd + q_arr.data_size);
                 qkv.insert(qkv.end(), kd, kd + k_arr.data_size);
                 free_npy(k_arr);
-                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_attn_padded, qkv.data(), qkv.size());
+                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
             }
             free_npy(q_arr);
         } else {

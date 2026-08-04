@@ -56,9 +56,8 @@ class LazyLayerWeights:
         pass
 
 class LlamaNPUModel:
-    def __init__(self, weights_dir: Path, max_seq_len: int = 2048):
+    def __init__(self, weights_dir: Path, max_seq_len: int = 8192):
         self.weights_dir = Path(weights_dir)
-        self.max_seq_len = max_seq_len
         
         # Load config if present
         config_path = self.weights_dir / "config.json"
@@ -66,9 +65,11 @@ class LlamaNPUModel:
             with open(config_path, "r") as f:
                 self.config = json.load(f)
             self.model_type = self.config.get("model_type", "llama")
+            self.max_seq_len = self.config.get("max_position_embeddings", self.config.get("max_seq_len", max_seq_len))
         else:
             self.config = {}
             self.model_type = "llama"
+            self.max_seq_len = max_seq_len
             
         print(f"Initializing model of type: {self.model_type}")
         

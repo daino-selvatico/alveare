@@ -17,10 +17,13 @@ struct ModelConfig {
     int shared_kv_layers = 0;
     int sliding_window = 512;
     int sliding_pattern_period = 6;
+    int max_position_embeddings = 8192;
     float rms_norm_eps;
 
     bool is_gemma4() const {
-        return model_type == "gemma4" || model_type == "gemma4-e4b";
+        return model_type.find("gemma4") != std::string::npos ||
+               model_type.find("gemma-4") != std::string::npos ||
+               model_type == "e4b";
     }
 
     int get_padded_hidden_size() const {

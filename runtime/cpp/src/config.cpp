@@ -28,8 +28,9 @@ ModelConfig load_config(const std::string& path) {
     f >> j;
 
     cfg.model_type = j.value("model_type", "llama");
-    
-    if (cfg.model_type == "gemma3") {
+    cfg.max_position_embeddings = j.value("max_position_embeddings", j.value("max_seq_len", 8192));
+
+    if (cfg.model_type == "gemma3" || cfg.model_type == "gemma-3") {
         cfg.hidden_size = j.value("hidden_size", 1152);
         cfg.intermediate_size = j.value("intermediate_size", 6912);
         cfg.num_attention_heads = j.value("num_attention_heads", 4);
@@ -38,7 +39,7 @@ ModelConfig load_config(const std::string& path) {
         cfg.num_hidden_layers = j.value("num_hidden_layers", 26);
         cfg.vocab_size = j.value("vocab_size", 262144);
         cfg.rms_norm_eps = 1e-6f;
-    } else if (cfg.model_type == "gemma4" || cfg.model_type == "gemma4-e4b") {
+    } else if (cfg.is_gemma4()) {
         cfg.hidden_size = j.value("hidden_size", 3840);
         cfg.intermediate_size = j.value("intermediate_size", 15360);
         cfg.num_attention_heads = j.value("num_attention_heads", 16);
@@ -47,7 +48,7 @@ ModelConfig load_config(const std::string& path) {
         cfg.head_dim_global = j.value("head_dim_global", 512);
         cfg.per_layer_input = j.value("per_layer_input", 0);
         cfg.shared_kv_layers = j.value("shared_kv_layers", 0);
-        cfg.sliding_window = j.value("sliding_window", (cfg.model_type == "gemma4-e4b") ? 512 : 1024);
+        cfg.sliding_window = j.value("sliding_window", (cfg.model_type == "gemma4-e4b" || cfg.model_type == "e4b") ? 512 : 1024);
         cfg.sliding_pattern_period = j.value("sliding_pattern_period", 6);
         cfg.num_hidden_layers = j.value("num_hidden_layers", 48);
         cfg.vocab_size = j.value("vocab_size", 262144);

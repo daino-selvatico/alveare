@@ -264,7 +264,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
         // so on repetitive/structured text a verify can emit up to 8 tokens at the
         // same ~3s cost as one that emitted 5 (profiled: 3060ms batched forward).
         const int K = 7;                 // max draft length (fills the B=8 pad)
-        const int max_seq_len = 2048;
+        const int max_seq_len = model_.get_config().max_position_embeddings;
         std::vector<int> seq = input_tokens;  // committed sequence (drafter context)
         int generated = 0, step = 0;
 

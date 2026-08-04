@@ -3,24 +3,59 @@
 #include "nlohmann/json.hpp"
 #include <iostream>
 #include <chrono>
+#include <csignal>
+#include <thread>
+#include <unistd.h>
 
 using json = nlohmann::json;
 
 namespace alveare {
 
+static httplib::Server* g_active_server = nullptr;
+
+static void handle_server_signal(int sig) {
+    std::cout << "\n[alveare_runtime] Signal " << sig << " received. Shutting down server...\n" << std::flush;
+    if (g_active_server) {
+        g_active_server->stop();
+    }
+    // Launch a watchdog thread: if process teardown blocks on XRT context, force exit cleanly
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        std::cout << "[alveare_runtime] Shutdown watchdog: forcing exit now.\n" << std::flush;
+        _exit(0);
+    }).detach();
+}
+
 ApiServer::ApiServer(Generator& generator) : generator_(generator) {}
+
+void ApiServer::stop() {
+    if (svr_ptr_) {
+        static_cast<httplib::Server*>(svr_ptr_)->stop();
+    }
+}
 
 void ApiServer::start(int port) {
     httplib::Server svr;
+    svr_ptr_ = &svr;
+    g_active_server = &svr;
+
+    std::signal(SIGINT, handle_server_signal);
+    std::signal(SIGTERM, handle_server_signal);
+    std::signal(SIGHUP, handle_server_signal);
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request& req, httplib::Response& res) {
         try {
             auto j_req = json::parse(req.body);
             std::string prompt = "";
             bool stream = false;
+            bool enable_thinking = true;
             
             if (j_req.contains("stream") && j_req["stream"].is_boolean()) {
                 stream = j_req["stream"].get<bool>();
+            }
+
+            if (j_req.contains("enable_thinking") && j_req["enable_thinking"].is_boolean()) {
+                enable_thinking = j_req["enable_thinking"].get<bool>();
             }
 
             // Build the prompt. For Gemma we apply the model's chat template with
@@ -32,19 +67,23 @@ void ApiServer::start(int port) {
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
                 if (is_gemma) {
                     prompt = "<bos>";
+                    // Per the Gemma-4 chat template: an EMPTY "<|channel>thought\n<channel|>"
+                    // block after "<|turn>model\n" tells the model the thought is empty =>
+                    // SKIP thinking. It is appended only when thinking is DISABLED. When
+                    // thinking is ENABLED the generation prompt ends at "<|turn>model\n" and
+                    // the model opens its own thought channel. (This was inverted before, so
+                    // enabling the toggle actually suppressed thinking.)
+                    std::string think_suppress = enable_thinking ? "" : "<|channel>thought\n<channel|>";
                     for (const auto& msg : j_req["messages"]) {
                         if (!msg.contains("content") || !msg["content"].is_string()) continue;
                         std::string role = msg.value("role", "user");
                         if (role == "assistant") role = "model";
+                        // Completed turns are replayed as their content only; the ephemeral
+                        // thought channel is not re-fed (the template strips it too).
                         prompt += "<|turn>" + role + "\n";
-                        // Replay a completed assistant turn WITH the same
-                        // generation-prompt suffix the model saw when producing it,
-                        // so its tokens match what is already in the KV cache and the
-                        // whole conversation prefix is reused (no re-prefill).
-                        if (role == "model") prompt += "<|channel>thought\n<channel|>";
                         prompt += msg["content"].get<std::string>() + "<turn|>\n";
                     }
-                    prompt += "<|turn>model\n<|channel>thought\n<channel|>";
+                    prompt += "<|turn>model\n" + think_suppress;
                 } else {
                     for (const auto& msg : j_req["messages"]) {
                         if (msg.contains("content") && msg["content"].is_string()) {
@@ -128,6 +167,8 @@ void ApiServer::start(int port) {
 
     std::cout << "Starting OpenAI compatible API server on port " << port << "...\n";
     svr.listen("0.0.0.0", port);
+    svr_ptr_ = nullptr;
+    g_active_server = nullptr;
 }
 
 } // namespace alveare
