@@ -90,6 +90,11 @@ void Model::compute_per_layer_inputs(int token_id, const float* inpL, std::vecto
     const uint8_t* proj_base = weights_.per_layer_model_proj_packed.data();
     const int proj_row_bytes = (n_embd / 32) * 20;
 
+    // Parallelize the big per-layer-projection (10752 x 2560 Q4 dots, ~107ms
+    // single-threaded). This runs ONCE per token BEFORE the layer loop, so the NPU
+    // is idle and the OpenMP threads don't contend with NPU dispatch/sync (unlike
+    // the tiny per-layer loops, where fork/join + NPU contention made it slower).
+    #pragma omp parallel for schedule(static)
     for (int r = 0; r < total_dim; ++r) {
         const uint8_t* row = proj_base + static_cast<size_t>(r) * proj_row_bytes;
         float dot = q4_0_dot_product(row, inpL, n_embd);

@@ -26,6 +26,14 @@ endif()
 # Project headers plus vendored single-header deps (nlohmann/json).
 include_directories(include third_party)
 
+# OpenMP parallelizes the host-side decode work (the PLE Q4 dot products, per-layer
+# norms, etc.). Optional — the #pragma omp loops are no-ops without it.
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    set(ALVEARE_OMP OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP enabled for host decode parallelism")
+endif()
+
 # Shared runtime sources (everything except the per-binary main()).
 set(ALVEARE_CORE_SRC
     src/bf16.cpp
@@ -43,19 +51,19 @@ set(ALVEARE_CORE_SRC
 
 add_executable(alveare_runtime src/main.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(alveare_runtime PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread)
+target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
 
 # NPU registry smoke test: runs a harvested GEMV shape and checks parity.
 add_executable(parity_test test/parity_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(parity_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)
+target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
 
 # Layer decode test
 add_executable(layer_test test/layer_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(layer_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)
+target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
 
 # Gemma-4-E4B oracle test
 add_executable(e4b_test test/e4b_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(e4b_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread)
+target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
