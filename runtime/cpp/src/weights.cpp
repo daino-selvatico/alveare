@@ -417,15 +417,11 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             // hard-coded to 4 (didn't divide H//m_H=10) — now fixed (adaptive
             // N_PASSES=5 for e4b) in ffn_fused.py + pack_ffn_fused_weights above, so
             // the NPU FFN is used by default like every other model.
-            // Gemma-3 (H=2048) FFN: the fused NPU kernel produced by build_kernels.py
-            // yields NaN logits at runtime even though the same source self-verifies
-            // and the C++ pack is byte-identical to ffn_fused.py's — a build-path/kernel
-            // discrepancy specific to this shape (TODO: rebuild via the jit/self-verify
-            // path). Route Gemma-3 through the CORRECT CPU-fallback FFN (validated
-            // bit-exact vs the HF reference) so it produces coherent output; the 12B and
-            // e4b keep the fast NPU-fused FFN.
-            bool g3_force_cpu_ffn = (config.model_type == "gemma3");
-            if (!g3_force_cpu_ffn && reg.has_ffn_fused(H_padded, I_padded, act_type)) {
+            // Gemma-3 (H=2048) briefly needed a CPU-FFN fallback: build_kernels.py's
+            // direct-path xclbin compile produced a broken (NaN) kernel for that shape.
+            // Fixed — build_kernels.py now compiles ffn_fused via the jit cache path
+            // (see its compile_ffn_fused) — so Gemma-3 uses the fast NPU-fused FFN too.
+            if (reg.has_ffn_fused(H_padded, I_padded, act_type)) {
                 lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, fused.data(), fused.size());
             } else {
                 lw.w_ffn_fused = kInvalidWeight;

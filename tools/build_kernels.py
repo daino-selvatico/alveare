@@ -252,8 +252,15 @@ def compile_ffn_fused(H: int, I: int, activation: str, out: Path, force: bool = 
         print(f"Skipping compile of {name} ({xclbin.name} exists)")
         return entry
 
-    ffn_fused_npu.specialize(H=H, I=I, m_I=M, k_tile=K_TILE, activation=activation).compile(
-        xclbin_path=str(xclbin), inst_path=str(insts))
+    # IMPORTANT: the direct xclbin_path/inst_path compile BYPASSES the jit on-disk
+    # cache and, for the fused-FFN design, produces a BROKEN kernel on some shapes —
+    # e.g. H=2048 came out ~65KB smaller and yielded NaN logits at runtime, while the
+    # cache path (same source/flags/device) self-verifies and runs correctly. So warm
+    # the cache with a no-arg compile() and copy the correct artifacts into out/.
+    cached_xclbin, cached_insts = ffn_fused_npu.specialize(
+        H=H, I=I, m_I=M, k_tile=K_TILE, activation=activation).compile()
+    shutil.copy(cached_xclbin, xclbin)
+    shutil.copy(cached_insts, insts)
     return entry
 
 
