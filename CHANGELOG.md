@@ -5,6 +5,36 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [2.0.0-alpha.1] — 2026-08-05
+
+_First 2.0 pre-release. Alveare now serves **three Gemma families** end-to-end on
+the NPU — the 12B (gemma4), **Gemma-4-E4B** (new: Per-Layer Embeddings + KV-sharing),
+and **Gemma-3-1B** (now coherent) — behind a **web UI** with in-browser model
+management, plus one-command Hugging Face setup. This is an alpha: the 2.0 final
+still targets the fused-decode performance work, and Gemma-3's FFN currently runs on
+the CPU fallback (correct, slower) pending an NPU-kernel build fix._
+
+### Added
+- **Gemma-4-E4B serving** — the E4B variant (gemma4 + Per-Layer Embeddings, 42
+  layers, KV-cache sharing) runs end-to-end on the NPU, validated vs a llama.cpp
+  oracle.
+- **Web UI** — a React/Vite frontend + FastAPI control server that discovers
+  quantized-weight dirs, launches/stops models, and adds new models in-browser
+  (add-model flow, max-tokens / max-context controls, thinking toggle).
+- **Hugging Face auto-download + custom quantizers** — `tools/setup_model.py`
+  fetches a model from HF and quantizes it in one command; `base_quantizer.py`
+  provides a pluggable quantizer base (see docs/CUSTOM_QUANTIZERS.md).
+
+### Fixed
+- **Gemma-3-1B now produces coherent output on the NPU.** Three bugs: the GGUF's
+  SentencePiece tokenizer shipped no BPE merges (byte-fallback word-salad) — now
+  reconstructed from the SPM scores; the fused-FFN weight pack used a mismatched
+  `k_tile` (128 vs the kernel's 256); and the chat prompt used Gemma-4's turn/channel
+  tokens. Gemma-3's FFN is routed to the (correct) CPU fallback until its NPU kernel
+  build is fixed. 12B and E4B are unaffected.
+- **Thinking toggle** — enabling "thinking" no longer suppressed it (the empty
+  thought-channel block was appended on the wrong branch).
+
 ## [1.5.0] — 2026-07-27
 
 _Faster prefill and a characterized decode ceiling. A new systolic `aie::mmul`
