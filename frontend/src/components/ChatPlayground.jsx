@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Bot, User, Trash2, Sliders, Cpu, Zap, StopCircle, Copy, Check, Brain, ChevronDown, ChevronUp, ToggleLeft, ToggleRight } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 function parseThinking(content) {
   if (!content) return { thinking: '', text: '' };
@@ -35,6 +37,85 @@ function parseThinking(content) {
   return { thinking: '', text: content };
 }
 
+function CodeBlock({ node, inline, className, children, ...props }) {
+  const [copied, setCopied] = useState(false);
+  const match = /language-(\w+)/.exec(className || '');
+  const codeString = String(children).replace(/\n$/, '');
+
+  if (inline) {
+    return (
+      <code style={{
+        background: 'rgba(0, 0, 0, 0.4)',
+        padding: '0.15rem 0.4rem',
+        borderRadius: '4px',
+        fontFamily: 'var(--font-mono)',
+        fontSize: '0.88em',
+        color: '#f472b6'
+      }} {...props}>
+        {children}
+      </code>
+    );
+  }
+
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(codeString);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div style={{
+      margin: '0.75rem 0',
+      borderRadius: '8px',
+      overflow: 'hidden',
+      border: '1px solid var(--border-color)',
+      background: 'rgba(15, 23, 42, 0.95)'
+    }}>
+      <div style={{
+        display: 'flex',
+        justify: 'space-between',
+        alignItems: 'center',
+        padding: '0.4rem 0.85rem',
+        background: 'rgba(30, 41, 59, 0.85)',
+        borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+        fontSize: '0.78rem',
+        color: 'var(--text-muted)'
+      }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--accent-purple)' }}>
+          {match ? match[1] : 'code'}
+        </span>
+        <button
+          onClick={handleCopyCode}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: copied ? 'var(--accent-green)' : 'var(--text-muted)',
+            cursor: 'pointer',
+            fontSize: '0.78rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.35rem'
+          }}
+        >
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+          <span>{copied ? 'Copiato!' : 'Copia'}</span>
+        </button>
+      </div>
+      <pre style={{
+        margin: 0,
+        padding: '0.85rem 1rem',
+        overflowX: 'auto',
+        fontFamily: 'Consolas, Monaco, "Andale Mono", "Ubuntu Mono", monospace',
+        fontSize: '0.85rem',
+        lineHeight: '1.5',
+        color: '#e2e8f0'
+      }}>
+        <code>{codeString}</code>
+      </pre>
+    </div>
+  );
+}
+
 export default function ChatPlayground({ apiBase, activeModel, isServerRunning }) {
   const [messages, setMessages] = useState([
     { role: 'assistant', content: 'Ciao! Sono il modello LLM in esecuzione sull\'NPU AMD Ryzen AI. Come posso aiutarti oggi?' }
@@ -58,7 +139,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const [metrics, setMetrics] = useState({ tokens: 0, elapsed: 0, tps: 0 });
 
   const messagesEndRef = useRef(null);
-  const wsRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
   useEffect(() => {
     scrollToBottom();
@@ -72,7 +153,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim() || isGenerating) return;
     if (!isServerRunning) {
       alert("Il server di inferenza non è in esecuzione! Avvialo dal Control Panel.");
@@ -85,90 +166,114 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setInput('');
     setIsGenerating(true);
 
-    // Placeholder assistant message
     const assistantIndex = newMessages.length;
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
-    // Establish WebSocket connection
-    const wsUrl = apiBase.replace(/^http/, 'ws') + '/ws/chat';
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    const chatMessages = [];
+    if (systemPrompt.trim()) {
+      chatMessages.push({ role: 'system', content: systemPrompt.trim() });
+    }
+    chatMessages.push(...newMessages);
 
-    ws.onopen = () => {
-      // Build request payload
-      const chatMessages = [];
-      if (systemPrompt.trim()) {
-        chatMessages.push({ role: 'system', content: systemPrompt.trim() });
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    const startTime = Date.now();
+    let tokenCount = 0;
+
+    try {
+      const response = await fetch(`${apiBase}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: activeModel,
+          messages: chatMessages,
+          temperature,
+          top_p: topP,
+          top_k: topK,
+          max_tokens: maxTokens,
+          max_context_length: maxContextLength,
+          enable_thinking: enableThinking,
+          stream: true
+        }),
+        signal: abortController.signal
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Errore Server (${response.status}): ${errText}`);
       }
-      chatMessages.push(...newMessages);
 
-      ws.send(JSON.stringify({
-        action: 'chat',
-        messages: chatMessages,
-        model: activeModel,
-        temperature,
-        top_p: topP,
-        top_k: topK,
-        max_tokens: maxTokens,
-        max_context_length: maxContextLength,
-        enable_thinking: enableThinking
-      }));
-    };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'token') {
-          setMessages(prev => {
-            const updated = [...prev];
-            if (updated[assistantIndex]) {
-              updated[assistantIndex] = {
-                ...updated[assistantIndex],
-                content: updated[assistantIndex].content + data.content
-              };
-            }
-            return updated;
-          });
-        } else if (data.type === 'done') {
-          setIsGenerating(false);
-          if (data.metrics) {
-            setMetrics({
-              tokens: data.metrics.tokens || 0,
-              elapsed: data.metrics.elapsed_seconds || 0,
-              tps: data.metrics.tps || 0
-            });
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(':')) continue;
+          if (trimmed === 'data: [DONE]') {
+            break;
           }
-          ws.close();
-        } else if (data.type === 'error') {
-          setIsGenerating(false);
-          setMessages(prev => {
-            const updated = [...prev];
-            if (updated[assistantIndex]) {
-              updated[assistantIndex].content += `\n\n⚠️ [Errore]: ${data.message}`;
+          if (trimmed.startsWith('data: ')) {
+            const jsonStr = trimmed.slice(6);
+            try {
+              const data = JSON.parse(jsonStr);
+              const delta = data.choices?.[0]?.delta?.content || '';
+              if (delta) {
+                tokenCount++;
+                setMessages(prev => {
+                  const updated = [...prev];
+                  if (updated[assistantIndex]) {
+                    updated[assistantIndex] = {
+                      ...updated[assistantIndex],
+                      content: updated[assistantIndex].content + delta
+                    };
+                  }
+                  return updated;
+                });
+                const elapsedSec = (Date.now() - startTime) / 1000;
+                setMetrics({
+                  tokens: tokenCount,
+                  elapsed: Math.round(elapsedSec * 10) / 10,
+                  tps: elapsedSec > 0 ? Math.round((tokenCount / elapsedSec) * 10) / 10 : 0
+                });
+              }
+            } catch (e) {
+              // Ignore partial JSON parse errors
             }
-            return updated;
-          });
-          ws.close();
+          }
         }
-      } catch (err) {
-        console.error("WS Parse error:", err);
       }
-    };
-
-    ws.onerror = (err) => {
-      console.error("WS Error:", err);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setMessages(prev => {
+          const updated = [...prev];
+          if (updated[assistantIndex]) {
+            updated[assistantIndex] = {
+              ...updated[assistantIndex],
+              content: updated[assistantIndex].content + `\n\n⚠️ [Errore]: ${err.message}`
+            };
+          }
+          return updated;
+        });
+      }
+    } finally {
       setIsGenerating(false);
-      ws.close();
-    };
-
-    ws.onclose = () => {
-      setIsGenerating(false);
-    };
+      abortControllerRef.current = null;
+    }
   };
 
   const handleStop = () => {
-    if (wsRef.current) {
-      wsRef.current.close();
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
     setIsGenerating(false);
   };
@@ -198,13 +303,13 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           padding: '0.85rem 1.5rem',
           borderBottom: '1px solid var(--border-color)',
           display: 'flex',
-          justifyContent: 'space-between',
+          justify: 'space-between',
           alignItems: 'center',
           background: 'rgba(19, 27, 46, 0.5)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ fontWeight: 600, fontSize: '1rem', color: 'white' }}>
-              Playground Realtime WebSocket
+              Playground Realtime Streaming SSE
             </span>
             <span className="badge badge-success" style={{ textTransform: 'none' }}>
               <Cpu size={14} /> Modello attivo: {activeModel}
@@ -266,7 +371,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                   color: 'var(--text-main)',
                   fontSize: '0.95rem',
                   lineHeight: '1.6',
-                  whiteSpace: 'pre-wrap',
                   position: 'relative',
                   minWidth: '240px'
                 }}>
@@ -334,9 +438,18 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                     )
                   )}
 
-                  {/* Main Response / Text Content */}
-                  {text ? (
-                    <div>{text}</div>
+                  {/* Main Response / Text Content (Markdown rendered for Assistant, pre-wrap for User) */}
+                  {isUser ? (
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
+                  ) : text ? (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        code: CodeBlock
+                      }}
+                    >
+                      {text}
+                    </ReactMarkdown>
                   ) : (
                     isCurrentlyGeneratingThis && (
                       <span className="pulse-icon">
@@ -358,7 +471,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                         cursor: 'pointer',
                         opacity: 0.7
                       }}
-                      title="Copia"
+                      title="Copia messaggio completo"
                     >
                       {copiedIndex === idx ? <Check size={14} color="var(--accent-green)" /> : <Copy size={14} />}
                     </button>
