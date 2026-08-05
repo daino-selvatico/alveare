@@ -73,12 +73,12 @@ GemmaTokenizer::GemmaTokenizer(const std::string& tokenizer_json_path) {
     }
 
     // Special / added tokens, longest content first for greedy matching.
-    is_special_id_.assign(max_id + 1, 0);
+    is_special_id_.assign(id_to_token_.size(), 0);
     int turn_end_id = -1;
     if (d.contains("added_tokens")) {
         for (const json& t : d.at("added_tokens")) {
             Special sp{t.at("content").get<std::string>(), t.at("id").get<int>()};
-            if (sp.id >= 0 && sp.id <= max_id) {
+            if (sp.id >= 0 && sp.id < static_cast<int>(is_special_id_.size())) {
                 is_special_id_[sp.id] = 1;
                 id_to_token_[sp.id] = sp.content;
             }
@@ -186,7 +186,7 @@ std::vector<int> GemmaTokenizer::encode(const std::string& text, bool add_bos) c
 
 std::string GemmaTokenizer::decode(int token) const {
     if (token < 0 || token >= static_cast<int>(id_to_token_.size())) return "";
-    if (is_special_id_[token]) return ""; // never render special tokens
+    if (token < static_cast<int>(is_special_id_.size()) && is_special_id_[token]) return ""; // never render special tokens
     const std::string& t = id_to_token_[token];
 
     // Byte-fallback token "<0xNN>" -> raw byte.

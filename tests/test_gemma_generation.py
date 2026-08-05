@@ -18,7 +18,7 @@ class TestGemmaGeneration(unittest.TestCase):
     
     def test_greedy_generation(self):
         print("\n=== Testing Gemma-3 Greedy Generation on NPU ===")
-        weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights_gemma"
+        weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights_gemma3"
         self.assertTrue(weights_dir.exists(), f"Weights dir {weights_dir} does not exist. Run quantize_gemma.py first!")
         
         # Load model

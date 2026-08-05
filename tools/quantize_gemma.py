@@ -34,7 +34,7 @@ def quantize_and_pack_tensor(W: np.ndarray, target_N: int, target_K: int) -> np.
     return w_combined
 
 DEFAULT_GGUF = "/home/daino/llama-mtp/models/google_gemma-3-1b-it-bf16.gguf"
-DEFAULT_OUT = str(Path(__file__).resolve().parents[1] / "quantized_weights_gemma")
+DEFAULT_OUT = str(Path(__file__).resolve().parents[1] / "quantized_weights_gemma3")
 
 def main(gguf_path=DEFAULT_GGUF, out_dir=DEFAULT_OUT):
     out_dir = Path(out_dir)
@@ -64,24 +64,20 @@ def main(gguf_path=DEFAULT_GGUF, out_dir=DEFAULT_OUT):
     from tools.convert.gguf_tokenizer import write_tokenizer_json
     write_tokenizer_json(reader, out_dir)
     
+    from gguf.quants import dequantize
+
     # Iterate through tensors and process them
     for tensor in reader.tensors:
         name = tensor.name
-        # GGUF Reader might read weights as uint8 raw bytes for bf16
-        # Let's view them as bfloat16 first if they are raw bytes
-        from ml_dtypes import bfloat16
-        if tensor.data.dtype == np.uint8 and len(tensor.data.shape) == 2 and tensor.data.shape[1] % 2 == 0:
-            data = tensor.data.view(bfloat16)
-        else:
-            data = tensor.data
+        qtype = tensor.tensor_type
+        data = dequantize(tensor.data, qtype)
             
-        print(f"Processing tensor {name} with shape {data.shape}...")
+        print(f"Processing tensor {name} with dequantized shape {data.shape}...")
         
         if "token_embd.weight" in name:
-            # Save raw embedding in float16 for host lookup
-            # In GGUF, shape is (262144, 1152)
-            np.save(out_dir / "token_embd.npy", data.astype(np.float16))
-            print(f"Saved float16 embedding table.")
+            # Save raw embedding in float32 for host lookup
+            np.save(out_dir / "token_embd.npy", data.astype(np.float32))
+            print(f"Saved float32 embedding table with shape {data.shape}.")
             
             # Since embeddings are tied, we reuse token_embd.weight as the LM head!
             # Shape is (262144, 1152) -> pad K to 2048

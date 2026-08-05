@@ -25,7 +25,7 @@ class TestGemmaLayer(unittest.TestCase):
             
         self.assertTrue(ref_dir.exists(), f"Reference data dir {ref_dir} does not exist!")
         
-        weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights_gemma"
+        weights_dir = Path(__file__).resolve().parents[1] / "quantized_weights_gemma3"
         self.assertTrue(weights_dir.exists(), f"Weights dir {weights_dir} does not exist!")
         
         # Load model using the generalized runtime

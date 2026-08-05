@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Square, RotateCw, Server, Cpu, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, Wrench, ChevronDown, ChevronUp, Layers } from 'lucide-react';
+import { Play, Square, RotateCw, Server, Cpu, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, Wrench, ChevronDown, ChevronUp, Layers, Plus, Trash2 } from 'lucide-react';
+import AddModelModal from './AddModelModal';
 
 export default function ServerControl({ apiBase, status, models, onRefresh }) {
   const [loading, setLoading] = useState(false);
@@ -15,6 +16,7 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
   const [noGemm, setNoGemm] = useState(false);
   const [maxBatch, setMaxBatch] = useState(16);
   const [buildingModel, setBuildingModel] = useState(null);
+  const [isAddModelOpen, setIsAddModelOpen] = useState(false);
 
   useEffect(() => {
     fetchKernelStatus();
@@ -27,6 +29,30 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
       setKernelStatus(data);
     } catch (e) {
       console.error("Failed to fetch kernel status:", e);
+    }
+  };
+
+  const handleDeleteModel = async (modelId) => {
+    if (status?.is_running && status?.model === modelId) {
+      alert(`Impossibile eliminare '${modelId}' perché è attualmente in esecuzione. Arresta prima il server.`);
+      return;
+    }
+    if (!confirm(`Sei sicuro di voler eliminare il modello '${modelId}'? I pesi quantizzati ed i kernel compilati verranno rimossi definitivamente da disco.`)) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/models/${modelId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Errore durante l'eliminazione del modello");
+      }
+      alert(`Modello '${modelId}' eliminato con successo.`);
+      onRefresh();
+    } catch (e) {
+      alert(`Errore eliminazione modello: ${e.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -155,16 +181,32 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
 
       {/* 2. UNIFIED MODEL GALLERY */}
       <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
           <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'white' }}>
             <HardDrive size={22} color="var(--accent-cyan)" /> Modelli Quantizzati Disponibili
           </h3>
 
-          {kernelStatus && (
-            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              Kernel salvati in <code>kernels/build/&lt;modello&gt;</code> per avvio immediato
-            </span>
-          )}
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <button
+              onClick={() => setIsAddModelOpen(true)}
+              style={{
+                padding: '0.55rem 1.1rem',
+                borderRadius: '8px',
+                border: 'none',
+                background: 'var(--accent-purple)',
+                color: 'white',
+                fontWeight: 700,
+                fontSize: '0.88rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                boxShadow: '0 0 15px rgba(139, 92, 246, 0.4)'
+              }}
+            >
+              <Plus size={16} /> Aggiungi Modello
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
@@ -248,6 +290,19 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
                     title="Compila/Rigenera kernel .xclbin NPU per questo modello"
                   >
                     <Hammer size={14} /> {buildingModel === m.id ? "Compilazione..." : "Compila Kernel"}
+                  </button>
+
+                  <button
+                    className="btn-danger"
+                    style={{ padding: '0.5rem 0.65rem', fontSize: '0.85rem' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteModel(m.id);
+                    }}
+                    disabled={loading || (status?.is_running && status?.model === m.id)}
+                    title="Elimina modello, pesi quantizzati e kernel da disco"
+                  >
+                    <Trash2 size={14} />
                   </button>
                 </div>
               </div>
@@ -342,6 +397,17 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
           </div>
         )}
       </div>
+
+      {/* Add Model Modal */}
+      <AddModelModal
+        apiBase={apiBase}
+        isOpen={isAddModelOpen}
+        onClose={() => setIsAddModelOpen(false)}
+        onSetupComplete={(alias) => {
+          onRefresh();
+          setTargetModel(alias);
+        }}
+      />
 
     </div>
   );

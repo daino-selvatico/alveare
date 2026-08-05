@@ -29,6 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from tools.setup_model import SUPPORTED_MODELS
+
 # Global State
 class ServerState:
     def __init__(self):
@@ -44,7 +46,17 @@ class ServerState:
         self.log_buffer: List[str] = []
         self.max_logs: int = 500
 
+class SetupState:
+    def __init__(self):
+        self.is_running: bool = False
+        self.progress: float = 0.0
+        self.step: str = ""
+        self.logs: List[Dict[str, Any]] = []
+        self.error: str = ""
+        self.active_alias: str = ""
+
 state = ServerState()
+setup_state = SetupState()
 
 def load_config() -> Dict[str, Any]:
     default_config = {
@@ -91,8 +103,8 @@ def append_log(msg: str):
 def discover_models() -> List[Dict[str, Any]]:
     models = []
     seen_paths = set()
-    # Search for quantized_weights* directories and symlinks
-    for d in sorted(ROOT_DIR.glob("quantized_weights*")):
+    # Search strictly for quantized_weights_* directories and symlinks
+    for d in sorted(ROOT_DIR.glob("quantized_weights_*")):
         if not d.exists():
             continue
         try:
@@ -105,12 +117,11 @@ def discover_models() -> List[Dict[str, Any]]:
         seen_paths.add(real_p)
 
         folder_name = d.name
-        if folder_name.startswith("quantized_weights_"):
-            alias = folder_name[len("quantized_weights_"):]
-        elif folder_name == "quantized_weights":
-            alias = "gemma3"
-        else:
-            alias = folder_name
+        if not folder_name.startswith("quantized_weights_"):
+            continue
+        alias = folder_name[len("quantized_weights_"):]
+        if not alias:
+            continue
 
         cfg_path = real_p / "config.json"
         arch = "unknown"
@@ -263,6 +274,188 @@ async def get_status():
 @app.get("/api/models")
 async def get_models():
     return discover_models()
+
+@app.delete("/api/models/{model_id}")
+async def delete_model(model_id: str):
+    is_running = state.process is not None and state.process.poll() is None
+    if is_running and state.active_model == model_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Impossibile eliminare il modello '{model_id}' perché è attualmente in esecuzione. Arresta prima il server."
+        )
+
+    # Find model directories and aliases
+    possible_dirs = [
+        ROOT_DIR / f"quantized_weights_{model_id}",
+        ROOT_DIR / "kernels" / "build" / model_id
+    ]
+    if model_id in ("gemma3", "gemma-3"):
+        possible_dirs.extend([
+            ROOT_DIR / "quantized_weights_gemma3",
+            ROOT_DIR / "kernels" / "build" / "gemma3"
+        ])
+    elif model_id in ("gemma4", "gemma4-12b"):
+        possible_dirs.extend([
+            ROOT_DIR / "quantized_weights_gemma4",
+            ROOT_DIR / "kernels" / "build" / "gemma4"
+        ])
+    elif model_id in ("gemma4-e4b", "e4b"):
+        possible_dirs.extend([
+            ROOT_DIR / "quantized_weights_gemma4-e4b",
+            ROOT_DIR / "kernels" / "build" / "gemma4-e4b"
+        ])
+
+    import shutil
+    deleted_items = []
+    seen = set()
+
+    for d in possible_dirs:
+        str_p = str(d)
+        if str_p in seen:
+            continue
+        seen.add(str_p)
+
+        if d.is_symlink():
+            try:
+                target = d.resolve()
+                d.unlink()
+                deleted_items.append(d.name)
+                if target.exists() and str(target).startswith(str(ROOT_DIR)):
+                    shutil.rmtree(target)
+                    deleted_items.append(target.name)
+            except Exception as e:
+                print(f"[ControlServer] Warning: failed to remove symlink {d}: {e}")
+        elif d.exists():
+            try:
+                if d.is_dir():
+                    shutil.rmtree(d)
+                else:
+                    d.unlink()
+                deleted_items.append(d.name)
+            except Exception as e:
+                print(f"[ControlServer] Warning: failed to delete {d}: {e}")
+
+    if not deleted_items:
+        raise HTTPException(status_code=404, detail=f"Nessuna cartella trovata per il modello '{model_id}'")
+
+    append_log(f"Modello '{model_id}' eliminato con successo (elementi rimossi: {', '.join(deleted_items)}).")
+    return {"status": "ok", "message": f"Modello '{model_id}' eliminato con successo", "deleted": deleted_items}
+
+@app.get("/api/supported_models")
+async def get_supported_models():
+    return SUPPORTED_MODELS
+
+class ModelSetupRequest(BaseModel):
+    alias: str
+    arch: str = "gemma4"
+    source_type: str = "auto"
+    url_or_repo: Optional[str] = None
+    filename: Optional[str] = None
+    local_gguf_path: Optional[str] = None
+    custom_script: Optional[str] = None
+
+@app.get("/api/models/setup/status")
+async def get_setup_status():
+    return {
+        "is_running": setup_state.is_running,
+        "progress": setup_state.progress,
+        "step": setup_state.step,
+        "active_alias": setup_state.active_alias,
+        "logs": setup_state.logs[-100:],
+        "error": setup_state.error
+    }
+
+def run_setup_task(req: ModelSetupRequest):
+    setup_state.is_running = True
+    setup_state.progress = 0.0
+    setup_state.step = "start"
+    setup_state.logs.clear()
+    setup_state.error = ""
+    setup_state.active_alias = req.alias
+
+    def progress_callback(step: str, percent: float, msg: str):
+        setup_state.step = step
+        setup_state.progress = percent
+        entry = {
+            "timestamp": time.strftime("[%H:%M:%S]"),
+            "step": step,
+            "percent": percent,
+            "message": msg
+        }
+        setup_state.logs.append(entry)
+        append_log(f"[Setup:{req.alias}] {msg}")
+
+    try:
+        py_exe = os.environ.get("ALVEARE_PYTHON")
+        if not py_exe and os.environ.get("CONDA_PREFIX"):
+            py_exe = str(Path(os.environ.get("CONDA_PREFIX")) / "bin" / "python")
+        if not py_exe:
+            alveare_env_py = Path("/home/daino/miniconda3/envs/alveare-aie/bin/python")
+            if alveare_env_py.exists():
+                py_exe = str(alveare_env_py)
+            else:
+                py_exe = sys.executable
+
+        setup_script = ROOT_DIR / "tools" / "setup_model.py"
+        cmd = [py_exe, str(setup_script), req.alias, "--arch", req.arch]
+        if req.source_type == "local" and req.local_gguf_path:
+            cmd.extend(["--gguf", req.local_gguf_path])
+        else:
+            if req.url_or_repo:
+                cmd.extend(["--url", req.url_or_repo])
+            if req.filename:
+                cmd.extend(["--filename", req.filename])
+        if req.arch == "custom" and req.custom_script:
+            cmd.extend(["--custom-script", req.custom_script])
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=str(ROOT_DIR)
+        )
+
+        for line in iter(proc.stdout.readline, ''):
+            if not line:
+                continue
+            line_str = line.strip()
+            if "[SETUP_PROGRESS]" in line_str:
+                try:
+                    payload = json.loads(line_str.split("[SETUP_PROGRESS]")[1].strip())
+                    progress_callback(payload.get("step", "running"), payload.get("percent", setup_state.progress), payload.get("message", ""))
+                except Exception:
+                    progress_callback("running", setup_state.progress, line_str)
+            else:
+                progress_callback("running", setup_state.progress, line_str)
+
+        proc.wait()
+        if proc.returncode == 0:
+            setup_state.progress = 100.0
+            setup_state.step = "complete"
+            progress_callback("complete", 100.0, f"Model '{req.alias}' set up successfully!")
+        else:
+            setup_state.error = f"Setup exited with code {proc.returncode}"
+            setup_state.step = "error"
+            progress_callback("error", setup_state.progress, setup_state.error)
+    except Exception as e:
+        setup_state.error = str(e)
+        setup_state.step = "error"
+        progress_callback("error", setup_state.progress, f"Error: {e}")
+    finally:
+        setup_state.is_running = False
+
+@app.post("/api/models/setup")
+async def start_model_setup(req: ModelSetupRequest):
+    if setup_state.is_running:
+        raise HTTPException(status_code=400, detail="A model setup task is already in progress.")
+    
+    import threading
+    t = threading.Thread(target=run_setup_task, args=(req,), daemon=True)
+    t.start()
+
+    return {"status": "ok", "message": f"Setup started for model {req.alias}"}
 
 @app.post("/api/control/start")
 async def control_start(req: StartRequest):
