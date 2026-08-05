@@ -62,10 +62,25 @@ void ApiServer::start(int port) {
             // its special turn/channel tokens (the tokenizer matches them atomically);
             // other models just concatenate message contents.
             const std::string& model_type = generator_.config().model_type;
-            bool is_gemma = (model_type == "gemma3" || generator_.config().is_gemma4());
+            bool is_gemma4 = generator_.config().is_gemma4();
+            bool is_gemma3 = (model_type == "gemma3");
 
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
-                if (is_gemma) {
+                if (is_gemma3) {
+                    // Gemma-3 uses the CLASSIC turn format (no channels, no thinking):
+                    //   <bos><start_of_turn>role\n{content}<end_of_turn>\n<start_of_turn>model\n
+                    // (Gemma-4's <|turn>/<|channel> tokens don't exist in Gemma-3, so
+                    // applying that template split them into garbage -> word-salad output.)
+                    prompt = "<bos>";
+                    for (const auto& msg : j_req["messages"]) {
+                        if (!msg.contains("content") || !msg["content"].is_string()) continue;
+                        std::string role = msg.value("role", "user");
+                        if (role == "assistant") role = "model";
+                        prompt += "<start_of_turn>" + role + "\n";
+                        prompt += msg["content"].get<std::string>() + "<end_of_turn>\n";
+                    }
+                    prompt += "<start_of_turn>model\n";
+                } else if (is_gemma4) {
                     prompt = "<bos>";
                     // Per the Gemma-4 chat template: an EMPTY "<|channel>thought\n<channel|>"
                     // block after "<|turn>model\n" tells the model the thought is empty =>

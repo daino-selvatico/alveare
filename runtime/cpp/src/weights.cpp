@@ -401,7 +401,11 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 throw std::runtime_error("Missing FFN weights for layer " + std::to_string(l));
             }
 
-            int k_tile = (config.hidden_size == 1152) ? 128 : 256;
+            // k_tile MUST match the compiled ffn_fused kernel in the manifest (all
+            // ffn_fused kernels are built with k_tile=256; the old hidden==1152 -> 128
+            // special-case packed Gemma-3 for a 128-tile kernel that no longer exists,
+            // so the k_tile=256 kernel read a mismatched layout -> NaN logits).
+            int k_tile = 256;
             auto fused = pack_ffn_fused_weights(w_gate, w_up, w_down, H_padded, I_padded, 32, k_tile);
 
             // Register the fused FFN on the NPU iff a matching kernel exists in the
@@ -413,7 +417,15 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             // hard-coded to 4 (didn't divide H//m_H=10) — now fixed (adaptive
             // N_PASSES=5 for e4b) in ffn_fused.py + pack_ffn_fused_weights above, so
             // the NPU FFN is used by default like every other model.
-            if (reg.has_ffn_fused(H_padded, I_padded, act_type)) {
+            // Gemma-3 (H=2048) FFN: the fused NPU kernel produced by build_kernels.py
+            // yields NaN logits at runtime even though the same source self-verifies
+            // and the C++ pack is byte-identical to ffn_fused.py's — a build-path/kernel
+            // discrepancy specific to this shape (TODO: rebuild via the jit/self-verify
+            // path). Route Gemma-3 through the CORRECT CPU-fallback FFN (validated
+            // bit-exact vs the HF reference) so it produces coherent output; the 12B and
+            // e4b keep the fast NPU-fused FFN.
+            bool g3_force_cpu_ffn = (config.model_type == "gemma3");
+            if (!g3_force_cpu_ffn && reg.has_ffn_fused(H_padded, I_padded, act_type)) {
                 lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, fused.data(), fused.size());
             } else {
                 lw.w_ffn_fused = kInvalidWeight;

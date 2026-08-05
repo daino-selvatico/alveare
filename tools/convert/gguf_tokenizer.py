@@ -33,13 +33,50 @@ def _field_scalar(reader, name):
     return int(f.parts[f.data[-1]][0])
 
 
+def _field_floats(reader, name):
+    f = reader.fields.get(name)
+    if f is None:
+        return None
+    return [float(f.parts[di][0]) for di in f.data]
+
+
+def _reconstruct_merges_from_scores(tokens, scores):
+    """Rebuild BPE merges for a SentencePiece (llama/SPM) tokenizer that ships
+    unigram *scores* but no explicit merge list — e.g. the Gemma-3 GGUF. The C++
+    ``GemmaTokenizer`` is merge-based, so without this it byte-fallbacks every
+    word into per-character tokens (word-salad output).
+
+    For each multi-char piece, pick the split (left+right, both in vocab) with the
+    best combined score; that is the merge that produced it. Ordering merges by the
+    resulting piece's score (high→low) reproduces SPM's merge priority. Matches the
+    HuggingFace ``SentencePieceExtractor`` and yields correct tokenization.
+    """
+    vocab = {t: i for i, t in enumerate(tokens)}
+    score = {t: scores[i] for i, t in enumerate(tokens)}
+    merges = []
+    for piece in vocab:
+        if len(piece) < 2:
+            continue
+        best = None
+        for i in range(1, len(piece)):
+            left, right = piece[:i], piece[i:]
+            if left in vocab and right in vocab:
+                s = score[left] + score[right]
+                if best is None or s > best[0]:
+                    best = (s, left, right)
+        if best is not None:
+            merges.append((best[1], best[2], score[piece]))
+    merges.sort(key=lambda x: -x[2])
+    return [[a, b] for a, b, _ in merges]
+
+
 def build_tokenizer_json(reader) -> dict | None:
-    """Return the tokenizer.json dict, or None if the GGUF has no BPE merges."""
+    """Return the tokenizer.json dict, or None if the GGUF has no embedded tokens."""
     tokens = _field_strings(reader, "tokenizer.ggml.tokens")
-    merges = _field_strings(reader, "tokenizer.ggml.merges")
+    merges = _field_strings(reader, "tokenizer.ggml.merges") or []
     ttypes = _field_ints(reader, "tokenizer.ggml.token_type")
-    if not tokens or not merges:
-        return None  # not a merges-based (BPE) tokenizer — nothing to emit
+    if not tokens:
+        return None
 
     vocab = {tok: i for i, tok in enumerate(tokens)}
 
@@ -50,6 +87,15 @@ def build_tokenizer_json(reader) -> dict | None:
         left, sep, right = m.partition(" ")
         if sep:
             merge_pairs.append([left, right])
+
+    # SentencePiece GGUFs (tokenizer.ggml.model == "llama", e.g. Gemma-3) carry
+    # unigram scores but NO merges. The merge-based C++ tokenizer needs them, so
+    # reconstruct from the scores (see _reconstruct_merges_from_scores).
+    if not merge_pairs:
+        scores = _field_floats(reader, "tokenizer.ggml.scores")
+        if scores and len(scores) == len(tokens):
+            merge_pairs = _reconstruct_merges_from_scores(tokens, scores)
+            print(f"  (no GGUF merges — reconstructed {len(merge_pairs)} from SPM scores)")
 
     # Special tokens: CONTROL/USER_DEFINED plus the ids named in metadata.
     special_ids = set()
