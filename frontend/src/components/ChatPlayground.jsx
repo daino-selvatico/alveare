@@ -1,7 +1,35 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Bot, User, Trash2, Sliders, Cpu, Zap, StopCircle, Copy, Check, Brain, ChevronDown, ChevronUp, ToggleLeft, ToggleRight } from 'lucide-react';
+import { 
+  Send, 
+  Bot, 
+  User, 
+  Trash2, 
+  Sliders, 
+  Cpu, 
+  Zap, 
+  StopCircle, 
+  Copy, 
+  Check, 
+  Brain, 
+  ChevronDown, 
+  ChevronUp, 
+  ToggleLeft, 
+  ToggleRight,
+  Plus,
+  PanelLeft,
+  Edit3
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import SidebarHistory from './SidebarHistory';
+import { 
+  loadConversations, 
+  saveConversations, 
+  loadActiveId, 
+  saveActiveId, 
+  createNewConversation, 
+  generateTitleFromMessage 
+} from '../utils/chatStorage';
 
 function parseThinking(content) {
   if (!content) return { thinking: '', text: '' };
@@ -73,7 +101,7 @@ function CodeBlock({ node, inline, className, children, ...props }) {
     }}>
       <div style={{
         display: 'flex',
-        justify: 'space-between',
+        justifyContent: 'space-between',
         alignItems: 'center',
         padding: '0.4rem 0.85rem',
         background: 'rgba(30, 41, 59, 0.85)',
@@ -117,14 +145,26 @@ function CodeBlock({ node, inline, className, children, ...props }) {
 }
 
 export default function ChatPlayground({ apiBase, activeModel, isServerRunning }) {
-  const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Ciao! Sono il modello LLM in esecuzione sull\'NPU AMD Ryzen AI. Come posso aiutarti oggi?' }
-  ]);
+  // State for conversations & history
+  const [conversations, setConversations] = useState(() => loadConversations());
+  const [activeId, setActiveId] = useState(() => {
+    const savedId = loadActiveId();
+    const convs = loadConversations();
+    if (savedId && convs.some(c => c.id === savedId)) {
+      return savedId;
+    }
+    return convs[0]?.id || null;
+  });
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState('');
+
+  // UI state
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [expandedThinking, setExpandedThinking] = useState({});
-  
+
   // Generation parameters
   const [systemPrompt, setSystemPrompt] = useState('Sei un assistente AI esperto ed utile.');
   const [temperature, setTemperature] = useState(0.7);
@@ -141,6 +181,18 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
 
+  // Derive active conversation & messages
+  const activeConversation = conversations.find(c => c.id === activeId) || conversations[0];
+  const messages = activeConversation?.messages || [];
+
+  useEffect(() => {
+    if (activeConversation) {
+      if (activeConversation.systemPrompt !== undefined) {
+        setSystemPrompt(activeConversation.systemPrompt);
+      }
+    }
+  }, [activeId]);
+
   useEffect(() => {
     scrollToBottom();
   }, [messages, isGenerating]);
@@ -153,6 +205,96 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
+  // Conversation history actions
+  const handleSelectConversation = (id) => {
+    setActiveId(id);
+    saveActiveId(id);
+    setExpandedThinking({});
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setIsEditingTitle(false);
+  };
+
+  const handleNewConversation = () => {
+    const newConv = createNewConversation();
+    setConversations(prev => {
+      const updated = [newConv, ...prev];
+      saveConversations(updated);
+      return updated;
+    });
+    setActiveId(newConv.id);
+    saveActiveId(newConv.id);
+    setExpandedThinking({});
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setIsEditingTitle(false);
+  };
+
+  const handleRenameConversation = (id, newTitle) => {
+    setConversations(prev => {
+      const updated = prev.map(c => c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c);
+      saveConversations(updated);
+      return updated;
+    });
+  };
+
+  const handleDeleteConversation = (id) => {
+    setConversations(prev => {
+      const updated = prev.filter(c => c.id !== id);
+      if (updated.length === 0) {
+        const fresh = createNewConversation();
+        saveConversations([fresh]);
+        setActiveId(fresh.id);
+        saveActiveId(fresh.id);
+        return [fresh];
+      } else {
+        saveConversations(updated);
+        if (activeId === id) {
+          setActiveId(updated[0].id);
+          saveActiveId(updated[0].id);
+        }
+        return updated;
+      }
+    });
+  };
+
+  const handleClearAllConversations = () => {
+    const fresh = createNewConversation();
+    setConversations([fresh]);
+    saveConversations([fresh]);
+    setActiveId(fresh.id);
+    saveActiveId(fresh.id);
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setExpandedThinking({});
+  };
+
+  const handleClearCurrentMessages = () => {
+    if (!activeId) return;
+    setConversations(prev => {
+      const updated = prev.map(c => {
+        if (c.id === activeId) {
+          return {
+            ...c,
+            messages: [{ role: 'assistant', content: 'Conversazione azzerata. Come posso aiutarti?' }],
+            updatedAt: Date.now()
+          };
+        }
+        return c;
+      });
+      saveConversations(updated);
+      return updated;
+    });
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setExpandedThinking({});
+  };
+
+  // Header inline title edit
+  const handleSaveHeaderTitle = () => {
+    if (titleInput.trim() && activeId) {
+      handleRenameConversation(activeId, titleInput.trim());
+    }
+    setIsEditingTitle(false);
+  };
+
+  // Send message and stream response (Multi-Turn)
   const handleSend = async () => {
     if (!input.trim() || isGenerating) return;
     if (!isServerRunning) {
@@ -160,20 +302,56 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       return;
     }
 
-    const userMsg = { role: 'user', content: input.trim() };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    const userMsgText = input.trim();
+    const userMsg = { role: 'user', content: userMsgText };
     setInput('');
     setIsGenerating(true);
 
+    // Prepare updated messages for active conversation
+    const currentMessages = activeConversation ? activeConversation.messages : [];
+    const newMessages = [...currentMessages, userMsg];
     const assistantIndex = newMessages.length;
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+    const newMessagesWithAssistant = [...newMessages, { role: 'assistant', content: '' }];
 
+    // Auto-generate title if default
+    let updatedTitle = activeConversation?.title || 'Nuova conversazione';
+    const userMsgCount = currentMessages.filter(m => m.role === 'user').length;
+    if (userMsgCount === 0 || updatedTitle === 'Nuova conversazione') {
+      updatedTitle = generateTitleFromMessage(userMsgText);
+    }
+
+    // Update state & localStorage immediately with user message + empty assistant placeholder
+    setConversations(prev => {
+      const updated = prev.map(c => {
+        if (c.id === activeId) {
+          return {
+            ...c,
+            title: updatedTitle,
+            messages: newMessagesWithAssistant,
+            updatedAt: Date.now(),
+            systemPrompt
+          };
+        }
+        return c;
+      });
+      saveConversations(updated);
+      return updated;
+    });
+
+    // Build chat history for API payload (Multi-Turn real sequence)
     const chatMessages = [];
     if (systemPrompt.trim()) {
       chatMessages.push({ role: 'system', content: systemPrompt.trim() });
     }
-    chatMessages.push(...newMessages);
+
+    // Filter out initial static welcome message if present at index 0 without preceding user msg
+    const validHistory = newMessages.filter((msg, idx) => {
+      if (idx === 0 && msg.role === 'assistant' && msg.content.includes("Ciao! Sono il modello LLM")) {
+        return false;
+      }
+      return true;
+    });
+    chatMessages.push(...validHistory);
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
@@ -229,16 +407,28 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               const delta = data.choices?.[0]?.delta?.content || '';
               if (delta) {
                 tokenCount++;
-                setMessages(prev => {
-                  const updated = [...prev];
-                  if (updated[assistantIndex]) {
-                    updated[assistantIndex] = {
-                      ...updated[assistantIndex],
-                      content: updated[assistantIndex].content + delta
-                    };
-                  }
+                setConversations(prev => {
+                  const updated = prev.map(c => {
+                    if (c.id === activeId) {
+                      const updatedMsgs = [...c.messages];
+                      if (updatedMsgs[assistantIndex]) {
+                        updatedMsgs[assistantIndex] = {
+                          ...updatedMsgs[assistantIndex],
+                          content: updatedMsgs[assistantIndex].content + delta
+                        };
+                      }
+                      return {
+                        ...c,
+                        messages: updatedMsgs,
+                        updatedAt: Date.now()
+                      };
+                    }
+                    return c;
+                  });
+                  saveConversations(updated);
                   return updated;
                 });
+
                 const elapsedSec = (Date.now() - startTime) / 1000;
                 setMetrics({
                   tokens: tokenCount,
@@ -254,14 +444,25 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
-        setMessages(prev => {
-          const updated = [...prev];
-          if (updated[assistantIndex]) {
-            updated[assistantIndex] = {
-              ...updated[assistantIndex],
-              content: updated[assistantIndex].content + `\n\n⚠️ [Errore]: ${err.message}`
-            };
-          }
+        setConversations(prev => {
+          const updated = prev.map(c => {
+            if (c.id === activeId) {
+              const updatedMsgs = [...c.messages];
+              if (updatedMsgs[assistantIndex]) {
+                updatedMsgs[assistantIndex] = {
+                  ...updatedMsgs[assistantIndex],
+                  content: updatedMsgs[assistantIndex].content + `\n\n⚠️ [Errore]: ${err.message}`
+                };
+              }
+              return {
+                ...c,
+                messages: updatedMsgs,
+                updatedAt: Date.now()
+              };
+            }
+            return c;
+          });
+          saveConversations(updated);
           return updated;
         });
       }
@@ -278,14 +479,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setIsGenerating(false);
   };
 
-  const handleClear = () => {
-    setMessages([
-      { role: 'assistant', content: 'Conversazione azzerata. Come posso aiutarti?' }
-    ]);
-    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
-    setExpandedThinking({});
-  };
-
   const copyToClipboard = (text, idx) => {
     navigator.clipboard.writeText(text);
     setCopiedIndex(idx);
@@ -293,42 +486,130 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   };
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 70px)', width: '100%' }}>
+    <div style={{ display: 'flex', height: 'calc(100vh - 64px)', width: '100%', overflow: 'hidden' }}>
       
+      {/* Conversations Sidebar */}
+      <SidebarHistory
+        conversations={conversations}
+        activeId={activeId}
+        onSelectConversation={handleSelectConversation}
+        onNewConversation={handleNewConversation}
+        onRenameConversation={handleRenameConversation}
+        onDeleteConversation={handleDeleteConversation}
+        onClearAll={handleClearAllConversations}
+        isOpen={sidebarOpen}
+        onToggleOpen={() => setSidebarOpen(!sidebarOpen)}
+      />
+
       {/* Main Chat Workspace */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
         
         {/* Top Chat Bar */}
         <div style={{
-          padding: '0.85rem 1.5rem',
+          padding: '0.75rem 1.25rem',
           borderBottom: '1px solid var(--border-color)',
           display: 'flex',
           justify: 'space-between',
           alignItems: 'center',
           background: 'rgba(19, 27, 46, 0.5)'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontWeight: 600, fontSize: '1rem', color: 'white' }}>
-              Playground Realtime Streaming SSE
-            </span>
-            <span className="badge badge-success" style={{ textTransform: 'none' }}>
-              <Cpu size={14} /> Modello attivo: {activeModel}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+            {!sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="btn-secondary"
+                style={{ padding: '0.4rem 0.6rem' }}
+                title="Apri Storico Conversazioni"
+              >
+                <PanelLeft size={18} />
+              </button>
+            )}
+
+            {/* Conversation Title (Editable) */}
+            {isEditingTitle ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <input
+                  type="text"
+                  value={titleInput}
+                  onChange={e => setTitleInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') handleSaveHeaderTitle();
+                    if (e.key === 'Escape') setIsEditingTitle(false);
+                  }}
+                  autoFocus
+                  style={{
+                    background: 'rgba(0,0,0,0.5)',
+                    border: '1px solid var(--accent-purple)',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '0.95rem',
+                    fontWeight: 600,
+                    padding: '0.2rem 0.5rem',
+                    outline: 'none'
+                  }}
+                />
+                <button
+                  onClick={handleSaveHeaderTitle}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent-green)', cursor: 'pointer' }}
+                >
+                  <Check size={16} />
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+                <span
+                  style={{
+                    fontWeight: 700,
+                    fontSize: '1rem',
+                    color: 'white',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => {
+                    setTitleInput(activeConversation?.title || '');
+                    setIsEditingTitle(true);
+                  }}
+                  title="Clicca per rinominare"
+                >
+                  {activeConversation?.title || 'Playground Chat'}
+                </span>
+                <button
+                  onClick={() => {
+                    setTitleInput(activeConversation?.title || '');
+                    setIsEditingTitle(true);
+                  }}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.6 }}
+                  title="Rinomina conversazione"
+                >
+                  <Edit3 size={14} />
+                </button>
+              </div>
+            )}
+
+            <span className="badge badge-success" style={{ textTransform: 'none', flexShrink: 0 }}>
+              <Cpu size={14} /> {activeModel}
             </span>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
             {metrics.tps > 0 && (
               <span className="badge" style={{ background: 'rgba(6, 182, 212, 0.15)', color: 'var(--accent-cyan)', border: '1px solid rgba(6, 182, 212, 0.3)' }}>
-                <Zap size={14} /> {metrics.tps} tok/s ({metrics.tokens} token in {metrics.elapsed}s)
+                <Zap size={14} /> {metrics.tps} tok/s ({metrics.tokens} tok in {metrics.elapsed}s)
               </span>
             )}
-            
-            <button className="btn-secondary" onClick={handleClear} title="Cancella conversazione">
-              <Trash2 size={16} /> Reset
+
+            <button className="btn-secondary" onClick={handleNewConversation} title="Nuova conversazione">
+              <Plus size={16} /> <span style={{ fontSize: '0.85rem' }}>Nuova Chat</span>
+            </button>
+
+            <button className="btn-secondary" onClick={handleClearCurrentMessages} title="Azzera messaggi conversazione">
+              <Trash2 size={16} /> <span style={{ fontSize: '0.85rem' }}>Reset</span>
             </button>
 
             <button className="btn-secondary" onClick={() => setShowSettings(!showSettings)}>
-              <Sliders size={16} /> Impostazioni
+              <Sliders size={16} />
             </button>
           </div>
         </div>
@@ -438,7 +719,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                     )
                   )}
 
-                  {/* Main Response / Text Content (Markdown rendered for Assistant, pre-wrap for User) */}
+                  {/* Main Response / Text Content */}
                   {isUser ? (
                     <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
                   ) : text ? (
@@ -576,7 +857,16 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
             </label>
             <textarea
               value={systemPrompt}
-              onChange={e => setSystemPrompt(e.target.value)}
+              onChange={e => {
+                setSystemPrompt(e.target.value);
+                if (activeId) {
+                  setConversations(prev => {
+                    const updated = prev.map(c => c.id === activeId ? { ...c, systemPrompt: e.target.value } : c);
+                    saveConversations(updated);
+                    return updated;
+                  });
+                }
+              }}
               rows={3}
               style={{
                 width: '100%',
