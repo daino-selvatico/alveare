@@ -6,6 +6,14 @@ Alveare is **Linux-only and NPU-only**: it targets the AMD Ryzen AI **XDNA2** NP
 
 ---
 
+## 📚 Documentation Guides
+
+- 🚀 [**Quickstart Guide**](quickstart.md): Get started in 5 minutes.
+- 📦 [**Adding & Quantizing Models**](adding_models.md): Detailed guide on Hugging Face downloads, quantization, and custom quantizer plugins.
+- 🎛️ [**Sampling Controls & API Reference**](sampling.md): Sampling parameters (`temperature`, `top_p`, `top_k`, `seed`, `enable_thinking`, system prompt) and OpenAI request mapping.
+
+---
+
 ## 🛠️ 1. Automated Installation
 
 Run the automated installer from the repository root:
@@ -73,8 +81,10 @@ If you have downloaded a local `.gguf` file:
 ./alveare quantize g4-12b /path/to/gemma-4-12b-it.gguf
 ```
 
-- Architecture auto-detection reads `general.architecture` from the GGUF. You can override it with `--arch llama|gemma3|gemma4`.
+- Architecture auto-detection reads `general.architecture` from the GGUF. You can override it with `--arch llama|gemma3|gemma4|gemma4-e4b`.
 - Output weights are stored under `./quantized_weights_<alias>/`.
+
+For complete details, see [`docs/adding_models.md`](adding_models.md).
 
 ---
 
@@ -87,7 +97,7 @@ Start the inference server and management API:
 ```
 
 Once running:
-- **Web UI Dashboard**: Access `http://127.0.0.1:8000` to monitor NPU performance, manage models, view live logs, or test responses in the chat playground.
+- **Web UI Dashboard**: Access `http://127.0.0.1:8000` to monitor NPU performance, manage models, view live logs, adjust generation settings (temperature, top-p, top-k, system prompt), or test responses in the chat playground.
 - **OpenAI Endpoint**: Connect any OpenAI SDK to `http://127.0.0.1:8000/v1`.
 
 ### Command Line Options
@@ -118,6 +128,8 @@ client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
 response = client.chat.completions.create(
     model="gemma4",
     messages=[{"role": "user", "content": "What is the capital of Italy?"}],
+    temperature=0.7,
+    top_p=0.9,
     max_tokens=64,
 )
 
@@ -131,7 +143,9 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gemma4",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "temperature": 0.7,
+    "top_k": 40
   }'
 ```
 
@@ -139,7 +153,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ## 🗑️ 6. Deleting Models
 
-Delete a installed quantized model package from disk:
+Delete an installed quantized model package from disk:
 
 - **Via Web UI**: Click the red trash icon on the model card in the dashboard.
 - **Via CLI**:
@@ -154,3 +168,4 @@ Delete a installed quantized model package from disk:
 - **Permission Denied on `/dev/accel/accel0`**: Add your user to the `render` group (`sudo usermod -aG render $USER`) and reboot or re-login.
 - **`cannot import pyxrt`**: Ensure the `alveare-aie` Conda environment is active and running Python 3.14.
 - **Port Conflict**: Override port with `--port 8999` or environment variable `ALVEARE_PORT=8999`.
+
