@@ -15,7 +15,14 @@ import {
   ToggleLeft,
   ToggleRight,
   Plus,
-  Sparkles
+  Sparkles,
+  Paperclip,
+  Image as ImageIcon,
+  Music,
+  FileText,
+  Upload,
+  X,
+  File
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -67,7 +74,7 @@ function parseThinking(content) {
   return { thinking: '', text: content };
 }
 
-function CodeBlock({ inline, className, children, ...props }) {
+function CodeBlock({ _node, inline, className, children, ...props }) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || '');
   const codeString = String(children).replace(/\n$/, '');
@@ -156,6 +163,18 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const [expandedThinking, setExpandedThinking] = useState({});
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
+  // File upload state
+  const [attachments, setAttachments] = useState([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [showUploadMenu, setShowUploadMenu] = useState(false);
+  const [acceptFilter, setAcceptFilter] = useState('*/*');
+  const [isDragging, setIsDragging] = useState(false);
+  const [previewImageModal, setPreviewImageModal] = useState(null);
+  const [expandedDocs, setExpandedDocs] = useState({});
+
+  const fileInputRef = useRef(null);
+  const uploadMenuRef = useRef(null);
+
   // Generation parameters
   const [systemPrompt, setSystemPrompt] = useState('Sei un assistente AI esperto ed utile.');
   const [temperature, setTemperature] = useState(0.7);
@@ -166,7 +185,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const [enableThinking, setEnableThinking] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
 
-  // Performance metrics
   const [metrics, setMetrics] = useState({ tokens: 0, elapsed: 0, tps: 0 });
 
   const messagesEndRef = useRef(null);
@@ -190,7 +208,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       }
     }
 
-    // If there are existing conversations, select the first one; otherwise start empty
     if (list.length > 0) {
       setActiveConvIdState(list[0].id);
       setMessages(list[0].messages || []);
@@ -199,7 +216,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       }
       setActiveConversationId(list[0].id);
     } else {
-      // Create initial welcome conversation
       const welcomeConv = createConversation(
         'Prima conversazione',
         [{ role: 'assistant', content: "Ciao! Sono il modello LLM in esecuzione sull'NPU AMD Ryzen AI. Come posso aiutarti oggi?" }],
@@ -215,6 +231,16 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     scrollToBottom();
   }, [messages, isGenerating]);
 
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (uploadMenuRef.current && !uploadMenuRef.current.contains(e.target)) {
+        setShowUploadMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -223,7 +249,11 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
-  // Switch to a selected conversation
+  const toggleDocExpand = (docId) => {
+    setExpandedDocs(prev => ({ ...prev, [docId]: !prev[docId] }));
+  };
+
+  // Conversation history actions
   const handleSelectConversation = (id) => {
     if (isGenerating) {
       if (!window.confirm("C'è una generazione in corso. Vuoi interromperla per cambiare conversazione?")) {
@@ -241,10 +271,10 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       }
       setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
       setExpandedThinking({});
+      setAttachments([]);
     }
   };
 
-  // Start a new empty conversation
   const handleNewConversation = () => {
     if (isGenerating) {
       if (!window.confirm("C'è una generazione in corso. Vuoi interromperla per creare una nuova chat?")) {
@@ -258,16 +288,15 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setMessages([]);
     setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
     setExpandedThinking({});
+    setAttachments([]);
   };
 
-  // Rename a conversation
   const handleRenameConversation = (id, newTitle) => {
     renameConversation(id, newTitle);
     const updatedList = getConversations();
     setConversations(updatedList);
   };
 
-  // Delete a conversation
   const handleDeleteConversation = (id) => {
     if (isGenerating && activeConvId === id) {
       handleStop();
@@ -290,7 +319,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     }
   };
 
-  // Clear all saved conversations
   const handleClearAllConversations = () => {
     if (isGenerating) handleStop();
     clearAllConversations();
@@ -298,18 +326,121 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setActiveConvIdState(null);
     setMessages([]);
     setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setExpandedThinking({});
+    setAttachments([]);
+  };
+
+  // Upload actions
+  const handleOpenUpload = (filterType) => {
+    let accept = '*/*';
+    if (filterType === 'image') accept = 'image/*';
+    else if (filterType === 'audio') accept = 'audio/*';
+    else if (filterType === 'document') accept = '.pdf,.txt,.md,.csv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.cpp,.h,.c,.rs,.go,.yaml,.yml,.sh,.log';
+    
+    setAcceptFilter(accept);
+    setShowUploadMenu(false);
+    setTimeout(() => {
+      fileInputRef.current?.click();
+    }, 50);
+  };
+
+  const handleFilesSelected = async (fileList) => {
+    if (!fileList || fileList.length === 0) return;
+
+    setIsUploading(true);
+    const readPromises = Array.from(fileList).map(file => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result || '';
+          const b64Data = typeof result === 'string' && result.includes(',') ? result.split(',')[1] : result;
+          resolve({
+            filename: file.name,
+            content_b64: b64Data,
+            mime_type: file.type || undefined
+          });
+        };
+        reader.onerror = error => reject(error);
+        reader.readAsDataURL(file);
+      });
+    });
+
+    try {
+      const payloadFiles = await Promise.all(readPromises);
+      const res = await fetch(`${apiBase}/api/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: payloadFiles })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Errore caricamento file (${res.status})`);
+      }
+
+      const data = await res.json();
+      if (data.files && data.files.length > 0) {
+        setAttachments(prev => [...prev, ...data.files]);
+      }
+    } catch (err) {
+      alert(`Impossibile caricare i file: ${err.message}`);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveAttachment = (file_id) => {
+    setAttachments(prev => prev.filter(a => a.file_id !== file_id));
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesSelected(e.dataTransfer.files);
+    }
   };
 
   // Send message and execute full multi-turn completion
   const handleSend = async (customInput) => {
     const textToSend = typeof customInput === 'string' ? customInput : input;
-    if (!textToSend.trim() || isGenerating) return;
+    if ((!textToSend.trim() && attachments.length === 0) || isGenerating) return;
+
     if (!isServerRunning) {
       alert("Il server di inferenza non è in esecuzione! Avvialo dal Control Panel.");
       return;
     }
 
-    const userMsg = { role: 'user', content: textToSend.trim(), timestamp: Date.now() };
+    let promptContent = textToSend.trim();
+    if (attachments.length > 0) {
+      const fileContexts = attachments.map(att => att.extracted_text).filter(Boolean).join('\n\n');
+      promptContent = promptContent ? `${promptContent}\n\n${fileContexts}` : fileContexts;
+      promptContent = promptContent.trim();
+    }
+
+    const userMsg = {
+      role: 'user',
+      content: promptContent,
+      displayText: textToSend.trim() || undefined,
+      attachments: [...attachments],
+      timestamp: Date.now()
+    };
+
     const updatedMessagesWithUser = [...messages, userMsg];
     
     // Manage conversation instance
@@ -317,16 +448,15 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     let currentTitle = 'Nuova conversazione';
 
     if (!currentConvId) {
-      currentTitle = generateTitleFromMessage(userMsg.content);
+      currentTitle = generateTitleFromMessage(userMsg.displayText || userMsg.content);
       const newConv = createConversation(currentTitle, updatedMessagesWithUser, systemPrompt);
       currentConvId = newConv.id;
       setActiveConvIdState(currentConvId);
     } else {
       const activeConv = getConversation(currentConvId);
       if (activeConv) {
-        // Auto title if conversation currently has default title or only welcome message
         if (activeConv.title === 'Nuova conversazione' || activeConv.messages.length <= 1) {
-          currentTitle = generateTitleFromMessage(userMsg.content);
+          currentTitle = generateTitleFromMessage(userMsg.displayText || userMsg.content);
         } else {
           currentTitle = activeConv.title;
         }
@@ -335,6 +465,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
     setMessages(updatedMessagesWithUser);
     setInput('');
+    setAttachments([]);
     setIsGenerating(true);
 
     const assistantIndex = updatedMessagesWithUser.length;
@@ -342,7 +473,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     const messagesForState = [...updatedMessagesWithUser, initialAssistantMsg];
     setMessages(messagesForState);
 
-    // Save state to localStorage
     saveConversation({
       id: currentConvId,
       title: currentTitle,
@@ -351,7 +481,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     });
     setConversations(getConversations());
 
-    // Prepare full multi-turn history payload for /v1/chat/completions
     const chatMessagesPayload = [];
     if (systemPrompt.trim()) {
       chatMessagesPayload.push({ role: 'system', content: systemPrompt.trim() });
@@ -410,9 +539,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed || trimmed.startsWith(':')) continue;
-          if (trimmed === 'data: [DONE]') {
-            break;
-          }
+          if (trimmed === 'data: [DONE]') break;
           if (trimmed.startsWith('data: ')) {
             const jsonStr = trimmed.slice(6);
             try {
@@ -464,7 +591,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       setIsGenerating(false);
       abortControllerRef.current = null;
 
-      // Final save to localStorage once turn completes
       setMessages(latestMessages => {
         saveConversation({
           id: currentConvId,
@@ -494,8 +620,39 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const activeConvObj = conversations.find(c => c.id === activeConvId);
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 64px)', width: '100%', overflow: 'hidden' }}>
-      
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{ display: 'flex', height: 'calc(100vh - 64px)', width: '100%', overflow: 'hidden', position: 'relative' }}
+    >
+      {/* Drag overlay */}
+      {isDragging && (
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.88)',
+          backdropFilter: 'blur(8px)',
+          zIndex: 500,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          border: '3px dashed var(--accent-purple)',
+          margin: '0.75rem',
+          borderRadius: '16px',
+          pointerEvents: 'none'
+        }}>
+          <Upload size={54} color="var(--accent-purple)" className="pulse-icon" />
+          <h3 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'white', marginTop: '1rem' }}>
+            Rilascia i file qui per caricarli
+          </h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.3rem' }}>
+            Supporta immagini, audio, documenti (PDF, TXT, MD, CSV, Codice) e file generici
+          </p>
+        </div>
+      )}
+
       {/* Conversation History Sidebar */}
       <SidebarHistory
         conversations={conversations}
@@ -517,7 +674,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           padding: '0.85rem 1.5rem',
           borderBottom: '1px solid var(--border-color)',
           display: 'flex',
-          justify: 'space-between',
+          justifyContent: 'space-between',
           alignItems: 'center',
           background: 'rgba(19, 27, 46, 0.5)'
         }}>
@@ -531,7 +688,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               textOverflow: 'ellipsis',
               maxWidth: '300px'
             }}>
-              {activeConvObj?.title || 'Playground Realtime'}
+              {activeConvObj?.title || 'Playground Multimodale'}
             </span>
             <span className="badge badge-success" style={{ textTransform: 'none', flexShrink: 0 }}>
               <Cpu size={14} /> {activeModel}
@@ -585,11 +742,11 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
               <div>
                 <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'white', marginBottom: '0.5rem' }}>
-                  Alveare NPU Chat Playground
+                  Alveare NPU Multimodal Chat Playground
                 </h2>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
                   Chatta direttamente in locale con i modelli LLM accelerati da hardware AMD Ryzen AI (XDNA2 NPU).
-                  I turni della conversazione vengono memorizzati con riutilizzo della cache KV.
+                  Supporta caricamento di file multimodali (immagini, audio, documenti) e storicizzazione delle conversazioni.
                 </p>
               </div>
 
@@ -636,6 +793,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
             messages.map((msg, idx) => {
               const isUser = msg.role === 'user';
               const { thinking, text } = parseThinking(msg.content);
+              const displayMessageText = msg.displayText !== undefined ? msg.displayText : text;
               const isCurrentlyGeneratingThis = isGenerating && idx === messages.length - 1;
               const isExpanded = !!expandedThinking[idx];
 
@@ -672,6 +830,66 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                     position: 'relative',
                     minWidth: '240px'
                   }}>
+                    {/* Attachments rendering */}
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.65rem', marginBottom: '0.75rem' }}>
+                        {msg.attachments.map((att, aIdx) => {
+                          const docId = `msg-${idx}-att-${aIdx}`;
+                          return (
+                            <div key={aIdx} style={{
+                              background: 'rgba(15, 23, 42, 0.85)',
+                              border: '1px solid rgba(139, 92, 246, 0.3)',
+                              borderRadius: '10px',
+                              padding: '0.5rem 0.75rem',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.4rem',
+                              maxWidth: '320px'
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                {att.file_type === 'image' && <ImageIcon size={16} color="#f472b6" />}
+                                {att.file_type === 'audio' && <Music size={16} color="#06b6d4" />}
+                                {att.file_type === 'document' && <FileText size={16} color="#a78bfa" />}
+                                {att.file_type === 'other' && <File size={16} color="#94a3b8" />}
+                                <span style={{ fontSize: '0.83rem', fontWeight: 600, color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {att.filename}
+                                </span>
+                                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: 'auto', flexShrink: 0 }}>
+                                  {att.size_formatted}
+                                </span>
+                              </div>
+                              {att.file_type === 'image' && att.preview_url && (
+                                <img
+                                  src={att.preview_url}
+                                  alt={att.filename}
+                                  style={{ width: '100%', height: 'auto', borderRadius: '6px', cursor: 'pointer', maxHeight: '180px', objectFit: 'cover' }}
+                                  onClick={() => setPreviewImageModal(att.preview_url)}
+                                />
+                              )}
+                              {att.file_type === 'audio' && att.preview_url && (
+                                <audio controls src={att.preview_url} style={{ width: '100%', height: '32px' }} />
+                              )}
+                              {att.file_type === 'document' && att.extracted_text && (
+                                <div>
+                                  <button
+                                    onClick={() => toggleDocExpand(docId)}
+                                    style={{ background: 'none', border: 'none', color: '#c084fc', fontSize: '0.74rem', cursor: 'pointer', padding: 0 }}
+                                  >
+                                    {expandedDocs[docId] ? 'Nascondi testo estratto' : 'Mostra testo estratto'}
+                                  </button>
+                                  {expandedDocs[docId] && (
+                                    <pre style={{ fontSize: '0.75rem', overflow: 'auto', maxHeight: '120px', whiteSpace: 'pre-wrap', background: 'rgba(0,0,0,0.3)', padding: '0.4rem', borderRadius: '4px', marginTop: '0.3rem' }}>
+                                      {att.extracted_text}
+                                    </pre>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     {/* Thinking Section */}
                     {!isUser && thinking && (
                       isCurrentlyGeneratingThis ? (
@@ -738,7 +956,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
                     {/* Main Response / Text Content */}
                     {isUser ? (
-                      <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
+                      <div style={{ whiteSpace: 'pre-wrap' }}>{displayMessageText}</div>
                     ) : text ? (
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
@@ -782,9 +1000,114 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Controls */}
-        <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid var(--border-color)', background: 'rgba(13, 19, 33, 0.7)' }}>
+        {/* Bottom Input Area */}
+        <div style={{
+          padding: '1rem 1.5rem',
+          borderTop: '1px solid var(--border-color)',
+          background: 'rgba(13, 19, 33, 0.7)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.75rem'
+        }}>
+          {/* Attachment chips */}
+          {attachments.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              {attachments.map(att => (
+                <div
+                  key={att.file_id}
+                  style={{
+                    background: 'rgba(30, 41, 59, 0.9)',
+                    border: '1px solid rgba(139, 92, 246, 0.4)',
+                    padding: '0.35rem 0.65rem',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    fontSize: '0.82rem',
+                    color: 'white'
+                  }}
+                >
+                  {att.file_type === 'image' && <ImageIcon size={14} color="#f472b6" />}
+                  {att.file_type === 'audio' && <Music size={14} color="#06b6d4" />}
+                  {att.file_type === 'document' && <FileText size={14} color="#a78bfa" />}
+                  {att.file_type === 'other' && <File size={14} color="#94a3b8" />}
+                  <span style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {att.filename}
+                  </span>
+                  <button
+                    onClick={() => handleRemoveAttachment(att.file_id)}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0 2px', display: 'flex', alignItems: 'center' }}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Hidden File Input */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept={acceptFilter}
+            multiple
+            onChange={e => handleFilesSelected(e.target.files)}
+            style={{ display: 'none' }}
+          />
+
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            {/* Upload Button + Dropdown Menu */}
+            <div style={{ position: 'relative' }} ref={uploadMenuRef}>
+              <button
+                className="btn-secondary"
+                onClick={() => setShowUploadMenu(!showUploadMenu)}
+                disabled={!isServerRunning || isGenerating || isUploading}
+                title="Allega file"
+                style={{ height: '52px', padding: '0 0.9rem' }}
+              >
+                <Paperclip size={18} />
+              </button>
+              {showUploadMenu && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: '60px',
+                  left: 0,
+                  background: '#131b2e',
+                  border: '1px solid var(--border-color)',
+                  padding: '0.5rem',
+                  borderRadius: '12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.35rem',
+                  boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+                  zIndex: 200,
+                  minWidth: '150px'
+                }}>
+                  <button
+                    onClick={() => handleOpenUpload('image')}
+                    style={{ background: 'none', border: 'none', color: 'white', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
+                    className="menu-item-hover"
+                  >
+                    <ImageIcon size={16} color="#f472b6" /> Immagine
+                  </button>
+                  <button
+                    onClick={() => handleOpenUpload('audio')}
+                    style={{ background: 'none', border: 'none', color: 'white', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
+                    className="menu-item-hover"
+                  >
+                    <Music size={16} color="#06b6d4" /> Audio
+                  </button>
+                  <button
+                    onClick={() => handleOpenUpload('document')}
+                    style={{ background: 'none', border: 'none', color: 'white', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
+                    className="menu-item-hover"
+                  >
+                    <FileText size={16} color="#a78bfa" /> Documento
+                  </button>
+                </div>
+              )}
+            </div>
+
             <textarea
               value={input}
               onChange={e => setInput(e.target.value)}
@@ -794,7 +1117,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                   handleSend();
                 }
               }}
-              placeholder={isServerRunning ? "Invia un messaggio all'NPU... (Invio per inviare, Shift+Invio per nuova riga)" : "Avvia prima il server per chattare!"}
+              placeholder={isServerRunning ? "Invia un messaggio o trascina file qui... (Invio per inviare, Shift+Invio per nuova riga)" : "Avvia prima il server per chattare!"}
               disabled={!isServerRunning || isGenerating}
               style={{
                 flex: 1,
@@ -815,13 +1138,42 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 <StopCircle size={20} /> Ferma
               </button>
             ) : (
-              <button className="btn-primary" onClick={() => handleSend()} disabled={!isServerRunning || !input.trim()} style={{ height: '52px' }}>
+              <button
+                className="btn-primary"
+                onClick={() => handleSend()}
+                disabled={!isServerRunning || (!input.trim() && attachments.length === 0)}
+                style={{ height: '52px' }}
+              >
                 <Send size={18} /> Invia
               </button>
             )}
           </div>
         </div>
       </div>
+
+      {/* Image Preview Modal */}
+      {previewImageModal && (
+        <div
+          onClick={() => setPreviewImageModal(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.85)',
+            backdropFilter: 'blur(5px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '2rem'
+          }}
+        >
+          <img
+            src={previewImageModal}
+            alt="Anteprima"
+            style={{ maxWidth: '90%', maxHeight: '90%', borderRadius: '12px', boxShadow: '0 0 40px rgba(0,0,0,0.8)' }}
+          />
+        </div>
+      )}
 
       {/* Settings Drawer */}
       {showSettings && (

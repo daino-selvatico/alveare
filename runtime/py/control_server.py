@@ -7,10 +7,14 @@ import subprocess
 import signal
 import re
 import httpx
+import base64
+import io
+import mimetypes
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +25,122 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT_DIR / ".alveare_config.json"
 
 app = FastAPI(title="Alveare Control & Web UI Backend")
+
+def format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{round(size_bytes / 1024, 1)} KB"
+    else:
+        return f"{round(size_bytes / (1024 * 1024), 1)} MB"
+
+def extract_document_text(data: bytes, filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            text = "\n".join([page.extract_text() or "" for page in reader.pages])
+            if text.strip():
+                return text.strip()
+        except Exception:
+            pass
+        try:
+            import PyPDF2
+            reader = PyPDF2.PdfReader(io.BytesIO(data))
+            text = "\n".join([page.extract_text() or "" for page in reader.pages])
+            if text.strip():
+                return text.strip()
+        except Exception:
+            pass
+        import re
+        matches = re.findall(rb'\((.*?)\)\s*Tj', data)
+        if matches:
+            extracted = " ".join([m.decode('utf-8', errors='ignore') for m in matches if len(m) > 1])
+            if len(extracted.strip()) > 20:
+                return extracted.strip()
+
+    try:
+        return data.decode("utf-8", errors="replace")
+    except Exception:
+        try:
+            return data.decode("latin-1", errors="replace")
+        except Exception:
+            return f"[File binario non leggibile come testo: {filename}]"
+
+def parse_file_upload(file_name: str, content: bytes, mime_type: Optional[str] = None) -> Dict[str, Any]:
+    if not mime_type or mime_type == "application/octet-stream":
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+    ext = Path(file_name).suffix.lower()
+    size_bytes = len(content)
+    size_str = format_size(size_bytes)
+    file_id = f"file-{uuid.uuid4().hex[:8]}"
+
+    file_type = "other"
+    if mime_type.startswith("image/") or ext in [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]:
+        file_type = "image"
+    elif mime_type.startswith("audio/") or ext in [".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac"]:
+        file_type = "audio"
+    elif mime_type.startswith("text/") or mime_type in ["application/pdf", "application/json", "application/xml"] or ext in [
+        ".pdf", ".txt", ".md", ".csv", ".json", ".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css",
+        ".cpp", ".h", ".c", ".rs", ".go", ".java", ".yaml", ".yml", ".sh", ".log", ".rst", ".tex", ".ini", ".env"
+    ]:
+        file_type = "document"
+
+    preview_url = ""
+    extracted_text = ""
+    metadata = {}
+
+    if file_type == "image":
+        b64_str = base64.b64encode(content).decode("utf-8")
+        preview_url = f"data:{mime_type};base64,{b64_str}"
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(content))
+            metadata["width"] = img.width
+            metadata["height"] = img.height
+            metadata["format"] = img.format
+            extracted_text = f"[Allegato Immagine: '{file_name}' ({img.width}x{img.height} px, {size_str})]"
+        except Exception:
+            extracted_text = f"[Allegato Immagine: '{file_name}' ({size_str})]"
+
+    elif file_type == "audio":
+        b64_str = base64.b64encode(content).decode("utf-8")
+        preview_url = f"data:{mime_type};base64,{b64_str}"
+        try:
+            import wave
+            with wave.open(io.BytesIO(content), "rb") as wf:
+                duration = round(wf.getnframes() / float(wf.getframerate()), 1)
+                metadata["duration_seconds"] = duration
+                metadata["channels"] = wf.getnchannels()
+                extracted_text = f"[Allegato Audio: '{file_name}' (Durata: {duration}s, {size_str})]"
+        except Exception:
+            extracted_text = f"[Allegato Audio: '{file_name}' ({size_str})]"
+
+    elif file_type == "document":
+        full_text = extract_document_text(content, file_name)
+        truncated_text = full_text[:12000]
+        if len(full_text) > 12000:
+            truncated_text += f"\n... [Testo troncato a 12.000 car. su {len(full_text)} totali]"
+        
+        extracted_text = f"[Allegato Documento '{file_name}' ({size_str})]:\n```\n{truncated_text}\n```"
+        metadata["character_count"] = len(full_text)
+
+    else:
+        extracted_text = f"[Allegato File: '{file_name}' ({size_str}, Tipo: {mime_type})]"
+
+    return {
+        "file_id": file_id,
+        "filename": file_name,
+        "file_type": file_type,
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+        "size_formatted": size_str,
+        "extracted_text": extracted_text,
+        "preview_url": preview_url,
+        "metadata": metadata
+    }
 
 # Enable CORS for local dev (e.g. Vite on port 5173)
 app.add_middleware(
@@ -616,6 +736,26 @@ async def proxy_chat_completions(request: Request):
                 return JSONResponse(status_code=resp.status_code, content=resp.json())
             except Exception as e:
                 raise HTTPException(status_code=502, detail=f"Error connecting to inference server: {e}")
+
+class FileUploadItem(BaseModel):
+    filename: str
+    content_b64: str
+    mime_type: Optional[str] = None
+
+class FileUploadRequest(BaseModel):
+    files: List[FileUploadItem]
+
+@app.post("/api/upload")
+async def upload_files(req: FileUploadRequest):
+    results = []
+    for item in req.files:
+        try:
+            content = base64.b64decode(item.content_b64)
+            parsed = parse_file_upload(item.filename, content, item.mime_type)
+            results.append(parsed)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Errore decodifica file '{item.filename}': {e}")
+    return {"files": results}
 
 @app.post("/api/control/start")
 async def control_start(req: StartRequest):
