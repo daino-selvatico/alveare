@@ -114,6 +114,19 @@ void ApiServer::start(int port) {
             if (j_req.contains("max_tokens") && j_req["max_tokens"].is_number_integer()) {
                 params.max_tokens = j_req["max_tokens"].get<int>();
             }
+            // Sampling controls (OpenAI-style). temperature<=0 keeps greedy decoding.
+            if (j_req.contains("temperature") && j_req["temperature"].is_number()) {
+                params.temperature = j_req["temperature"].get<float>();
+            }
+            if (j_req.contains("top_p") && j_req["top_p"].is_number()) {
+                params.top_p = j_req["top_p"].get<float>();
+            }
+            if (j_req.contains("top_k") && j_req["top_k"].is_number_integer()) {
+                params.top_k = j_req["top_k"].get<int>();
+            }
+            if (j_req.contains("seed") && j_req["seed"].is_number_integer()) {
+                params.seed = static_cast<unsigned>(j_req["seed"].get<long>());
+            }
 
             std::string full_response = "";
 

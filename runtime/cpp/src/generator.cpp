@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
+#include <random>
+#include <vector>
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -21,25 +23,80 @@ void Generator::reset_cache() {
 }
 
 int Generator::sample(const std::vector<float>& logits, const GenerationParams& params) {
-    // Greedy search for now
-    int best_token = -1;
-    float best_val = -1e9f;
-    for (size_t i = 0; i < logits.size(); ++i) {
-        if (logits[i] > best_val) {
-            best_val = logits[i];
-            best_token = static_cast<int>(i);
-        }
-    }
+    const int n = static_cast<int>(logits.size());
+    if (n == 0) return -1;
+
     if (std::getenv("ALVEARE_DUMP_TOPK")) {
-        std::vector<int> idx(logits.size());
-        for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int)i;
+        std::vector<int> idx(n);
+        for (int i = 0; i < n; ++i) idx[i] = i;
         std::partial_sort(idx.begin(), idx.begin() + 6, idx.end(),
                           [&](int a, int b){ return logits[a] > logits[b]; });
         std::cerr << "[topk]";
         for (int j = 0; j < 6; ++j) std::cerr << " " << idx[j] << ":" << logits[idx[j]];
         std::cerr << "\n";
     }
-    return best_token;
+
+    // Greedy (deterministic, bit-exact) when temperature ~ 0 — the default path,
+    // keeps the 12B/e4b/gemma3 outputs reproducible.
+    if (params.temperature <= 1e-6f) {
+        int best = 0;
+        float bv = logits[0];
+        for (int i = 1; i < n; ++i) if (logits[i] > bv) { bv = logits[i]; best = i; }
+        return best;
+    }
+
+    // --- temperature / top-k / top-p (nucleus) sampling ---
+    // rng_ is seeded once per request in generate() (not here), so successive
+    // tokens draw independently while staying reproducible for a fixed seed.
+    const float inv_t = 1.0f / params.temperature;
+
+    // Candidate set: top-k highest logits when top_k>0 or top_p<1 (needs ranking);
+    // otherwise the whole vocab (pure temperature sampling). Cap the ranked set at
+    // 2048 when only top_p is set — beyond that the tail prob is negligible.
+    const bool need_rank = (params.top_k > 0) || (params.top_p < 1.0f);
+    std::vector<int> cand(n);
+    for (int i = 0; i < n; ++i) cand[i] = i;
+    if (need_rank) {
+        int k = params.top_k > 0 ? std::min(params.top_k, n) : std::min(n, 2048);
+        std::partial_sort(cand.begin(), cand.begin() + k, cand.end(),
+                          [&](int a, int b){ return logits[a] > logits[b]; });
+        cand.resize(k);
+    }
+
+    // Temperature-scaled softmax over the candidates (numerically stable).
+    float maxl = logits[cand[0]];
+    for (int idx : cand) maxl = std::max(maxl, logits[idx]);
+    std::vector<float> probs(cand.size());
+    float sum = 0.0f;
+    for (size_t i = 0; i < cand.size(); ++i) {
+        float p = std::exp((logits[cand[i]] - maxl) * inv_t);
+        probs[i] = p;
+        sum += p;
+    }
+    for (float& p : probs) p /= sum;
+
+    // Nucleus (top-p): cand is sorted desc when need_rank, so keep the smallest
+    // prefix whose cumulative probability reaches top_p.
+    size_t keep = cand.size();
+    if (params.top_p < 1.0f) {
+        float cum = 0.0f;
+        for (size_t i = 0; i < probs.size(); ++i) {
+            cum += probs[i];
+            if (cum >= params.top_p) { keep = i + 1; break; }
+        }
+    }
+
+    // Sample from the kept prefix (renormalized) via inverse CDF.
+    float norm = 0.0f;
+    for (size_t i = 0; i < keep; ++i) norm += probs[i];
+    std::uniform_real_distribution<float> uni(0.0f, 1.0f);
+    float r = uni(rng_) * norm;
+    float cum = 0.0f;
+    for (size_t i = 0; i < keep; ++i) {
+        cum += probs[i];
+        if (r <= cum) return cand[i];
+    }
+    return cand[keep - 1];
 }
 
 void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
@@ -120,6 +177,9 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
 
 void Generator::generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token) {
     std::lock_guard<std::mutex> gen_lock(gen_mutex_);
+    // Reseed once per request for reproducible sampling with a fixed seed; when
+    // seed==0 leave rng_ advancing so repeated requests stay nondeterministic.
+    if (params.seed != 0) rng_.seed(params.seed);
     using clock = std::chrono::steady_clock;
     static std::atomic<int> req_counter{0};
     int req = ++req_counter;
