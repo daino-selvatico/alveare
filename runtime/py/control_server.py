@@ -11,6 +11,8 @@ import base64
 import io
 import mimetypes
 import uuid
+import shutil
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -343,6 +345,10 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
     if offline:
         cmd.append("--offline")
 
+    stdbuf_bin = shutil.which("stdbuf")
+    if stdbuf_bin:
+        cmd = [stdbuf_bin, "-oL", "-eL"] + cmd
+
     append_log(f"Starting inference server: {' '.join(cmd)}")
     state.status = "starting"
     state.active_model = model
@@ -367,6 +373,7 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
     env = os.environ.copy()
     if offline:
         env["HF_HUB_OFFLINE"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
 
     try:
         state.process = subprocess.Popen(
@@ -380,18 +387,19 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
             start_new_session=True
         )
         state.start_time = time.time()
-        
+        proc_ref = state.process
+
         # Start background log reader
         def log_reader():
-            if not state.process or not state.process.stdout:
+            if not proc_ref or not proc_ref.stdout:
                 return
-            for line in iter(state.process.stdout.readline, ''):
+            for line in iter(proc_ref.stdout.readline, ''):
                 if line:
                     stripped = line.strip()
                     append_log(stripped)
                     parse_server_log_line(stripped)
-            
-            exit_code = state.process.poll() if state.process else None
+
+            exit_code = proc_ref.poll() if proc_ref else None
             if exit_code is not None and exit_code != 0 and exit_code != -signal.SIGTERM and exit_code != -signal.SIGKILL:
                 state.status = "error"
                 if not state.last_error:
@@ -400,9 +408,38 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
                 state.status = "stopped"
             append_log("Inference server process exited.")
 
-        import threading
-        t = threading.Thread(target=log_reader, daemon=True)
-        t.start()
+        t_log = threading.Thread(target=log_reader, daemon=True)
+        t_log.start()
+
+        # Start HTTP health-check worker to detect model readiness independently of stdout line buffering
+        def health_check_worker():
+            check_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+            url_models = f"http://{check_host}:{port}/v1/models"
+            url_root = f"http://{check_host}:{port}/"
+
+            time.sleep(0.5)
+            while state.process is proc_ref and proc_ref.poll() is None and not state.is_loaded and state.status == "starting":
+                try:
+                    with httpx.Client(timeout=1.5) as client:
+                        try:
+                            resp = client.get(url_models)
+                        except Exception:
+                            resp = client.get(url_root)
+
+                        if resp.status_code < 500:
+                            if state.process is proc_ref and not state.is_loaded and state.status == "starting":
+                                state.load_progress = 100.0
+                                state.is_loaded = True
+                                state.load_step = "Modello pronto"
+                                state.status = "running"
+                                append_log("Inference server HTTP health-check succeeded: model ready.")
+                            break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        t_health = threading.Thread(target=health_check_worker, daemon=True)
+        t_health.start()
 
         return True
     except Exception as e:
