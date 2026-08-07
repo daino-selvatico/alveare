@@ -44,6 +44,7 @@ import {
   DEFAULT_SETTINGS
 } from '../utils/chatStorage';
 import { useTranslation } from '../i18n/I18nContext';
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 
 
 function parseThinking(content) {
@@ -167,7 +168,9 @@ export default function ChatPlayground({
   isServerRunning,
   models = [],
   modelsLoading = false,
-  onNavigateToControl
+  onNavigateToControl,
+  onNavigateToChat,
+  onOpenShortcutsHelp
 }) {
   const { t } = useTranslation();
   const [conversations, setConversations] = useState([]);
@@ -200,24 +203,27 @@ export default function ChatPlayground({
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
 
-  // Keyboard shortcut listener: Esc to stop generation or close modals
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        if (isGenerating) {
-          handleStop();
-        } else if (previewImageModal) {
-          setPreviewImageModal(null);
-        } else if (showSettings) {
-          setShowSettings(false);
-        } else if (showUploadMenu) {
-          setShowUploadMenu(false);
-        }
+  // Global app keyboard shortcuts: Esc, Ctrl+K, Ctrl+/, ?
+  useKeyboardShortcuts({
+    onNewConversation: () => {
+      onNavigateToChat?.();
+      handleNewConversation();
+    },
+    onToggleShortcutsHelp: () => {
+      onOpenShortcutsHelp?.();
+    },
+    onEscape: () => {
+      if (isGenerating) {
+        handleStop();
+      } else if (previewImageModal) {
+        setPreviewImageModal(null);
+      } else if (showSettings) {
+        setShowSettings(false);
+      } else if (showUploadMenu) {
+        setShowUploadMenu(false);
       }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isGenerating, previewImageModal, showSettings, showUploadMenu]);
+    }
+  });
 
   // Helper to load settings from conversation or global default
   const applyConvSettings = (conv) => {
@@ -1297,6 +1303,7 @@ export default function ChatPlayground({
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey) {
+                  if (e.nativeEvent.isComposing) return;
                   e.preventDefault();
                   handleSend();
                 }
@@ -1351,7 +1358,31 @@ export default function ChatPlayground({
           {/* Keyboard shortcut legend footer */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.4rem', fontSize: '0.72rem', color: 'var(--text-subtle)' }}>
             <span>{t('chat.shortcutNoticeDrag')}</span>
-            <span>{t('chat.shortcutNoticeKeys')}</span>
+            <button
+              onClick={onOpenShortcutsHelp}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                fontSize: '0.72rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                padding: 0
+              }}
+              title={t('shortcuts.buttonTitle')}
+            >
+              <span>{t('chat.shortcutNoticeKeys')}</span>
+              <kbd style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '4px',
+                padding: '0.1rem 0.35rem',
+                fontSize: '0.68rem',
+                fontFamily: 'var(--font-mono)'
+              }}>Ctrl+/</kbd>
+            </button>
           </div>
         </div>
       </div>

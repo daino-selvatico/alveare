@@ -318,5 +318,20 @@
     "serverOffline": "Unable to connect to control server for live metrics.",
     "refresh": "Refresh Metrics",
     "pollingNotice": "Live polling active (2s)"
+  },
+  "shortcuts": {
+    "title": "Keyboard Shortcuts",
+    "buttonTitle": "Keyboard shortcuts (Ctrl+/)",
+    "sendMsg": "Send message",
+    "sendMsgScope": "In chat input",
+    "newLine": "New line",
+    "newLineScope": "In chat input",
+    "stopGen": "Stop generation / Close overlay",
+    "stopGenScope": "While generating / Esc to close modals",
+    "newChat": "New conversation",
+    "newChatScope": "App-wide",
+    "toggleHelp": "Show shortcuts help",
+    "toggleHelpScope": "App-wide",
+    "close": "Close"
   }
 }

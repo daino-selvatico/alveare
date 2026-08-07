@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw, BarChart2 } from 'lucide-react';
+import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw, BarChart2, Keyboard } from 'lucide-react';
 import OnboardingWizard from './components/OnboardingWizard';
 import ChatPlayground from './components/ChatPlayground';
 import ServerControl from './components/ServerControl';
@@ -7,6 +7,7 @@ import LogsViewer from './components/LogsViewer';
 import BenchmarksView from './components/BenchmarksView';
 import ErrorBoundary from './components/ErrorBoundary';
 import LanguageSwitcher from './components/LanguageSwitcher';
+import KeyboardShortcutsModal from './components/KeyboardShortcutsModal';
 import { useTranslation } from './i18n/I18nContext';
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [showWizard, setShowWizard] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -288,6 +290,16 @@ export default function App() {
           >
             <Settings size={14} /> {t('nav.wizard')}
           </button>
+
+          <button
+            className="btn-secondary"
+            style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+            onClick={() => setShowShortcutsModal(true)}
+            title={t('shortcuts.buttonTitle')}
+            aria-label={t('shortcuts.buttonTitle')}
+          >
+            <Keyboard size={14} />
+          </button>
         </div>
 
       </nav>
@@ -343,6 +355,8 @@ export default function App() {
               models={models}
               modelsLoading={modelsLoading}
               onNavigateToControl={() => setActiveTab('control')}
+              onNavigateToChat={() => setActiveTab('chat')}
+              onOpenShortcutsHelp={() => setShowShortcutsModal(true)}
             />
           </div>
 
@@ -371,6 +385,11 @@ export default function App() {
           </div>
         </ErrorBoundary>
       </main>
+
+      <KeyboardShortcutsModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+      />
     </div>
   );
 }

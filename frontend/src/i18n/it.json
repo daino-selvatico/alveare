@@ -318,5 +318,20 @@
     "serverOffline": "Impossibile connettersi al server di controllo per le metriche in tempo reale.",
     "refresh": "Aggiorna Metriche",
     "pollingNotice": "Polling attivo (2s)"
+  },
+  "shortcuts": {
+    "title": "Scorciatoie da Tastiera",
+    "buttonTitle": "Scorciatoie da tastiera (Ctrl+/)",
+    "sendMsg": "Invia messaggio",
+    "sendMsgScope": "Nel campo testo chat",
+    "newLine": "Nuova riga",
+    "newLineScope": "Nel campo testo chat",
+    "stopGen": "Ferma generazione / Chiudi finestra",
+    "stopGenScope": "Durante generazione / Esc chiude finestre",
+    "newChat": "Nuova conversazione",
+    "newChatScope": "In tutta l'app",
+    "toggleHelp": "Mostra scorciatoie",
+    "toggleHelpScope": "In tutta l'app",
+    "close": "Chiudi"
   }
 }
