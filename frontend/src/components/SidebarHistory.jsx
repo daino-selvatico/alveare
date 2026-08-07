@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Plus,
   MessageSquare,
@@ -10,9 +10,16 @@ import {
   PanelLeftClose,
   PanelLeft,
   Clock,
-  Trash
+  Trash,
+  Download,
+  Upload
 } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
+import {
+  exportConversationsToFile,
+  validateConversationsJson,
+  importAndMergeConversations
+} from '../utils/chatStorage';
 
 function formatDateLabel(timestamp, t) {
   if (!timestamp) return '';
@@ -41,6 +48,7 @@ export default function SidebarHistory({
   onRenameConversation,
   onDeleteConversation,
   onClearAllConversations,
+  onImportConversations,
   isCollapsed = false,
   onToggleCollapse
 }) {
@@ -49,6 +57,9 @@ export default function SidebarHistory({
   const [editingTitle, setEditingTitle] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingId, setDeletingId] = useState(null);
+  const [importError, setImportError] = useState(null);
+  const [importSuccess, setImportSuccess] = useState(null);
+  const fileInputRef = useRef(null);
 
   const startRename = (conv, e) => {
     e.stopPropagation();
@@ -80,6 +91,68 @@ export default function SidebarHistory({
     e.stopPropagation();
     onDeleteConversation(id);
     setDeletingId(null);
+  };
+
+  const handleExportAll = () => {
+    exportConversationsToFile(conversations);
+  };
+
+  const handleExportSingle = (conv, e) => {
+    e.stopPropagation();
+    exportConversationsToFile(conv);
+  };
+
+  const handleTriggerImport = () => {
+    setImportError(null);
+    setImportSuccess(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportError(null);
+    setImportSuccess(null);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target.result;
+        const parsed = JSON.parse(text);
+        const validation = validateConversationsJson(parsed);
+
+        if (!validation.valid) {
+          const key = validation.error || 'importErrorInvalid';
+          setImportError(t(`sidebar.${key}`));
+          return;
+        }
+
+        const merged = importAndMergeConversations(validation.conversations);
+        if (onImportConversations) {
+          onImportConversations(merged);
+        }
+
+        const count = validation.conversations.length;
+        setImportSuccess(t('sidebar.importSuccess', { count }));
+      } catch {
+        setImportError(t('sidebar.importErrorSyntax'));
+      } finally {
+        if (e.target) {
+          e.target.value = '';
+        }
+      }
+    };
+
+    reader.onerror = () => {
+      setImportError(t('sidebar.importErrorSyntax'));
+      if (e.target) e.target.value = '';
+    };
+
+    reader.readAsText(file);
   };
 
   const filteredConversations = conversations.filter(conv => {
@@ -415,6 +488,22 @@ export default function SidebarHistory({
                     ) : (
                       <>
                         <button
+                          onClick={e => handleExportSingle(conv, e)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            padding: '0.25rem',
+                            borderRadius: '4px',
+                            transition: 'color 0.2s ease'
+                          }}
+                          title={t('sidebar.exportSelected')}
+                        >
+                          <Download size={13} />
+                        </button>
+
+                        <button
                           onClick={e => startRename(conv, e)}
                           style={{
                             background: 'none',
@@ -455,38 +544,129 @@ export default function SidebarHistory({
         )}
       </div>
 
-      {/* Footer / Clear All option */}
-      {conversations.length > 0 && (
-        <div style={{
-          padding: '0.75rem 1rem',
-          borderTop: '1px solid var(--border-color)',
-          display: 'flex',
-          justify: 'space-between',
-          alignItems: 'center'
-        }}>
+      {/* Footer / Import & Export & Clear All options */}
+      <div style={{
+        padding: '0.75rem 1rem',
+        borderTop: '1px solid var(--border-color)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.5rem'
+      }}>
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileChange}
+          accept=".json,application/json"
+          style={{ display: 'none' }}
+        />
+
+        <div style={{ display: 'flex', gap: '0.5rem', width: '100%' }}>
           <button
-            onClick={() => {
-              if (window.confirm(t('sidebar.deleteConfirm'))) {
-                onClearAllConversations();
-              }
-            }}
+            onClick={handleExportAll}
+            disabled={conversations.length === 0}
+            className="btn-secondary"
             style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-muted)',
-              fontSize: '0.76rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
+              flex: 1,
+              padding: '0.4rem 0.5rem',
+              fontSize: '0.78rem',
+              justifyContent: 'center',
               gap: '0.35rem',
-              transition: 'color 0.2s ease'
+              opacity: conversations.length === 0 ? 0.5 : 1,
+              cursor: conversations.length === 0 ? 'not-allowed' : 'pointer'
             }}
-            title={t('sidebar.clearHistoryTitle')}
+            title={t('sidebar.exportTitle')}
           >
-            <Trash size={13} /> {t('sidebar.clearHistory')}
+            <Download size={14} /> {t('sidebar.export')}
+          </button>
+
+          <button
+            onClick={handleTriggerImport}
+            className="btn-secondary"
+            style={{
+              flex: 1,
+              padding: '0.4rem 0.5rem',
+              fontSize: '0.78rem',
+              justifyContent: 'center',
+              gap: '0.35rem'
+            }}
+            title={t('sidebar.importTitle')}
+          >
+            <Upload size={14} /> {t('sidebar.import')}
           </button>
         </div>
-      )}
+
+        {importError && (
+          <div style={{
+            fontSize: '0.75rem',
+            color: '#f87171',
+            background: 'rgba(239, 68, 68, 0.15)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            borderRadius: '6px',
+            padding: '0.4rem 0.6rem',
+            display: 'flex',
+            alignItems: 'center',
+            justify: 'space-between',
+            gap: '0.3rem'
+          }}>
+            <span>{importError}</span>
+            <button
+              onClick={() => setImportError(null)}
+              style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: 0 }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
+        {importSuccess && (
+          <div style={{
+            fontSize: '0.75rem',
+            color: '#4ade80',
+            background: 'rgba(74, 222, 128, 0.15)',
+            border: '1px solid rgba(74, 222, 128, 0.3)',
+            borderRadius: '6px',
+            padding: '0.4rem 0.6rem',
+            display: 'flex',
+            alignItems: 'center',
+            justify: 'space-between',
+            gap: '0.3rem'
+          }}>
+            <span>{importSuccess}</span>
+            <button
+              onClick={() => setImportSuccess(null)}
+              style={{ background: 'none', border: 'none', color: '#4ade80', cursor: 'pointer', padding: 0 }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
+        {conversations.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.2rem' }}>
+            <button
+              onClick={() => {
+                if (window.confirm(t('sidebar.deleteConfirm'))) {
+                  onClearAllConversations();
+                }
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-muted)',
+                fontSize: '0.76rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                transition: 'color 0.2s ease'
+              }}
+              title={t('sidebar.clearHistoryTitle')}
+            >
+              <Trash size={13} /> {t('sidebar.clearHistory')}
+            </button>
+          </div>
+        )}
+      </div>
     </aside>
   );
 }

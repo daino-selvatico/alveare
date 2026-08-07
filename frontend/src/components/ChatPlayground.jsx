@@ -392,6 +392,17 @@ export default function ChatPlayground({
     setGenerationError(null);
   };
 
+  const handleImportConversations = (updatedList) => {
+    setConversations(updatedList);
+    if (updatedList.length > 0 && !activeConvId) {
+      const first = updatedList[0];
+      setActiveConvIdState(first.id);
+      setActiveConversationId(first.id);
+      setMessages(first.messages || []);
+      applyConvSettings(first);
+    }
+  };
+
   const handleOpenUpload = (filterType) => {
     let accept = '*/*';
     if (filterType === 'image') accept = 'image/*';
@@ -746,6 +757,7 @@ export default function ChatPlayground({
         onRenameConversation={handleRenameConversation}
         onDeleteConversation={handleDeleteConversation}
         onClearAllConversations={handleClearAllConversations}
+        onImportConversations={handleImportConversations}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />

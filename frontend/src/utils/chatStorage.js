@@ -232,3 +232,133 @@ export function setActiveConversationId(id) {
     console.error('Failed to set active conversation ID:', e);
   }
 }
+
+/**
+ * Validate imported JSON data for conversations.
+ */
+export function validateConversationsJson(data) {
+  if (!data || typeof data !== 'object') {
+    return { valid: false, error: 'importErrorInvalid' };
+  }
+
+  let list = [];
+  if (Array.isArray(data)) {
+    list = data;
+  } else if (Array.isArray(data.conversations)) {
+    list = data.conversations;
+  } else if (data.messages && Array.isArray(data.messages)) {
+    list = [data];
+  } else {
+    return { valid: false, error: 'importErrorInvalid' };
+  }
+
+  if (list.length === 0) {
+    return { valid: false, error: 'importErrorInvalid' };
+  }
+
+  const validConvs = [];
+  for (const item of list) {
+    if (item && typeof item === 'object' && Array.isArray(item.messages)) {
+      const validMessages = item.messages.filter(
+        m => m && typeof m === 'object' && typeof m.role === 'string'
+      );
+
+      const conv = {
+        id: item.id && typeof item.id === 'string' ? item.id : `conv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        title: item.title && typeof item.title === 'string' ? item.title : 'Imported conversation',
+        messages: validMessages,
+        systemPrompt: item.systemPrompt !== undefined ? item.systemPrompt : null,
+        settings: item.settings && typeof item.settings === 'object' ? item.settings : null,
+        createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
+        updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.now()
+      };
+      validConvs.push(conv);
+    }
+  }
+
+  if (validConvs.length === 0) {
+    return { valid: false, error: 'importErrorInvalid' };
+  }
+
+  return { valid: true, conversations: validConvs };
+}
+
+/**
+ * Merge imported conversations into localStorage (avoiding duplicate IDs).
+ */
+export function importAndMergeConversations(importedConvs) {
+  if (!Array.isArray(importedConvs) || importedConvs.length === 0) {
+    return getConversations();
+  }
+
+  const existing = getConversations();
+  const existingIds = new Set(existing.map(c => c.id));
+  const existingTitles = new Set(existing.map(c => c.title));
+
+  const merged = [...existing];
+
+  for (const conv of importedConvs) {
+    let finalId = conv.id;
+    let finalTitle = conv.title;
+
+    if (existingIds.has(finalId)) {
+      finalId = `conv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      if (existingTitles.has(finalTitle)) {
+        finalTitle = `${finalTitle} (Imported)`;
+      }
+    }
+
+    const globalDefaults = getGlobalSettings();
+    const settings = conv.settings
+      ? { ...globalDefaults, ...conv.settings }
+      : {
+          ...globalDefaults,
+          systemPrompt: conv.systemPrompt !== null && conv.systemPrompt !== undefined ? conv.systemPrompt : globalDefaults.systemPrompt
+        };
+
+    const newConv = {
+      ...conv,
+      id: finalId,
+      title: finalTitle,
+      systemPrompt: settings.systemPrompt,
+      settings,
+      updatedAt: conv.updatedAt || Date.now()
+    };
+
+    merged.unshift(newConv);
+    existingIds.add(finalId);
+    existingTitles.add(finalTitle);
+  }
+
+  merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  saveConversations(merged);
+  return merged;
+}
+
+/**
+ * Download JSON file for target conversations (or all conversations).
+ */
+export function exportConversationsToFile(target) {
+  const convs = target
+    ? (Array.isArray(target) ? target : [target])
+    : getConversations();
+
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const dateStr = `${year}${month}${day}`;
+  const filename = `alveare-conversations-${dateStr}.json`;
+
+  const jsonStr = JSON.stringify(convs, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+

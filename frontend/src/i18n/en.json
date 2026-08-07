@@ -41,7 +41,15 @@
     "confirmDelete": "Delete",
     "cancel": "Cancel",
     "save": "Save",
-    "defaultTitle": "New conversation"
+    "defaultTitle": "New conversation",
+    "export": "Export",
+    "exportTitle": "Download conversations as JSON",
+    "exportSelected": "Export conversation",
+    "import": "Import",
+    "importTitle": "Import conversations from JSON file",
+    "importSuccess": "Successfully imported {count} conversation(s).",
+    "importErrorSyntax": "Failed to parse JSON file.",
+    "importErrorInvalid": "Invalid JSON format: no valid conversations found."
   },
   "chat": {
     "playgroundTitle": "Multimodal Playground",

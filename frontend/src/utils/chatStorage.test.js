@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   DEFAULT_SETTINGS,
   getGlobalSettings,
@@ -14,6 +14,9 @@ import {
   clearAllConversations,
   getActiveConversationId,
   setActiveConversationId,
+  validateConversationsJson,
+  importAndMergeConversations,
+  exportConversationsToFile,
 } from './chatStorage';
 
 describe('chatStorage utility', () => {
@@ -167,6 +170,79 @@ describe('chatStorage utility', () => {
 
       expect(getConversations()).toEqual([]);
       expect(getActiveConversationId()).toBeNull();
+    });
+  });
+
+  describe('Import & Export Validation and Merging', () => {
+    it('validates array of conversations correctly', () => {
+      const validData = [
+        { id: 'c1', title: 'Conv 1', messages: [{ role: 'user', content: 'Hi' }] }
+      ];
+      const result = validateConversationsJson(validData);
+      expect(result.valid).toBe(true);
+      expect(result.conversations).toHaveLength(1);
+      expect(result.conversations[0].title).toBe('Conv 1');
+    });
+
+    it('validates object wrapping conversations array', () => {
+      const validData = {
+        conversations: [
+          { id: 'c1', title: 'Wrapped Conv', messages: [{ role: 'user', content: 'Hi' }] }
+        ]
+      };
+      const result = validateConversationsJson(validData);
+      expect(result.valid).toBe(true);
+      expect(result.conversations).toHaveLength(1);
+    });
+
+    it('validates single conversation object', () => {
+      const validData = { id: 'c1', title: 'Single Conv', messages: [{ role: 'user', content: 'Hi' }] };
+      const result = validateConversationsJson(validData);
+      expect(result.valid).toBe(true);
+      expect(result.conversations).toHaveLength(1);
+    });
+
+    it('rejects invalid JSON shapes', () => {
+      expect(validateConversationsJson(null).valid).toBe(false);
+      expect(validateConversationsJson("invalid string").valid).toBe(false);
+      expect(validateConversationsJson({ random: "data" }).valid).toBe(false);
+      expect(validateConversationsJson([]).valid).toBe(false);
+    });
+
+    it('merges imported conversations avoiding duplicate IDs and handling titles', () => {
+      const conv1 = createConversation('Original Chat');
+
+      const imported = [
+        { id: conv1.id, title: 'Original Chat', messages: [{ role: 'user', content: 'Duplicate' }] },
+        { id: 'new_imported_id', title: 'Fresh Chat', messages: [{ role: 'user', content: 'Fresh' }] }
+      ];
+
+      const merged = importAndMergeConversations(imported);
+      expect(merged.length).toBe(3);
+
+      const dup = merged.find(c => c.title === 'Original Chat (Imported)');
+      expect(dup).toBeDefined();
+      expect(dup.id).not.toBe(conv1.id);
+    });
+
+    it('exports conversations to JSON file', () => {
+      const createObjectURLMock = vi.fn().mockReturnValue('blob:url');
+      const revokeObjectURLMock = vi.fn();
+      global.URL.createObjectURL = createObjectURLMock;
+      global.URL.revokeObjectURL = revokeObjectURLMock;
+
+      const appendChildSpy = vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
+      const removeChildSpy = vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+
+      const conv = createConversation('Export Me');
+      exportConversationsToFile([conv]);
+
+      expect(createObjectURLMock).toHaveBeenCalled();
+      expect(appendChildSpy).toHaveBeenCalled();
+      expect(removeChildSpy).toHaveBeenCalled();
+
+      appendChildSpy.mockRestore();
+      removeChildSpy.mockRestore();
     });
   });
 });
