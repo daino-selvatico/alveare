@@ -1,7 +1,37 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Bot, User, Trash2, Sliders, Cpu, Zap, StopCircle, Copy, Check, Brain, ChevronDown, ChevronUp, ToggleLeft, ToggleRight } from 'lucide-react';
+import {
+  Send,
+  Bot,
+  User,
+  Sliders,
+  Cpu,
+  Zap,
+  StopCircle,
+  Copy,
+  Check,
+  Brain,
+  ChevronDown,
+  ChevronUp,
+  ToggleLeft,
+  ToggleRight,
+  Plus,
+  Sparkles
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import SidebarHistory from './SidebarHistory';
+import {
+  getConversations,
+  getConversation,
+  createConversation,
+  saveConversation,
+  deleteConversation,
+  renameConversation,
+  clearAllConversations,
+  getActiveConversationId,
+  setActiveConversationId,
+  generateTitleFromMessage
+} from '../utils/chatStorage';
 
 function parseThinking(content) {
   if (!content) return { thinking: '', text: '' };
@@ -37,7 +67,7 @@ function parseThinking(content) {
   return { thinking: '', text: content };
 }
 
-function CodeBlock({ node, inline, className, children, ...props }) {
+function CodeBlock({ inline, className, children, ...props }) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || '');
   const codeString = String(children).replace(/\n$/, '');
@@ -73,7 +103,7 @@ function CodeBlock({ node, inline, className, children, ...props }) {
     }}>
       <div style={{
         display: 'flex',
-        justify: 'space-between',
+        justifyContent: 'space-between',
         alignItems: 'center',
         padding: '0.4rem 0.85rem',
         background: 'rgba(30, 41, 59, 0.85)',
@@ -117,14 +147,15 @@ function CodeBlock({ node, inline, className, children, ...props }) {
 }
 
 export default function ChatPlayground({ apiBase, activeModel, isServerRunning }) {
-  const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Ciao! Sono il modello LLM in esecuzione sull\'NPU AMD Ryzen AI. Come posso aiutarti oggi?' }
-  ]);
+  const [conversations, setConversations] = useState([]);
+  const [activeConvId, setActiveConvIdState] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [expandedThinking, setExpandedThinking] = useState({});
-  
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
   // Generation parameters
   const [systemPrompt, setSystemPrompt] = useState('Sei un assistente AI esperto ed utile.');
   const [temperature, setTemperature] = useState(0.7);
@@ -141,6 +172,45 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
 
+  // Load conversations on component mount
+  useEffect(() => {
+    const list = getConversations();
+    setConversations(list);
+
+    const activeId = getActiveConversationId();
+    if (activeId) {
+      const conv = list.find(c => c.id === activeId);
+      if (conv) {
+        setActiveConvIdState(conv.id);
+        setMessages(conv.messages || []);
+        if (conv.systemPrompt !== undefined) {
+          setSystemPrompt(conv.systemPrompt);
+        }
+        return;
+      }
+    }
+
+    // If there are existing conversations, select the first one; otherwise start empty
+    if (list.length > 0) {
+      setActiveConvIdState(list[0].id);
+      setMessages(list[0].messages || []);
+      if (list[0].systemPrompt !== undefined) {
+        setSystemPrompt(list[0].systemPrompt);
+      }
+      setActiveConversationId(list[0].id);
+    } else {
+      // Create initial welcome conversation
+      const welcomeConv = createConversation(
+        'Prima conversazione',
+        [{ role: 'assistant', content: "Ciao! Sono il modello LLM in esecuzione sull'NPU AMD Ryzen AI. Come posso aiutarti oggi?" }],
+        'Sei un assistente AI esperto ed utile.'
+      );
+      setConversations([welcomeConv]);
+      setActiveConvIdState(welcomeConv.id);
+      setMessages(welcomeConv.messages);
+    }
+  }, []);
+
   useEffect(() => {
     scrollToBottom();
   }, [messages, isGenerating]);
@@ -153,33 +223,154 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isGenerating) return;
+  // Switch to a selected conversation
+  const handleSelectConversation = (id) => {
+    if (isGenerating) {
+      if (!window.confirm("C'è una generazione in corso. Vuoi interromperla per cambiare conversazione?")) {
+        return;
+      }
+      handleStop();
+    }
+    const conv = getConversation(id);
+    if (conv) {
+      setActiveConvIdState(conv.id);
+      setActiveConversationId(conv.id);
+      setMessages(conv.messages || []);
+      if (conv.systemPrompt !== undefined) {
+        setSystemPrompt(conv.systemPrompt);
+      }
+      setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+      setExpandedThinking({});
+    }
+  };
+
+  // Start a new empty conversation
+  const handleNewConversation = () => {
+    if (isGenerating) {
+      if (!window.confirm("C'è una generazione in corso. Vuoi interromperla per creare una nuova chat?")) {
+        return;
+      }
+      handleStop();
+    }
+    const newConv = createConversation('Nuova conversazione', [], systemPrompt);
+    setConversations(getConversations());
+    setActiveConvIdState(newConv.id);
+    setMessages([]);
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setExpandedThinking({});
+  };
+
+  // Rename a conversation
+  const handleRenameConversation = (id, newTitle) => {
+    renameConversation(id, newTitle);
+    const updatedList = getConversations();
+    setConversations(updatedList);
+  };
+
+  // Delete a conversation
+  const handleDeleteConversation = (id) => {
+    if (isGenerating && activeConvId === id) {
+      handleStop();
+    }
+    deleteConversation(id);
+    const updatedList = getConversations();
+    setConversations(updatedList);
+
+    if (activeConvId === id) {
+      if (updatedList.length > 0) {
+        const nextConv = updatedList[0];
+        setActiveConvIdState(nextConv.id);
+        setActiveConversationId(nextConv.id);
+        setMessages(nextConv.messages || []);
+      } else {
+        setActiveConvIdState(null);
+        setActiveConversationId(null);
+        setMessages([]);
+      }
+    }
+  };
+
+  // Clear all saved conversations
+  const handleClearAllConversations = () => {
+    if (isGenerating) handleStop();
+    clearAllConversations();
+    setConversations([]);
+    setActiveConvIdState(null);
+    setMessages([]);
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+  };
+
+  // Send message and execute full multi-turn completion
+  const handleSend = async (customInput) => {
+    const textToSend = typeof customInput === 'string' ? customInput : input;
+    if (!textToSend.trim() || isGenerating) return;
     if (!isServerRunning) {
       alert("Il server di inferenza non è in esecuzione! Avvialo dal Control Panel.");
       return;
     }
 
-    const userMsg = { role: 'user', content: input.trim() };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    const userMsg = { role: 'user', content: textToSend.trim(), timestamp: Date.now() };
+    const updatedMessagesWithUser = [...messages, userMsg];
+    
+    // Manage conversation instance
+    let currentConvId = activeConvId;
+    let currentTitle = 'Nuova conversazione';
+
+    if (!currentConvId) {
+      currentTitle = generateTitleFromMessage(userMsg.content);
+      const newConv = createConversation(currentTitle, updatedMessagesWithUser, systemPrompt);
+      currentConvId = newConv.id;
+      setActiveConvIdState(currentConvId);
+    } else {
+      const activeConv = getConversation(currentConvId);
+      if (activeConv) {
+        // Auto title if conversation currently has default title or only welcome message
+        if (activeConv.title === 'Nuova conversazione' || activeConv.messages.length <= 1) {
+          currentTitle = generateTitleFromMessage(userMsg.content);
+        } else {
+          currentTitle = activeConv.title;
+        }
+      }
+    }
+
+    setMessages(updatedMessagesWithUser);
     setInput('');
     setIsGenerating(true);
 
-    const assistantIndex = newMessages.length;
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+    const assistantIndex = updatedMessagesWithUser.length;
+    const initialAssistantMsg = { role: 'assistant', content: '', timestamp: Date.now() };
+    const messagesForState = [...updatedMessagesWithUser, initialAssistantMsg];
+    setMessages(messagesForState);
 
-    const chatMessages = [];
+    // Save state to localStorage
+    saveConversation({
+      id: currentConvId,
+      title: currentTitle,
+      messages: messagesForState,
+      systemPrompt
+    });
+    setConversations(getConversations());
+
+    // Prepare full multi-turn history payload for /v1/chat/completions
+    const chatMessagesPayload = [];
     if (systemPrompt.trim()) {
-      chatMessages.push({ role: 'system', content: systemPrompt.trim() });
+      chatMessagesPayload.push({ role: 'system', content: systemPrompt.trim() });
     }
-    chatMessages.push(...newMessages);
+    for (const msg of updatedMessagesWithUser) {
+      if (msg.role && msg.content !== undefined) {
+        chatMessagesPayload.push({
+          role: msg.role,
+          content: msg.content
+        });
+      }
+    }
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
     const startTime = Date.now();
     let tokenCount = 0;
+    let accumulatedContent = '';
 
     try {
       const response = await fetch(`${apiBase}/v1/chat/completions`, {
@@ -187,7 +378,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: activeModel,
-          messages: chatMessages,
+          messages: chatMessagesPayload,
           temperature,
           top_p: topP,
           top_k: topK,
@@ -229,16 +420,19 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               const delta = data.choices?.[0]?.delta?.content || '';
               if (delta) {
                 tokenCount++;
+                accumulatedContent += delta;
+                
                 setMessages(prev => {
                   const updated = [...prev];
                   if (updated[assistantIndex]) {
                     updated[assistantIndex] = {
                       ...updated[assistantIndex],
-                      content: updated[assistantIndex].content + delta
+                      content: accumulatedContent
                     };
                   }
                   return updated;
                 });
+
                 const elapsedSec = (Date.now() - startTime) / 1000;
                 setMetrics({
                   tokens: tokenCount,
@@ -246,7 +440,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                   tps: elapsedSec > 0 ? Math.round((tokenCount / elapsedSec) * 10) / 10 : 0
                 });
               }
-            } catch (e) {
+            } catch {
               // Ignore partial JSON parse errors
             }
           }
@@ -254,12 +448,13 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
+        accumulatedContent += `\n\n⚠️ [Errore]: ${err.message}`;
         setMessages(prev => {
           const updated = [...prev];
           if (updated[assistantIndex]) {
             updated[assistantIndex] = {
               ...updated[assistantIndex],
-              content: updated[assistantIndex].content + `\n\n⚠️ [Errore]: ${err.message}`
+              content: accumulatedContent
             };
           }
           return updated;
@@ -268,6 +463,18 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     } finally {
       setIsGenerating(false);
       abortControllerRef.current = null;
+
+      // Final save to localStorage once turn completes
+      setMessages(latestMessages => {
+        saveConversation({
+          id: currentConvId,
+          title: currentTitle,
+          messages: latestMessages,
+          systemPrompt
+        });
+        setConversations(getConversations());
+        return latestMessages;
+      });
     }
   };
 
@@ -278,25 +485,32 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setIsGenerating(false);
   };
 
-  const handleClear = () => {
-    setMessages([
-      { role: 'assistant', content: 'Conversazione azzerata. Come posso aiutarti?' }
-    ]);
-    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
-    setExpandedThinking({});
-  };
-
   const copyToClipboard = (text, idx) => {
     navigator.clipboard.writeText(text);
     setCopiedIndex(idx);
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
+  const activeConvObj = conversations.find(c => c.id === activeConvId);
+
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 70px)', width: '100%' }}>
+    <div style={{ display: 'flex', height: 'calc(100vh - 64px)', width: '100%', overflow: 'hidden' }}>
       
+      {/* Conversation History Sidebar */}
+      <SidebarHistory
+        conversations={conversations}
+        activeId={activeConvId}
+        onSelectConversation={handleSelectConversation}
+        onNewConversation={handleNewConversation}
+        onRenameConversation={handleRenameConversation}
+        onDeleteConversation={handleDeleteConversation}
+        onClearAllConversations={handleClearAllConversations}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
+
       {/* Main Chat Workspace */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', position: 'relative', overflow: 'hidden' }}>
         
         {/* Top Chat Bar */}
         <div style={{
@@ -307,179 +521,264 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           alignItems: 'center',
           background: 'rgba(19, 27, 46, 0.5)'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontWeight: 600, fontSize: '1rem', color: 'white' }}>
-              Playground Realtime Streaming SSE
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+            <span style={{
+              fontWeight: 700,
+              fontSize: '1rem',
+              color: 'white',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '300px'
+            }}>
+              {activeConvObj?.title || 'Playground Realtime'}
             </span>
-            <span className="badge badge-success" style={{ textTransform: 'none' }}>
-              <Cpu size={14} /> Modello attivo: {activeModel}
+            <span className="badge badge-success" style={{ textTransform: 'none', flexShrink: 0 }}>
+              <Cpu size={14} /> {activeModel}
             </span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {metrics.tps > 0 && (
               <span className="badge" style={{ background: 'rgba(6, 182, 212, 0.15)', color: 'var(--accent-cyan)', border: '1px solid rgba(6, 182, 212, 0.3)' }}>
-                <Zap size={14} /> {metrics.tps} tok/s ({metrics.tokens} token in {metrics.elapsed}s)
+                <Zap size={14} /> {metrics.tps} tok/s ({metrics.tokens} tok in {metrics.elapsed}s)
               </span>
             )}
             
-            <button className="btn-secondary" onClick={handleClear} title="Cancella conversazione">
-              <Trash2 size={16} /> Reset
+            <button className="btn-secondary" onClick={handleNewConversation} title="Nuova Conversazione">
+              <Plus size={16} /> Nuova Chat
             </button>
 
-            <button className="btn-secondary" onClick={() => setShowSettings(!showSettings)}>
+            <button className="btn-secondary" onClick={() => setShowSettings(!showSettings)} title="Parametri di generazione">
               <Sliders size={16} /> Impostazioni
             </button>
           </div>
         </div>
 
-        {/* Message Stream */}
+        {/* Message Stream or Welcome Screen */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-          {messages.map((msg, idx) => {
-            const isUser = msg.role === 'user';
-            const { thinking, text } = parseThinking(msg.content);
-            const isCurrentlyGeneratingThis = isGenerating && idx === messages.length - 1;
-            const isExpanded = !!expandedThinking[idx];
-
-            return (
-              <div key={idx} style={{
+          {messages.length === 0 ? (
+            <div style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              maxWidth: '680px',
+              margin: '0 auto',
+              textAlign: 'center',
+              padding: '2rem 1rem',
+              gap: '1.5rem'
+            }}>
+              <div style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '16px',
+                background: 'var(--gradient-brand)',
                 display: 'flex',
-                gap: '1rem',
-                maxWidth: '85%',
-                alignSelf: isUser ? 'flex-end' : 'flex-start',
-                flexDirection: isUser ? 'row-reverse' : 'row'
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 0 30px rgba(139, 92, 246, 0.4)'
               }}>
-                <div style={{
-                  width: '36px',
-                  height: '36px',
-                  borderRadius: '50%',
-                  background: isUser ? 'var(--gradient-brand)' : 'rgba(139, 92, 246, 0.2)',
-                  border: !isUser ? '1px solid var(--accent-purple)' : 'none',
+                <Sparkles size={32} color="white" />
+              </div>
+
+              <div>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'white', marginBottom: '0.5rem' }}>
+                  Alveare NPU Chat Playground
+                </h2>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
+                  Chatta direttamente in locale con i modelli LLM accelerati da hardware AMD Ryzen AI (XDNA2 NPU).
+                  I turni della conversazione vengono memorizzati con riutilizzo della cache KV.
+                </p>
+              </div>
+
+              {/* Prompt Suggestions */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gap: '0.85rem',
+                width: '100%',
+                marginTop: '1rem'
+              }}>
+                {[
+                  { title: "Funzionamento NPU", desc: "Spiegami come l'NPU AMD Ryzen AI accelera l'inferenza LLM." },
+                  { title: "Generazione Codice", desc: "Scrivi un server HTTP in Python ad alte prestazioni." },
+                  { title: "Analisi Architetturale", desc: "Quali sono i vantaggi del KV-cache prefix reuse nell'NPU?" },
+                  { title: "Caratteristiche Gemma 4", desc: "Cosa contraddistingue i modelli Gemma 4 e CoT (Chain-of-Thought)?" }
+                ].map((prompt, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleSend(prompt.desc)}
+                    style={{
+                      background: 'rgba(30, 41, 59, 0.6)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '12px',
+                      padding: '1rem',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      color: 'var(--text-main)'
+                    }}
+                    className="glass-card"
+                  >
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--accent-purple)', marginBottom: '0.25rem' }}>
+                      {prompt.title}
+                    </div>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+                      {prompt.desc}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            messages.map((msg, idx) => {
+              const isUser = msg.role === 'user';
+              const { thinking, text } = parseThinking(msg.content);
+              const isCurrentlyGeneratingThis = isGenerating && idx === messages.length - 1;
+              const isExpanded = !!expandedThinking[idx];
+
+              return (
+                <div key={idx} style={{
                   display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0
+                  gap: '1rem',
+                  maxWidth: '85%',
+                  alignSelf: isUser ? 'flex-end' : 'flex-start',
+                  flexDirection: isUser ? 'row-reverse' : 'row'
                 }}>
-                  {isUser ? <User size={18} color="white" /> : <Bot size={18} color="#c084fc" />}
-                </div>
+                  <div style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '50%',
+                    background: isUser ? 'var(--gradient-brand)' : 'rgba(139, 92, 246, 0.2)',
+                    border: !isUser ? '1px solid var(--accent-purple)' : 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}>
+                    {isUser ? <User size={18} color="white" /> : <Bot size={18} color="#c084fc" />}
+                  </div>
 
-                <div style={{
-                  background: isUser ? 'rgba(139, 92, 246, 0.18)' : 'rgba(30, 41, 59, 0.7)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '12px',
-                  padding: '0.85rem 1.1rem',
-                  color: 'var(--text-main)',
-                  fontSize: '0.95rem',
-                  lineHeight: '1.6',
-                  position: 'relative',
-                  minWidth: '240px'
-                }}>
-                  {/* Thinking Section */}
-                  {!isUser && thinking && (
-                    isCurrentlyGeneratingThis ? (
-                      <div style={{
-                        background: 'rgba(139, 92, 246, 0.12)',
-                        border: '1px solid rgba(139, 92, 246, 0.3)',
-                        borderRadius: '8px',
-                        padding: '0.6rem 0.85rem',
-                        marginBottom: '0.75rem',
-                        fontSize: '0.85rem'
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--accent-purple)', fontWeight: 600, marginBottom: '0.3rem' }}>
-                          <Brain size={15} className="pulse-icon" /> Thinking in corso...
-                        </div>
-                        <div style={{ fontFamily: 'monospace', fontSize: '0.82rem', opacity: 0.9, whiteSpace: 'pre-wrap', maxHeight: '180px', overflowY: 'auto' }}>
-                          {thinking}
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ marginBottom: text ? '0.75rem' : '0' }}>
-                        <button
-                          onClick={() => toggleThinking(idx)}
-                          style={{
-                            background: 'rgba(139, 92, 246, 0.15)',
-                            border: '1px solid rgba(139, 92, 246, 0.3)',
-                            borderRadius: '8px',
-                            padding: '0.45rem 0.8rem',
-                            color: '#c084fc',
-                            fontSize: '0.82rem',
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '0.45rem',
-                            transition: 'all 0.2s ease'
-                          }}
-                        >
-                          <Brain size={15} />
-                          <span>{isExpanded ? 'Nascondi Thinking' : `Mostra Step Thinking (${thinking.length} car.)`}</span>
-                          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                        </button>
-
-                        {isExpanded && (
-                          <div style={{
-                            marginTop: '0.5rem',
-                            background: 'rgba(15, 23, 42, 0.85)',
-                            border: '1px dashed rgba(139, 92, 246, 0.4)',
-                            borderRadius: '8px',
-                            padding: '0.75rem 0.9rem',
-                            fontFamily: 'Consolas, Monaco, monospace',
-                            fontSize: '0.83rem',
-                            lineHeight: '1.5',
-                            color: 'var(--text-muted)',
-                            whiteSpace: 'pre-wrap',
-                            maxHeight: '300px',
-                            overflowY: 'auto'
-                          }}>
+                  <div style={{
+                    background: isUser ? 'rgba(139, 92, 246, 0.18)' : 'rgba(30, 41, 59, 0.7)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '12px',
+                    padding: '0.85rem 1.1rem',
+                    color: 'var(--text-main)',
+                    fontSize: '0.95rem',
+                    lineHeight: '1.6',
+                    position: 'relative',
+                    minWidth: '240px'
+                  }}>
+                    {/* Thinking Section */}
+                    {!isUser && thinking && (
+                      isCurrentlyGeneratingThis ? (
+                        <div style={{
+                          background: 'rgba(139, 92, 246, 0.12)',
+                          border: '1px solid rgba(139, 92, 246, 0.3)',
+                          borderRadius: '8px',
+                          padding: '0.6rem 0.85rem',
+                          marginBottom: '0.75rem',
+                          fontSize: '0.85rem'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--accent-purple)', fontWeight: 600, marginBottom: '0.3rem' }}>
+                            <Brain size={15} className="pulse-icon" /> Thinking in corso...
+                          </div>
+                          <div style={{ fontFamily: 'monospace', fontSize: '0.82rem', opacity: 0.9, whiteSpace: 'pre-wrap', maxHeight: '180px', overflowY: 'auto' }}>
                             {thinking}
                           </div>
-                        )}
-                      </div>
-                    )
-                  )}
+                        </div>
+                      ) : (
+                        <div style={{ marginBottom: text ? '0.75rem' : '0' }}>
+                          <button
+                            onClick={() => toggleThinking(idx)}
+                            style={{
+                              background: 'rgba(139, 92, 246, 0.15)',
+                              border: '1px solid rgba(139, 92, 246, 0.3)',
+                              borderRadius: '8px',
+                              padding: '0.45rem 0.8rem',
+                              color: '#c084fc',
+                              fontSize: '0.82rem',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.45rem',
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            <Brain size={15} />
+                            <span>{isExpanded ? 'Nascondi Thinking' : `Mostra Step Thinking (${thinking.length} car.)`}</span>
+                            {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                          </button>
 
-                  {/* Main Response / Text Content (Markdown rendered for Assistant, pre-wrap for User) */}
-                  {isUser ? (
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
-                  ) : text ? (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        code: CodeBlock
-                      }}
-                    >
-                      {text}
-                    </ReactMarkdown>
-                  ) : (
-                    isCurrentlyGeneratingThis && (
-                      <span className="pulse-icon">
-                        {thinking ? 'Generazione risposta finale...' : 'Generazione in corso...'}
-                      </span>
-                    )
-                  )}
+                          {isExpanded && (
+                            <div style={{
+                              marginTop: '0.5rem',
+                              background: 'rgba(15, 23, 42, 0.85)',
+                              border: '1px dashed rgba(139, 92, 246, 0.4)',
+                              borderRadius: '8px',
+                              padding: '0.75rem 0.9rem',
+                              fontFamily: 'Consolas, Monaco, monospace',
+                              fontSize: '0.83rem',
+                              lineHeight: '1.5',
+                              color: 'var(--text-muted)',
+                              whiteSpace: 'pre-wrap',
+                              maxHeight: '300px',
+                              overflowY: 'auto'
+                            }}>
+                              {thinking}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    )}
 
-                  {!isUser && msg.content && (
-                    <button
-                      onClick={() => copyToClipboard(msg.content, idx)}
-                      style={{
-                        position: 'absolute',
-                        top: '0.5rem',
-                        right: '0.5rem',
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--text-muted)',
-                        cursor: 'pointer',
-                        opacity: 0.7
-                      }}
-                      title="Copia messaggio completo"
-                    >
-                      {copiedIndex === idx ? <Check size={14} color="var(--accent-green)" /> : <Copy size={14} />}
-                    </button>
-                  )}
+                    {/* Main Response / Text Content */}
+                    {isUser ? (
+                      <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
+                    ) : text ? (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          code: CodeBlock
+                        }}
+                      >
+                        {text}
+                      </ReactMarkdown>
+                    ) : (
+                      isCurrentlyGeneratingThis && (
+                        <span className="pulse-icon">
+                          {thinking ? 'Generazione risposta finale...' : 'Generazione in corso...'}
+                        </span>
+                      )
+                    )}
+
+                    {!isUser && msg.content && (
+                      <button
+                        onClick={() => copyToClipboard(msg.content, idx)}
+                        style={{
+                          position: 'absolute',
+                          top: '0.5rem',
+                          right: '0.5rem',
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-muted)',
+                          cursor: 'pointer',
+                          opacity: 0.7
+                        }}
+                        title="Copia messaggio completo"
+                      >
+                        {copiedIndex === idx ? <Check size={14} color="var(--accent-green)" /> : <Copy size={14} />}
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -516,7 +815,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 <StopCircle size={20} /> Ferma
               </button>
             ) : (
-              <button className="btn-primary" onClick={handleSend} disabled={!isServerRunning || !input.trim()} style={{ height: '52px' }}>
+              <button className="btn-primary" onClick={() => handleSend()} disabled={!isServerRunning || !input.trim()} style={{ height: '52px' }}>
                 <Send size={18} /> Invia
               </button>
             )}
@@ -576,7 +875,17 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
             </label>
             <textarea
               value={systemPrompt}
-              onChange={e => setSystemPrompt(e.target.value)}
+              onChange={e => {
+                const val = e.target.value;
+                setSystemPrompt(val);
+                if (activeConvId) {
+                  const conv = getConversation(activeConvId);
+                  if (conv) {
+                    conv.systemPrompt = val;
+                    saveConversation(conv);
+                  }
+                }
+              }}
               rows={3}
               style={{
                 width: '100%',
@@ -643,9 +952,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 </button>
               ))}
             </div>
-            <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.34rem' }}>
-              Gemma 4 supporta fino a 128k token (131.072) di finestra di contesto.
-            </div>
           </div>
 
           {/* Max Tokens Risposta */}
@@ -700,9 +1006,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                   {val >= 1024 ? `${val / 1024}K` : val}
                 </button>
               ))}
-            </div>
-            <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.34rem' }}>
-              Lunghezza massima dei token generati nella risposta dal modello.
             </div>
           </div>
 
