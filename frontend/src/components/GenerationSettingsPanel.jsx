@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Sliders,
   Brain,
@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { DEFAULT_SETTINGS } from '../utils/chatStorage';
 import { useTranslation } from '../i18n/I18nContext';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export default function GenerationSettingsPanel({
   isOpen,
@@ -25,6 +26,9 @@ export default function GenerationSettingsPanel({
 }) {
   const { t } = useTranslation();
   const [saveToast, setSaveToast] = useState(false);
+  const containerRef = useRef(null);
+
+  useFocusTrap({ isOpen, onClose, containerRef });
 
   if (!isOpen) return null;
 
@@ -64,12 +68,15 @@ export default function GenerationSettingsPanel({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-panel-title"
       style={{
         position: 'fixed',
         inset: 0,
         zIndex: 1000,
         display: 'flex',
-        justify: 'flex-end',
+        justifyContent: 'flex-end',
         background: 'rgba(0, 0, 0, 0.4)',
         backdropFilter: 'blur(4px)',
         animation: 'fadeIn 0.2s ease-out'
@@ -77,6 +84,7 @@ export default function GenerationSettingsPanel({
       onClick={onClose}
     >
       <div
+        ref={containerRef}
         onClick={e => e.stopPropagation()}
         style={{
           width: '420px',
@@ -107,10 +115,10 @@ export default function GenerationSettingsPanel({
               color: 'var(--accent-purple)',
               display: 'flex'
             }}>
-              <Sliders size={20} />
+              <Sliders size={20} aria-hidden="true" />
             </div>
             <div>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+              <h3 id="settings-panel-title" style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
                 {t('settingsPanel.title')}
               </h3>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
@@ -135,8 +143,9 @@ export default function GenerationSettingsPanel({
             }}
             className="btn-icon-hover"
             title={t('settingsPanel.closePanel')}
+            aria-label={t('settingsPanel.closePanel')}
           >
-            <X size={20} />
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -153,8 +162,8 @@ export default function GenerationSettingsPanel({
           {/* Section 1: System Prompt */}
           <div className="glass-card" style={{ padding: '1.1rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <label style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                <FileText size={16} color="var(--accent-purple)" /> {t('settingsPanel.systemPrompt')}
+              <label id="lbl-sys-prompt" style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                <FileText size={16} color="var(--accent-purple)" aria-hidden="true" /> {t('settingsPanel.systemPrompt')}
               </label>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                 {t('settingsPanel.charCount', { count: currentSettings.systemPrompt.length })}
@@ -162,6 +171,7 @@ export default function GenerationSettingsPanel({
             </div>
 
             <textarea
+              aria-labelledby="lbl-sys-prompt"
               value={currentSettings.systemPrompt}
               onChange={e => handleChange('systemPrompt', e.target.value)}
               rows={4}
@@ -201,6 +211,7 @@ export default function GenerationSettingsPanel({
                       cursor: 'pointer',
                       transition: 'all 0.15s ease'
                     }}
+                    aria-label={`Imposta preset: ${preset.label}`}
                   >
                     {preset.label}
                   </button>
@@ -226,7 +237,7 @@ export default function GenerationSettingsPanel({
                   background: currentSettings.enableThinking ? 'rgba(139, 92, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)',
                   color: currentSettings.enableThinking ? 'var(--accent-purple)' : 'var(--text-muted)'
                 }}>
-                  <Brain size={18} />
+                  <Brain size={18} aria-hidden="true" />
                 </div>
                 <div>
                   <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-main)' }}>
@@ -240,6 +251,7 @@ export default function GenerationSettingsPanel({
 
               <button
                 onClick={() => handleChange('enableThinking', !currentSettings.enableThinking)}
+                aria-pressed={currentSettings.enableThinking}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -250,8 +262,9 @@ export default function GenerationSettingsPanel({
                   padding: 0
                 }}
                 title={t('settingsPanel.toggleThinking')}
+                aria-label={t('settingsPanel.toggleThinking')}
               >
-                {currentSettings.enableThinking ? <ToggleRight size={32} /> : <ToggleLeft size={32} />}
+                {currentSettings.enableThinking ? <ToggleRight size={32} aria-hidden="true" /> : <ToggleLeft size={32} aria-hidden="true" />}
               </button>
             </div>
           </div>
@@ -259,17 +272,18 @@ export default function GenerationSettingsPanel({
           {/* Section 3: Sampling Parameters */}
           <div className="glass-card" style={{ padding: '1.1rem', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
             <div style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-              <Thermometer size={16} color="var(--accent-cyan)" /> {t('settingsPanel.samplingParams')}
+              <Thermometer size={16} color="var(--accent-cyan)" aria-hidden="true" /> {t('settingsPanel.samplingParams')}
             </div>
 
             {/* Temperature */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                <span id="lbl-temp" style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
                   {t('settingsPanel.temperature')}
                 </span>
                 <input
                   type="number"
+                  aria-labelledby="lbl-temp"
                   min="0"
                   max="2"
                   step="0.05"
@@ -294,6 +308,7 @@ export default function GenerationSettingsPanel({
 
               <input
                 type="range"
+                aria-labelledby="lbl-temp"
                 min="0"
                 max="2"
                 step="0.05"
@@ -312,11 +327,12 @@ export default function GenerationSettingsPanel({
             {/* Top-P */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                <span id="lbl-topp" style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
                   {t('settingsPanel.topP')}
                 </span>
                 <input
                   type="number"
+                  aria-labelledby="lbl-topp"
                   min="0"
                   max="1"
                   step="0.05"
@@ -341,6 +357,7 @@ export default function GenerationSettingsPanel({
 
               <input
                 type="range"
+                aria-labelledby="lbl-topp"
                 min="0"
                 max="1"
                 step="0.05"
@@ -359,11 +376,12 @@ export default function GenerationSettingsPanel({
             {/* Top-K */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                <span id="lbl-topk" style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
                   {t('settingsPanel.topK')}
                 </span>
                 <input
                   type="number"
+                  aria-labelledby="lbl-topk"
                   min="0"
                   max="100"
                   step="1"
@@ -388,6 +406,7 @@ export default function GenerationSettingsPanel({
 
               <input
                 type="range"
+                aria-labelledby="lbl-topk"
                 min="0"
                 max="100"
                 step="1"
@@ -402,17 +421,18 @@ export default function GenerationSettingsPanel({
           {/* Section 4: Context & Token Limits */}
           <div className="glass-card" style={{ padding: '1.1rem', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
             <div style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-              <Layers size={16} color="var(--accent-amber)" /> {t('settingsPanel.contextLimits')}
+              <Layers size={16} color="var(--accent-amber)" aria-hidden="true" /> {t('settingsPanel.contextLimits')}
             </div>
 
             {/* Max Context Length */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                <span id="lbl-max-ctx" style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
                   {t('settingsPanel.maxContextLength')}
                 </span>
                 <input
                   type="number"
+                  aria-labelledby="lbl-max-ctx"
                   min="512"
                   max="131072"
                   step="512"
@@ -437,6 +457,7 @@ export default function GenerationSettingsPanel({
 
               <input
                 type="range"
+                aria-labelledby="lbl-max-ctx"
                 min="512"
                 max="131072"
                 step="512"
@@ -460,6 +481,7 @@ export default function GenerationSettingsPanel({
                       cursor: 'pointer',
                       fontWeight: 600
                     }}
+                    aria-label={`Imposta max context a ${val >= 1024 ? `${val / 1024}K` : val}`}
                   >
                     {val >= 1024 ? `${val / 1024}K` : val}
                   </button>
@@ -470,11 +492,12 @@ export default function GenerationSettingsPanel({
             {/* Max Tokens Response */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                <span id="lbl-max-tok" style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
                   {t('settingsPanel.maxTokensResponse')}
                 </span>
                 <input
                   type="number"
+                  aria-labelledby="lbl-max-tok"
                   min="16"
                   max="32768"
                   step="64"
@@ -499,6 +522,7 @@ export default function GenerationSettingsPanel({
 
               <input
                 type="range"
+                aria-labelledby="lbl-max-tok"
                 min="16"
                 max="16384"
                 step="64"
@@ -522,6 +546,7 @@ export default function GenerationSettingsPanel({
                       cursor: 'pointer',
                       fontWeight: 600
                     }}
+                    aria-label={`Imposta max tokens a ${val >= 1024 ? `${val / 1024}K` : val}`}
                   >
                     {val >= 1024 ? `${val / 1024}K` : val}
                   </button>
@@ -543,19 +568,23 @@ export default function GenerationSettingsPanel({
           gap: '0.65rem'
         }}>
           {saveToast && (
-            <div style={{
-              padding: '0.4rem 0.75rem',
-              borderRadius: '6px',
-              background: 'rgba(16, 185, 129, 0.2)',
-              border: '1px solid rgba(16, 185, 129, 0.4)',
-              color: '#34d399',
-              fontSize: '0.78rem',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem'
-            }}>
-              <Check size={14} /> {t('settingsPanel.toastSavedDefaults')}
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                padding: '0.4rem 0.75rem',
+                borderRadius: '6px',
+                background: 'rgba(16, 185, 129, 0.2)',
+                border: '1px solid rgba(16, 185, 129, 0.4)',
+                color: '#34d399',
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem'
+              }}
+            >
+              <Check size={14} aria-hidden="true" /> {t('settingsPanel.toastSavedDefaults')}
             </div>
           )}
 
@@ -565,8 +594,9 @@ export default function GenerationSettingsPanel({
               className="btn-secondary"
               style={{ flex: 1, justifyContent: 'center', fontSize: '0.82rem', padding: '0.55rem' }}
               title={t('settingsPanel.resetTitle')}
+              aria-label={t('settingsPanel.resetTitle')}
             >
-              <RotateCcw size={14} /> {t('settingsPanel.reset')}
+              <RotateCcw size={14} aria-hidden="true" /> {t('settingsPanel.reset')}
             </button>
 
             <button
@@ -582,8 +612,9 @@ export default function GenerationSettingsPanel({
                 color: 'var(--accent-purple)'
               }}
               title={t('settingsPanel.saveDefaultsTitle')}
+              aria-label={t('settingsPanel.saveDefaultsTitle')}
             >
-              <Save size={14} /> {t('settingsPanel.saveDefaults')}
+              <Save size={14} aria-hidden="true" /> {t('settingsPanel.saveDefaults')}
             </button>
           </div>
         </div>

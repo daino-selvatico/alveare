@@ -77,12 +77,12 @@ export default function BenchmarksView({
   const loadStep = status?.load_step || null;
 
   return (
-    <div style={{ padding: '1.5rem 2rem', maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
+    <div role="region" aria-label={t('benchmarks.title')} style={{ padding: '1.5rem 2rem', maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--text-main)' }}>
-            <BarChart2 size={24} style={{ color: 'var(--accent-purple)' }} />
+            <BarChart2 size={24} style={{ color: 'var(--accent-purple)' }} aria-hidden="true" />
             {t('benchmarks.title')}
           </h1>
           <p style={{ margin: '0.3rem 0 0 0', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
@@ -92,7 +92,7 @@ export default function BenchmarksView({
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem', background: 'var(--bg-card)', padding: '0.35rem 0.75rem', borderRadius: '20px', border: '1px solid var(--border-color)' }}>
-            <Zap size={13} color="var(--accent-amber)" />
+            <Zap size={13} color="var(--accent-amber)" aria-hidden="true" />
             {t('benchmarks.pollingNotice')}
           </span>
 
@@ -101,8 +101,9 @@ export default function BenchmarksView({
             onClick={handleManualRefresh}
             disabled={isRefreshing}
             style={{ padding: '0.45rem 0.85rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+            aria-label={t('benchmarks.refresh')}
           >
-            <RefreshCw size={14} className={isRefreshing ? "pulse-icon" : ""} />
+            <RefreshCw size={14} className={isRefreshing ? "pulse-icon" : ""} aria-hidden="true" />
             {t('benchmarks.refresh')}
           </button>
         </div>

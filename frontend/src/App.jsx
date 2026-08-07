@@ -143,7 +143,7 @@ export default function App() {
             justifyContent: 'center',
             boxShadow: 'var(--shadow-glow)'
           }}>
-            <Zap size={20} color="white" />
+            <Zap size={20} color="white" aria-hidden="true" />
           </div>
 
           <div>
@@ -157,8 +157,10 @@ export default function App() {
         </div>
 
         {/* Tab Navigation */}
-        <div style={{ display: 'flex', gap: '0.5rem', background: 'var(--nav-tab-bg)', padding: '0.25rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+        <div role="tablist" aria-label={t('nav.brandTitle')} style={{ display: 'flex', gap: '0.5rem', background: 'var(--nav-tab-bg)', padding: '0.25rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
           <button
+            id="tab-chat"
+            aria-controls="panel-chat"
             onClick={() => setActiveTab('chat')}
             aria-selected={activeTab === 'chat'}
             role="tab"
@@ -177,10 +179,12 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <MessageSquare size={16} /> {t('nav.playground')}
+            <MessageSquare size={16} aria-hidden="true" /> {t('nav.playground')}
           </button>
 
           <button
+            id="tab-control"
+            aria-controls="panel-control"
             onClick={() => setActiveTab('control')}
             aria-selected={activeTab === 'control'}
             role="tab"
@@ -199,13 +203,15 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <Server size={16} /> {t('nav.controlPanel')}
+            <Server size={16} aria-hidden="true" /> {t('nav.controlPanel')}
             {models.length === 0 && !modelsLoading && (
               <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-amber)', display: 'inline-block' }} title={t('nav.noModelsBadge')} />
             )}
           </button>
 
           <button
+            id="tab-logs"
+            aria-controls="panel-logs"
             onClick={() => setActiveTab('logs')}
             aria-selected={activeTab === 'logs'}
             role="tab"
@@ -224,10 +230,12 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <Terminal size={16} /> {t('nav.logs')}
+            <Terminal size={16} aria-hidden="true" /> {t('nav.logs')}
           </button>
 
           <button
+            id="tab-benchmarks"
+            aria-controls="panel-benchmarks"
             onClick={() => setActiveTab('benchmarks')}
             aria-selected={activeTab === 'benchmarks'}
             role="tab"
@@ -246,7 +254,7 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <BarChart2 size={16} /> {t('nav.benchmarks')}
+            <BarChart2 size={16} aria-hidden="true" /> {t('nav.benchmarks')}
           </button>
         </div>
 
@@ -277,7 +285,7 @@ export default function App() {
             title={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
             aria-label={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
           >
-            {theme === 'dark' ? <Sun size={14} color="var(--accent-amber)" /> : <Moon size={14} color="var(--accent-purple)" />}
+            {theme === 'dark' ? <Sun size={14} color="var(--accent-amber)" aria-hidden="true" /> : <Moon size={14} color="var(--accent-purple)" aria-hidden="true" />}
             <span style={{ fontSize: '0.78rem' }}>{theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}</span>
           </button>
 
@@ -288,7 +296,7 @@ export default function App() {
             title={t('nav.reopenWizard')}
             aria-label={t('nav.reopenWizard')}
           >
-            <Settings size={14} /> {t('nav.wizard')}
+            <Settings size={14} aria-hidden="true" /> {t('nav.wizard')}
           </button>
 
           <button
@@ -298,7 +306,7 @@ export default function App() {
             title={t('shortcuts.buttonTitle')}
             aria-label={t('shortcuts.buttonTitle')}
           >
-            <Keyboard size={14} />
+            <Keyboard size={14} aria-hidden="true" />
           </button>
         </div>
 
@@ -322,7 +330,7 @@ export default function App() {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.88rem', color: 'var(--text-main)' }}>
-            <AlertTriangle size={20} color="#ef4444" style={{ flexShrink: 0 }} />
+            <AlertTriangle size={20} color="#ef4444" style={{ flexShrink: 0 }} aria-hidden="true" />
             <div>
               <strong>{t('connectionBanner.cannotConnect', { apiBase })}</strong>
               <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
@@ -338,7 +346,7 @@ export default function App() {
             style={{ padding: '0.4rem 0.85rem', fontSize: '0.82rem', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#fca5a5' }}
             aria-label={t('connectionBanner.retryConnection')}
           >
-            <RefreshCw size={14} className={isRetrying ? "pulse-icon" : ""} />
+            <RefreshCw size={14} className={isRetrying ? "pulse-icon" : ""} aria-hidden="true" />
             {isRetrying ? t('connectionBanner.connecting') : t('connectionBanner.retryConnection')}
           </button>
         </div>
@@ -347,7 +355,7 @@ export default function App() {
       {/* Main View Body with ErrorBoundary protection */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         <ErrorBoundary onReset={handleRetryConnection}>
-          <div style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+          <div id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
             <ChatPlayground
               apiBase={apiBase}
               activeModel={status?.model || (models.length > 0 ? models[0].id : t('nav.noModelsBadge'))}
@@ -360,7 +368,7 @@ export default function App() {
             />
           </div>
 
-          <div style={{ flex: 1, display: activeTab === 'control' ? 'block' : 'none' }}>
+          <div id="panel-control" role="tabpanel" aria-labelledby="tab-control" style={{ flex: 1, display: activeTab === 'control' ? 'block' : 'none' }}>
             <ServerControl
               apiBase={apiBase}
               status={status}
@@ -370,11 +378,11 @@ export default function App() {
             />
           </div>
 
-          <div style={{ flex: 1, display: activeTab === 'logs' ? 'block' : 'none' }}>
+          <div id="panel-logs" role="tabpanel" aria-labelledby="tab-logs" style={{ flex: 1, display: activeTab === 'logs' ? 'block' : 'none' }}>
             <LogsViewer apiBase={apiBase} />
           </div>
 
-          <div style={{ flex: 1, display: activeTab === 'benchmarks' ? 'block' : 'none' }}>
+          <div id="panel-benchmarks" role="tabpanel" aria-labelledby="tab-benchmarks" style={{ flex: 1, display: activeTab === 'benchmarks' ? 'block' : 'none' }}>
             <BenchmarksView
               apiBase={apiBase}
               status={status}

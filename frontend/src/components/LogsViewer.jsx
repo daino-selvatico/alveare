@@ -49,12 +49,12 @@ export default function LogsViewer({ apiBase }) {
   }, [logs, autoScroll]);
 
   return (
-    <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div role="region" aria-label={t('logsViewer.realtimeServerLogs')} style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       
       {/* NPU Health Card */}
       <div className="glass-card" style={{ padding: '1.25rem' }}>
         <h3 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Cpu size={20} color="var(--accent-cyan)" /> {t('logsViewer.npuDiagnosticsTitle')}
+          <Cpu size={20} color="var(--accent-cyan)" aria-hidden="true" /> {t('logsViewer.npuDiagnosticsTitle')}
         </h3>
 
         {npu ? (
@@ -89,32 +89,37 @@ export default function LogsViewer({ apiBase }) {
       <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', flex: 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Terminal size={20} color="var(--accent-purple)" /> {t('logsViewer.realtimeServerLogs')}
+            <Terminal size={20} color="var(--accent-purple)" aria-hidden="true" /> {t('logsViewer.realtimeServerLogs')}
           </h3>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1.rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer' }}>
               <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
               <span>{t('logsViewer.autoScroll')}</span>
             </label>
             <button className="btn-secondary" onClick={fetchLogs} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }} aria-label={t('logsViewer.refresh')}>
-              <RefreshCw size={14} /> {t('logsViewer.refresh')}
+              <RefreshCw size={14} aria-hidden="true" /> {t('logsViewer.refresh')}
             </button>
           </div>
         </div>
 
-        <div style={{
-          background: '#090d16',
-          borderRadius: '8px',
-          padding: '1rem',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '0.85rem',
-          color: '#38bdf8',
-          height: '420px',
-          overflowY: 'auto',
-          lineHeight: '1.5',
-          border: '1px solid rgba(255,255,255,0.05)'
-        }}>
+        <div
+          role="log"
+          aria-live="polite"
+          aria-label={t('logsViewer.realtimeServerLogs')}
+          style={{
+            background: '#090d16',
+            borderRadius: '8px',
+            padding: '1rem',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '0.85rem',
+            color: '#38bdf8',
+            height: '420px',
+            overflowY: 'auto',
+            lineHeight: '1.5',
+            border: '1px solid rgba(255,255,255,0.05)'
+          }}
+        >
           {logs.length === 0 ? (
             <div style={{ color: 'var(--text-subtle)' }}>{t('logsViewer.noLogsAvailable')}</div>
           ) : (

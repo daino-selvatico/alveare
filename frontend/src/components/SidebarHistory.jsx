@@ -181,8 +181,9 @@ export default function SidebarHistory({
           className="btn-secondary"
           style={{ padding: '0.6rem', borderRadius: '10px' }}
           title={t('sidebar.expandSidebar')}
+          aria-label={t('sidebar.expandSidebar')}
         >
-          <PanelLeft size={18} />
+          <PanelLeft size={18} aria-hidden="true" />
         </button>
 
         <button
@@ -190,8 +191,9 @@ export default function SidebarHistory({
           className="btn-primary"
           style={{ padding: '0.6rem', borderRadius: '10px' }}
           title={t('sidebar.newChat')}
+          aria-label={t('sidebar.newChat')}
         >
-          <Plus size={18} />
+          <Plus size={18} aria-hidden="true" />
         </button>
 
         <div style={{
@@ -231,8 +233,10 @@ export default function SidebarHistory({
                   position: 'relative'
                 }}
                 title={`${conv.title} (${formatDateLabel(conv.updatedAt, t)})`}
+                aria-label={`${conv.title} (${formatDateLabel(conv.updatedAt, t)})`}
+                aria-selected={isActive}
               >
-                <MessageSquare size={18} color={isActive ? '#c084fc' : 'currentColor'} />
+                <MessageSquare size={18} color={isActive ? '#c084fc' : 'currentColor'} aria-hidden="true" />
               </button>
             );
           })}
@@ -242,18 +246,21 @@ export default function SidebarHistory({
   }
 
   return (
-    <aside style={{
-      width: '280px',
-      minWidth: '280px',
-      borderRight: '1px solid var(--border-color)',
-      background: 'rgba(13, 19, 33, 0.95)',
-      backdropFilter: 'blur(12px)',
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      zIndex: 10,
-      userSelect: 'none'
-    }}>
+    <aside
+      aria-label={t('sidebar.chatHistory')}
+      style={{
+        width: '280px',
+        minWidth: '280px',
+        borderRight: '1px solid var(--border-color)',
+        background: 'rgba(13, 19, 33, 0.95)',
+        backdropFilter: 'blur(12px)',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        zIndex: 10,
+        userSelect: 'none'
+      }}
+    >
       {/* Header */}
       <div style={{
         padding: '1rem',
@@ -264,7 +271,7 @@ export default function SidebarHistory({
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-main)' }}>
-            <Clock size={16} color="var(--accent-purple)" />
+            <Clock size={16} color="var(--accent-purple)" aria-hidden="true" />
             <span>{t('sidebar.chatHistory')}</span>
             <span style={{
               fontSize: '0.72rem',
@@ -291,8 +298,9 @@ export default function SidebarHistory({
               alignItems: 'center'
             }}
             title={t('sidebar.collapseSidebar')}
+            aria-label={t('sidebar.collapseSidebar')}
           >
-            <PanelLeftClose size={18} />
+            <PanelLeftClose size={18} aria-hidden="true" />
           </button>
         </div>
 
@@ -307,17 +315,19 @@ export default function SidebarHistory({
             fontSize: '0.88rem',
             borderRadius: '9px'
           }}
+          aria-label={t('sidebar.newChat')}
         >
-          <Plus size={18} /> {t('sidebar.newChat')}
+          <Plus size={18} aria-hidden="true" /> {t('sidebar.newChat')}
         </button>
 
         {/* Search Input */}
         {conversations.length > 3 && (
           <div style={{ position: 'relative' }}>
-            <Search size={14} style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <Search size={14} style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} aria-hidden="true" />
             <input
               type="text"
               placeholder={t('sidebar.searchPlaceholder')}
+              aria-label={t('sidebar.searchPlaceholder')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               style={{
@@ -344,8 +354,9 @@ export default function SidebarHistory({
                   color: 'var(--text-muted)',
                   cursor: 'pointer'
                 }}
+                aria-label="Cancella ricerca"
               >
-                <X size={12} />
+                <X size={12} aria-hidden="true" />
               </button>
             )}
           </div>
@@ -372,7 +383,7 @@ export default function SidebarHistory({
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            <MessageSquare size={24} style={{ opacity: 0.4 }} />
+            <MessageSquare size={24} style={{ opacity: 0.4 }} aria-hidden="true" />
             {searchQuery ? t('sidebar.noConversationsFound') : t('sidebar.noConversationsSaved')}
           </div>
         ) : (
@@ -386,7 +397,17 @@ export default function SidebarHistory({
             return (
               <div
                 key={conv.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`${conv.title || t('sidebar.defaultTitle')} (${formatDateLabel(conv.updatedAt, t)})`}
+                aria-selected={isActive}
                 onClick={() => !isEditing && onSelectConversation(conv.id)}
+                onKeyDown={e => {
+                  if ((e.key === 'Enter' || e.key === ' ') && !isEditing) {
+                    e.preventDefault();
+                    onSelectConversation(conv.id);
+                  }
+                }}
                 style={{
                   padding: '0.65rem 0.75rem',
                   borderRadius: '9px',
@@ -407,7 +428,7 @@ export default function SidebarHistory({
                 className="sidebar-conv-item"
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flex: 1, minWidth: 0 }}>
-                  <MessageSquare size={16} color={isActive ? '#c084fc' : 'var(--text-muted)'} style={{ flexShrink: 0 }} />
+                  <MessageSquare size={16} color={isActive ? '#c084fc' : 'var(--text-muted)'} style={{ flexShrink: 0 }} aria-hidden="true" />
 
                   {isEditing ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', width: '100%' }} onClick={e => e.stopPropagation()}>
@@ -420,6 +441,7 @@ export default function SidebarHistory({
                           if (e.key === 'Escape') cancelRename(e);
                         }}
                         autoFocus
+                        aria-label="Nuovo titolo conversazione"
                         style={{
                           width: '100%',
                           padding: '0.2rem 0.4rem',
@@ -435,15 +457,17 @@ export default function SidebarHistory({
                         onClick={e => saveRename(conv.id, e)}
                         style={{ background: 'none', border: 'none', color: 'var(--accent-green)', cursor: 'pointer', padding: '0.2rem' }}
                         title={t('sidebar.save')}
+                        aria-label={t('sidebar.save')}
                       >
-                        <Check size={14} />
+                        <Check size={14} aria-hidden="true" />
                       </button>
                       <button
                         onClick={cancelRename}
                         style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.2rem' }}
                         title={t('sidebar.cancel')}
+                        aria-label={t('sidebar.cancel')}
                       >
-                        <X size={14} />
+                        <X size={14} aria-hidden="true" />
                       </button>
                     </div>
                   ) : (
@@ -474,6 +498,7 @@ export default function SidebarHistory({
                           onClick={e => executeDelete(conv.id, e)}
                           style={{ background: 'var(--accent-red)', border: 'none', borderRadius: '4px', color: 'white', cursor: 'pointer', padding: '0.15rem 0.4rem', fontSize: '0.7rem', fontWeight: 600 }}
                           title={t('sidebar.confirmDelete')}
+                          aria-label={t('sidebar.confirmDelete')}
                         >
                           {t('sidebar.confirmDelete')}
                         </button>
@@ -481,8 +506,9 @@ export default function SidebarHistory({
                           onClick={e => { e.stopPropagation(); setDeletingId(null); }}
                           style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.15rem' }}
                           title={t('sidebar.cancel')}
+                          aria-label={t('sidebar.cancel')}
                         >
-                          <X size={13} />
+                          <X size={13} aria-hidden="true" />
                         </button>
                       </div>
                     ) : (
@@ -499,8 +525,9 @@ export default function SidebarHistory({
                             transition: 'color 0.2s ease'
                           }}
                           title={t('sidebar.exportSelected')}
+                          aria-label={t('sidebar.exportSelected')}
                         >
-                          <Download size={13} />
+                          <Download size={13} aria-hidden="true" />
                         </button>
 
                         <button
@@ -515,8 +542,9 @@ export default function SidebarHistory({
                             transition: 'color 0.2s ease'
                           }}
                           title={t('sidebar.rename')}
+                          aria-label={t('sidebar.rename')}
                         >
-                          <Edit3 size={13} />
+                          <Edit3 size={13} aria-hidden="true" />
                         </button>
 
                         <button
@@ -531,8 +559,9 @@ export default function SidebarHistory({
                             transition: 'color 0.2s ease'
                           }}
                           title={t('sidebar.delete')}
+                          aria-label={t('sidebar.delete')}
                         >
-                          <Trash2 size={13} />
+                          <Trash2 size={13} aria-hidden="true" />
                         </button>
                       </>
                     )}
@@ -558,6 +587,7 @@ export default function SidebarHistory({
           onChange={handleFileChange}
           accept=".json,application/json"
           style={{ display: 'none' }}
+          aria-hidden="true"
         />
 
         <div style={{ display: 'flex', gap: '0.5rem', width: '100%' }}>
@@ -575,8 +605,9 @@ export default function SidebarHistory({
               cursor: conversations.length === 0 ? 'not-allowed' : 'pointer'
             }}
             title={t('sidebar.exportTitle')}
+            aria-label={t('sidebar.exportTitle')}
           >
-            <Download size={14} /> {t('sidebar.export')}
+            <Download size={14} aria-hidden="true" /> {t('sidebar.export')}
           </button>
 
           <button
@@ -590,53 +621,64 @@ export default function SidebarHistory({
               gap: '0.35rem'
             }}
             title={t('sidebar.importTitle')}
+            aria-label={t('sidebar.importTitle')}
           >
-            <Upload size={14} /> {t('sidebar.import')}
+            <Upload size={14} aria-hidden="true" /> {t('sidebar.import')}
           </button>
         </div>
 
         {importError && (
-          <div style={{
-            fontSize: '0.75rem',
-            color: '#f87171',
-            background: 'rgba(239, 68, 68, 0.15)',
-            border: '1px solid rgba(239, 68, 68, 0.3)',
-            borderRadius: '6px',
-            padding: '0.4rem 0.6rem',
-            display: 'flex',
-            alignItems: 'center',
-            justify: 'space-between',
-            gap: '0.3rem'
-          }}>
+          <div
+            role="alert"
+            aria-live="polite"
+            style={{
+              fontSize: '0.75rem',
+              color: '#f87171',
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              borderRadius: '6px',
+              padding: '0.4rem 0.6rem',
+              display: 'flex',
+              alignItems: 'center',
+              justify: 'space-between',
+              gap: '0.3rem'
+            }}
+          >
             <span>{importError}</span>
             <button
               onClick={() => setImportError(null)}
               style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: 0 }}
+              aria-label={t('sidebar.cancel')}
             >
-              <X size={12} />
+              <X size={12} aria-hidden="true" />
             </button>
           </div>
         )}
 
         {importSuccess && (
-          <div style={{
-            fontSize: '0.75rem',
-            color: '#4ade80',
-            background: 'rgba(74, 222, 128, 0.15)',
-            border: '1px solid rgba(74, 222, 128, 0.3)',
-            borderRadius: '6px',
-            padding: '0.4rem 0.6rem',
-            display: 'flex',
-            alignItems: 'center',
-            justify: 'space-between',
-            gap: '0.3rem'
-          }}>
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              fontSize: '0.75rem',
+              color: '#4ade80',
+              background: 'rgba(74, 222, 128, 0.15)',
+              border: '1px solid rgba(74, 222, 128, 0.3)',
+              borderRadius: '6px',
+              padding: '0.4rem 0.6rem',
+              display: 'flex',
+              alignItems: 'center',
+              justify: 'space-between',
+              gap: '0.3rem'
+            }}
+          >
             <span>{importSuccess}</span>
             <button
               onClick={() => setImportSuccess(null)}
               style={{ background: 'none', border: 'none', color: '#4ade80', cursor: 'pointer', padding: 0 }}
+              aria-label={t('sidebar.cancel')}
             >
-              <X size={12} />
+              <X size={12} aria-hidden="true" />
             </button>
           </div>
         )}
@@ -661,8 +703,9 @@ export default function SidebarHistory({
                 transition: 'color 0.2s ease'
               }}
               title={t('sidebar.clearHistoryTitle')}
+              aria-label={t('sidebar.clearHistoryTitle')}
             >
-              <Trash size={13} /> {t('sidebar.clearHistory')}
+              <Trash size={13} aria-hidden="true" /> {t('sidebar.clearHistory')}
             </button>
           </div>
         )}

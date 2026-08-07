@@ -1,9 +1,14 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Cpu, CheckCircle, AlertTriangle, ArrowRight, Zap, Check } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export default function OnboardingWizard({ onComplete, apiBase }) {
   const { t } = useTranslation();
+  const containerRef = useRef(null);
+
+  useFocusTrap({ isOpen: true, containerRef });
+
   const [step, setStep] = useState(1);
   const [npuStatus, setNpuStatus] = useState(null);
   const [models, setModels] = useState([]);
@@ -74,15 +79,20 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'radial-gradient(circle at 50% 30%, #1e1b4b 0%, #0b0f19 80%)',
-      padding: '2rem'
-    }}>
-      <div className="glass-card" style={{ maxWidth: '650px', width: '100%', padding: '2.5rem' }}>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="onboarding-wizard-title"
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'radial-gradient(circle at 50% 30%, #1e1b4b 0%, #0b0f19 80%)',
+        padding: '2rem'
+      }}
+    >
+      <div ref={containerRef} className="glass-card" style={{ maxWidth: '650px', width: '100%', padding: '2.5rem' }}>
         
         {/* Header / Stepper */}
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
@@ -99,9 +109,9 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
             fontSize: '0.85rem',
             marginBottom: '1rem'
           }}>
-            <Zap size={16} /> {t('onboarding.setupWizardBadge')}
+            <Zap size={16} aria-hidden="true" /> {t('onboarding.setupWizardBadge')}
           </div>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: '700', marginBottom: '0.5rem' }}>
+          <h1 id="onboarding-wizard-title" style={{ fontSize: '1.75rem', fontWeight: '700', marginBottom: '0.5rem' }}>
             {step === 1 && t('onboarding.step1Title')}
             {step === 2 && t('onboarding.step2Title')}
             {step === 3 && t('onboarding.step3Title')}
@@ -133,7 +143,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
           <div>
             <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '10px', padding: '1.25rem', marginBottom: '1.5rem' }}>
               <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Cpu size={18} color="var(--accent-cyan)" /> {t('onboarding.npuPreflight')}
+                <Cpu size={18} color="var(--accent-cyan)" aria-hidden="true" /> {t('onboarding.npuPreflight')}
               </h3>
               
               {loading ? (
@@ -143,16 +153,16 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>{t('onboarding.deviceNodeLabel')}</span>
                     {npuStatus.device_node ? (
-                      <span className="badge badge-success"><Check size={14} /> {t('onboarding.detected')}</span>
+                      <span className="badge badge-success"><Check size={14} aria-hidden="true" /> {t('onboarding.detected')}</span>
                     ) : (
-                      <span className="badge badge-danger"><AlertTriangle size={14} /> {t('onboarding.missing')}</span>
+                      <span className="badge badge-danger"><AlertTriangle size={14} aria-hidden="true" /> {t('onboarding.missing')}</span>
                     )}
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>{t('onboarding.xrtDriverLabel')}</span>
                     {npuStatus.xrt_smi ? (
-                      <span className="badge badge-success"><Check size={14} /> {t('onboarding.ok')}</span>
+                      <span className="badge badge-success"><Check size={14} aria-hidden="true" /> {t('onboarding.ok')}</span>
                     ) : (
                       <span className="badge badge-warning">{t('onboarding.notInstalled')}</span>
                     )}
@@ -161,7 +171,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>{t('onboarding.pyxrtStackLabel')}</span>
                     {npuStatus.pyxrt_import ? (
-                      <span className="badge badge-success"><Check size={14} /> {t('onboarding.active')}</span>
+                      <span className="badge badge-success"><Check size={14} aria-hidden="true" /> {t('onboarding.active')}</span>
                     ) : (
                       <span className="badge badge-warning">{t('onboarding.usesFallback')}</span>
                     )}
@@ -174,7 +184,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
 
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button className="btn-primary" onClick={() => setStep(2)}>
-                {t('onboarding.continue')} <ArrowRight size={18} />
+                {t('onboarding.continue')} <ArrowRight size={18} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -186,7 +196,16 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
               {models.map(m => (
                 <div
                   key={m.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={selectedModel === m.id}
                   onClick={() => setSelectedModel(m.id)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedModel(m.id);
+                    }
+                  }}
                   style={{
                     padding: '1rem 1.25rem',
                     borderRadius: '10px',
@@ -194,7 +213,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                     background: selectedModel === m.id ? 'rgba(139, 92, 246, 0.12)' : 'rgba(255,255,255,0.02)',
                     cursor: 'pointer',
                     display: 'flex',
-                    justifyContent: 'space-between',
+                    justify: 'space-between',
                     alignItems: 'center',
                     transition: 'all 0.2s ease'
                   }}
@@ -207,7 +226,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                       {t('onboarding.archInfo', { arch: m.arch, size: m.size_mb })}
                     </div>
                   </div>
-                  {selectedModel === m.id && <CheckCircle size={22} color="var(--accent-purple)" />}
+                  {selectedModel === m.id && <CheckCircle size={22} color="var(--accent-purple)" aria-hidden="true" />}
                 </div>
               ))}
             </div>
@@ -215,7 +234,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <button className="btn-secondary" onClick={() => setStep(1)}>{t('onboarding.back')}</button>
               <button className="btn-primary" onClick={() => setStep(3)}>
-                {t('onboarding.continue')} <ArrowRight size={18} />
+                {t('onboarding.continue')} <ArrowRight size={18} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -225,10 +244,11 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
           <div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginBottom: '1.5rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>
+                <label id="lbl-onboarding-host" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>
                   {t('onboarding.hostAddressLabel')}
                 </label>
                 <input
+                  aria-labelledby="lbl-onboarding-host"
                   type="text"
                   value={host}
                   onChange={e => setHost(e.target.value)}
@@ -245,10 +265,11 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>
+                <label id="lbl-onboarding-port" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>
                   {t('onboarding.portLabel')}
                 </label>
                 <input
+                  aria-labelledby="lbl-onboarding-port"
                   type="number"
                   value={port}
                   onChange={e => setPort(parseInt(e.target.value) || 8000)}
@@ -288,7 +309,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <button className="btn-secondary" onClick={() => setStep(2)}>{t('onboarding.back')}</button>
               <button className="btn-primary" onClick={() => setStep(4)}>
-                {t('onboarding.summaryBtn')} <ArrowRight size={18} />
+                {t('onboarding.summaryBtn')} <ArrowRight size={18} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -311,7 +332,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <button className="btn-secondary" onClick={() => setStep(3)}>{t('onboarding.back')}</button>
               <button className="btn-primary" onClick={handleFinish} style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
-                {t('onboarding.completeSetupAndStart')} <Zap size={18} />
+                {t('onboarding.completeSetupAndStart')} <Zap size={18} aria-hidden="true" />
               </button>
             </div>
           </div>

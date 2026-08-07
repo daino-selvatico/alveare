@@ -1,23 +1,13 @@
-import React, { useEffect } from 'react';
+import React, { useRef } from 'react';
 import { X, Keyboard, CornerDownLeft, ArrowDown, OctagonAlert, PlusCircle, HelpCircle } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export default function KeyboardShortcutsModal({ isOpen, onClose }) {
   const { t } = useTranslation();
+  const containerRef = useRef(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  useFocusTrap({ isOpen, onClose, containerRef });
 
   if (!isOpen) return null;
 
@@ -27,32 +17,32 @@ export default function KeyboardShortcutsModal({ isOpen, onClose }) {
   const shortcutList = [
     {
       keys: ['Enter'],
-      icon: <CornerDownLeft size={16} color="var(--accent-purple)" />,
+      icon: <CornerDownLeft size={16} color="var(--accent-purple)" aria-hidden="true" />,
       label: t('shortcuts.sendMsg'),
       scope: t('shortcuts.sendMsgScope')
     },
     {
       keys: ['Shift', 'Enter'],
-      icon: <ArrowDown size={16} color="var(--accent-cyan)" />,
+      icon: <ArrowDown size={16} color="var(--accent-cyan)" aria-hidden="true" />,
       label: t('shortcuts.newLine'),
       scope: t('shortcuts.newLineScope')
     },
     {
       keys: ['Esc'],
-      icon: <OctagonAlert size={16} color="var(--accent-red)" />,
+      icon: <OctagonAlert size={16} color="var(--accent-red)" aria-hidden="true" />,
       label: t('shortcuts.stopGen'),
       scope: t('shortcuts.stopGenScope')
     },
     {
       keys: [modKey, 'K'],
-      icon: <PlusCircle size={16} color="var(--accent-green)" />,
+      icon: <PlusCircle size={16} color="var(--accent-green)" aria-hidden="true" />,
       label: t('shortcuts.newChat'),
       scope: t('shortcuts.newChatScope')
     },
     {
       keys: [modKey, '/'],
       badgeAlt: '?',
-      icon: <HelpCircle size={16} color="var(--accent-amber)" />,
+      icon: <HelpCircle size={16} color="var(--accent-amber)" aria-hidden="true" />,
       label: t('shortcuts.toggleHelp'),
       scope: t('shortcuts.toggleHelpScope')
     }
@@ -63,7 +53,7 @@ export default function KeyboardShortcutsModal({ isOpen, onClose }) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label={t('shortcuts.title')}
+      aria-labelledby="shortcuts-modal-title"
       style={{
         position: 'fixed',
         inset: 0,
@@ -79,6 +69,7 @@ export default function KeyboardShortcutsModal({ isOpen, onClose }) {
       }}
     >
       <div
+        ref={containerRef}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: '100%',
@@ -116,10 +107,10 @@ export default function KeyboardShortcutsModal({ isOpen, onClose }) {
                 justifyContent: 'center'
               }}
             >
-              <Keyboard size={20} color="var(--accent-purple)" />
+              <Keyboard size={20} color="var(--accent-purple)" aria-hidden="true" />
             </div>
             <div>
-              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-main)' }}>
+              <h3 id="shortcuts-modal-title" style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-main)' }}>
                 {t('shortcuts.title')}
               </h3>
             </div>
@@ -138,7 +129,7 @@ export default function KeyboardShortcutsModal({ isOpen, onClose }) {
             }}
             aria-label={t('shortcuts.close')}
           >
-            <X size={20} />
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -217,7 +208,7 @@ export default function KeyboardShortcutsModal({ isOpen, onClose }) {
             padding: '1rem 1.5rem',
             borderTop: '1px solid var(--border-color)',
             display: 'flex',
-            justifyContent: 'flex-end',
+            justify: 'flex-end',
             background: 'rgba(0, 0, 0, 0.15)'
           }}
         >
