@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Server, Terminal, Zap, Cpu, Settings, Play } from 'lucide-react';
+import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun } from 'lucide-react';
 import OnboardingWizard from './components/OnboardingWizard';
 import ChatPlayground from './components/ChatPlayground';
 import ServerControl from './components/ServerControl';
@@ -15,6 +15,20 @@ export default function App() {
   const [models, setModels] = useState([]);
   const [showWizard, setShowWizard] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // Theme state: 'dark' | 'light'
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('alveare_theme') || 'dark';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('alveare_theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
+  };
 
   useEffect(() => {
     fetchStatus();
@@ -73,7 +87,7 @@ export default function App() {
         height: '64px',
         padding: '0 1.5rem',
         borderBottom: '1px solid var(--border-color)',
-        background: 'rgba(19, 27, 46, 0.7)',
+        background: 'var(--navbar-bg)',
         backdropFilter: 'blur(12px)',
         display: 'flex',
         alignItems: 'center',
@@ -91,7 +105,7 @@ export default function App() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: '0 0 15px rgba(139, 92, 246, 0.4)'
+            boxShadow: 'var(--shadow-glow)'
           }}>
             <Zap size={20} color="white" />
           </div>
@@ -107,7 +121,7 @@ export default function App() {
         </div>
 
         {/* Tab Navigation */}
-        <div style={{ display: 'flex', gap: '0.5rem', background: 'rgba(0,0,0,0.3)', padding: '0.25rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', background: 'var(--nav-tab-bg)', padding: '0.25rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
           <button
             onClick={() => setActiveTab('chat')}
             style={{
@@ -169,8 +183,8 @@ export default function App() {
           </button>
         </div>
 
-        {/* Server Status Header Badge */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+        {/* Server Status & Controls Header Badge */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           {status?.is_running ? (
             <span className="badge badge-success">
               <span className="pulse-icon">●</span> Server Attivo ({status.model})
@@ -180,6 +194,17 @@ export default function App() {
               ● Server Spento
             </span>
           )}
+
+          {/* Theme Switcher Button */}
+          <button
+            className="btn-secondary"
+            style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+            onClick={toggleTheme}
+            title={theme === 'dark' ? "Passa a Tema Chiaro" : "Passa a Tema Scuro"}
+          >
+            {theme === 'dark' ? <Sun size={14} color="var(--accent-amber)" /> : <Moon size={14} color="var(--accent-purple)" />}
+            <span style={{ fontSize: '0.78rem' }}>{theme === 'dark' ? 'Chiaro' : 'Scuro'}</span>
+          </button>
 
           <button
             className="btn-secondary"
