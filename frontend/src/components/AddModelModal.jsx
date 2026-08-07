@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Download, HardDrive, Cpu, Terminal, CheckCircle2, AlertCircle, Sparkles, FolderOpen, Code, Layers, Info } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { X, Download, HardDrive, Cpu, CheckCircle2, AlertCircle, Sparkles, Code, Info } from 'lucide-react';
 
 export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplete }) {
   const [mode, setMode] = useState('auto'); // 'auto' | 'manual'
@@ -26,12 +26,72 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
   const logEndRef = useRef(null);
 
+  const fetchSupportedModels = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/supported_models`);
+      if (res.ok) {
+        const data = await res.json();
+        setSupportedModels(data);
+        if (data && data.length > 0) {
+          const first = data[0];
+          setSelectedSupported(first.id);
+          setAutoAlias(first.id);
+          setAutoUrl(first.default_url);
+          setAutoFilename(first.filename || '');
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch supported models:", e);
+    }
+  }, [apiBase]);
+
+  const checkOngoingSetup = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/models/setup/status`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.is_running) {
+          setIsSettingUp(true);
+          setProgress(data.progress || 0);
+          setCurrentStep(data.step || '');
+          setLogs(data.logs || []);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to check setup status:", e);
+    }
+  }, [apiBase]);
+
+  const fetchSetupStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/models/setup/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setProgress(data.progress || 0);
+        setCurrentStep(data.step || '');
+        setLogs(data.logs || []);
+        
+        if (!data.is_running) {
+          setIsSettingUp(false);
+          if (data.step === 'complete') {
+            setProgress(100);
+            if (onSetupComplete) onSetupComplete(data.active_alias);
+          } else if (data.error) {
+            setErrorMessage(data.error);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Error polling setup status:", e);
+    }
+  }, [apiBase, onSetupComplete]);
+
   useEffect(() => {
     if (isOpen) {
       fetchSupportedModels();
       checkOngoingSetup();
     }
-  }, [isOpen]);
+  }, [isOpen, fetchSupportedModels, checkOngoingSetup]);
 
   useEffect(() => {
     let pollInterval = null;
@@ -41,28 +101,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
     return () => {
       if (pollInterval) clearInterval(pollInterval);
     };
-  }, [isSettingUp]);
+  }, [isSettingUp, fetchSetupStatus]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
-
-  const fetchSupportedModels = async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/supported_models`);
-      const data = await res.json();
-      setSupportedModels(data);
-      if (data && data.length > 0) {
-        const first = data[0];
-        setSelectedSupported(first.id);
-        setAutoAlias(first.id);
-        setAutoUrl(first.default_url);
-        setAutoFilename(first.filename || '');
-      }
-    } catch (e) {
-      console.error("Failed to fetch supported models:", e);
-    }
-  };
 
   const handleSelectSupported = (modelId) => {
     const found = supportedModels.find(m => m.id === modelId);
@@ -71,43 +114,6 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
       setAutoAlias(found.id);
       setAutoUrl(found.default_url);
       setAutoFilename(found.filename || '');
-    }
-  };
-
-  const checkOngoingSetup = async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/models/setup/status`);
-      const data = await res.json();
-      if (data.is_running) {
-        setIsSettingUp(true);
-        setProgress(data.progress || 0);
-        setCurrentStep(data.step || '');
-        setLogs(data.logs || []);
-      }
-    } catch (e) {
-      console.error("Failed to check setup status:", e);
-    }
-  };
-
-  const fetchSetupStatus = async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/models/setup/status`);
-      const data = await res.json();
-      setProgress(data.progress || 0);
-      setCurrentStep(data.step || '');
-      setLogs(data.logs || []);
-      
-      if (!data.is_running) {
-        setIsSettingUp(false);
-        if (data.step === 'complete') {
-          setProgress(100);
-          if (onSetupComplete) onSetupComplete(data.active_alias);
-        } else if (data.error) {
-          setErrorMessage(data.error);
-        }
-      }
-    } catch (e) {
-      console.error("Error polling setup status:", e);
     }
   };
 
@@ -121,7 +127,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
         setErrorMessage("L'alias del modello è obbligatorio.");
         return;
       }
-      if (!/^[a-zA-Z0-9_\-]+$/.test(alias)) {
+      if (!/^[a-zA-Z0-9_-]+$/.test(alias)) {
         setErrorMessage("L'alias del modello può contenere solo lettere, numeri, trattini e underscore.");
         return;
       }
@@ -140,7 +146,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
         setErrorMessage("L'alias del modello è obbligatorio.");
         return;
       }
-      if (!/^[a-zA-Z0-9_\-]+$/.test(alias)) {
+      if (!/^[a-zA-Z0-9_-]+$/.test(alias)) {
         setErrorMessage("L'alias del modello può contenere solo lettere, numeri, trattini e underscore.");
         return;
       }
@@ -192,17 +198,22 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
   const currentSupportedModel = supportedModels.find(m => m.id === selectedSupported);
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(5, 8, 18, 0.85)',
-      backdropFilter: 'blur(10px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 1000,
-      padding: '1.5rem'
-    }}>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="add-model-title"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(5, 8, 18, 0.85)',
+        backdropFilter: 'blur(10px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+        padding: '1.5rem'
+      }}
+    >
       <div style={{
         width: '100%',
         maxWidth: '720px',
@@ -238,7 +249,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               <Download size={20} color="white" />
             </div>
             <div>
-              <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, color: 'white' }}>
+              <h2 id="add-model-title" style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, color: 'white' }}>
                 Aggiungi / Installa Modello NPU
               </h2>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
@@ -250,6 +261,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
           <button
             onClick={onClose}
             disabled={isSettingUp}
+            aria-label="Chiudi finestra"
             style={{
               background: 'none',
               border: 'none',
@@ -520,7 +532,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                     }}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem', lineHeight: '1.4' }}>
-                    Lo script deve sottoclassare <code>BaseQuantizer</code> o definire la funzione <code>quantize(gguf_path, out_dir)</code>. Per dettagli consulta <a href="file:///home/daino/progetti/alveare/docs/CUSTOM_QUANTIZERS.md" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-purple)' }}>docs/CUSTOM_QUANTIZERS.md</a>.
+                    Lo script deve sottoclassare <code>BaseQuantizer</code> o definire la funzione <code>quantize(gguf_path, out_dir)</code>.
                   </div>
                 </div>
               )}
@@ -621,7 +633,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
           borderTop: '1px solid var(--border-color)',
           background: 'rgba(0, 0, 0, 0.2)',
           display: 'flex',
-          justify: 'flex-end',
+          justifyContent: 'flex-end',
           gap: '0.75rem'
         }}>
           <button

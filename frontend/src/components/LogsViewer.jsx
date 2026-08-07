@@ -1,11 +1,35 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Terminal, Cpu, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Terminal, Cpu, RefreshCw } from 'lucide-react';
 
 export default function LogsViewer({ apiBase }) {
   const [logs, setLogs] = useState([]);
   const [npu, setNpu] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const logEndRef = useRef(null);
+
+  const fetchLogs = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/logs`);
+      if (res.ok) {
+        const data = await res.json();
+        setLogs(data.logs || []);
+      }
+    } catch (e) {
+      console.error("Failed to fetch logs:", e);
+    }
+  }, [apiBase]);
+
+  const fetchNpu = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/npu/check`);
+      if (res.ok) {
+        const data = await res.json();
+        setNpu(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch NPU status:", e);
+    }
+  }, [apiBase]);
 
   useEffect(() => {
     fetchLogs();
@@ -14,33 +38,13 @@ export default function LogsViewer({ apiBase }) {
       fetchLogs();
     }, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchLogs, fetchNpu]);
 
   useEffect(() => {
     if (autoScroll) {
       logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logs, autoScroll]);
-
-  const fetchLogs = async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/logs`);
-      const data = await res.json();
-      setLogs(data.logs || []);
-    } catch (e) {
-      console.error("Failed to fetch logs:", e);
-    }
-  };
-
-  const fetchNpu = async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/npu/check`);
-      const data = await res.json();
-      setNpu(data);
-    } catch (e) {
-      console.error("Failed to fetch NPU status:", e);
-    }
-  };
 
   return (
     <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -91,7 +95,7 @@ export default function LogsViewer({ apiBase }) {
               <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
               <span>Auto-scroll</span>
             </label>
-            <button className="btn-secondary" onClick={fetchLogs} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }}>
+            <button className="btn-secondary" onClick={fetchLogs} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }} aria-label="Aggiorna log">
               <RefreshCw size={14} /> Aggiorna
             </button>
           </div>

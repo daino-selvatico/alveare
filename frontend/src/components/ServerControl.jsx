@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Play, Square, RotateCw, Server, Cpu, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, Wrench, ChevronDown, ChevronUp, Layers, Plus, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Play, Square, RotateCw, Server, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
 import AddModelModal from './AddModelModal';
 
-export default function ServerControl({ apiBase, status, models, onRefresh }) {
+export default function ServerControl({ apiBase, status, models = [], modelsLoading = false, onRefresh }) {
   const [loading, setLoading] = useState(false);
-  const [targetModel, setTargetModel] = useState(status?.model || 'gemma4');
+  const [targetModel, setTargetModel] = useState(status?.model || (models.length > 0 ? models[0].id : 'gemma4'));
   const [host, setHost] = useState(status?.host || '127.0.0.1');
   const [port, setPort] = useState(status?.port || 8000);
   const [legacy, setLegacy] = useState(status?.legacy || false);
@@ -18,19 +18,27 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
   const [buildingModel, setBuildingModel] = useState(null);
   const [isAddModelOpen, setIsAddModelOpen] = useState(false);
 
-  useEffect(() => {
-    fetchKernelStatus();
-  }, [status?.model]);
-
-  const fetchKernelStatus = async () => {
+  const fetchKernelStatus = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/kernels/status`);
-      const data = await res.json();
-      setKernelStatus(data);
+      if (res.ok) {
+        const data = await res.json();
+        setKernelStatus(data);
+      }
     } catch (e) {
       console.error("Failed to fetch kernel status:", e);
     }
-  };
+  }, [apiBase]);
+
+  useEffect(() => {
+    fetchKernelStatus();
+  }, [status?.model, fetchKernelStatus]);
+
+  useEffect(() => {
+    if (models.length > 0 && !targetModel) {
+      setTargetModel(models[0].id);
+    }
+  }, [models, targetModel]);
 
   const handleDeleteModel = async (modelId) => {
     if (status?.is_running && status?.model === modelId) {
@@ -58,6 +66,10 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
 
   const handleStart = async (modelToStart) => {
     const selected = modelToStart || targetModel;
+    if (!selected) {
+      alert("Seleziona prima un modello da avviare.");
+      return;
+    }
     setLoading(true);
     try {
       await fetch(`${apiBase}/api/control/start`, {
@@ -135,8 +147,6 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
     }
   };
 
-  const activeModelObj = models.find(m => m.id === status?.model);
-
   return (
     <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       
@@ -160,7 +170,9 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
               {status?.is_running
                 ? `Server attivo su http://${status.host}:${status.port} (PID: ${status.pid}, Uptime: ${status.uptime_seconds}s)`
-                : "Seleziona un modello dalla scheda sottostante e clicca 'Carica & Avvia'."}
+                : models.length > 0
+                ? "Seleziona un modello dalla scheda sottostante e clicca 'Carica & Avvia'."
+                : "Nessun modello trovato. Clicca 'Aggiungi Modello' per iniziare."}
             </p>
           </div>
 
@@ -168,16 +180,23 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             {status?.is_running ? (
               <>
-                <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading}>
-                  <RotateCw size={18} /> Riavvia
+                <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading} aria-label="Riavvia server NPU">
+                  <RotateCw size={18} className={loading ? "pulse-icon" : ""} /> Riavvia
                 </button>
-                <button className="btn-danger" onClick={handleStop} disabled={loading}>
+                <button className="btn-danger" onClick={handleStop} disabled={loading} aria-label="Arresta server NPU">
                   <Square size={18} /> Arresta
                 </button>
               </>
             ) : (
-              <button className="btn-primary" onClick={() => handleStart(targetModel)} disabled={loading} style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
-                <Play size={18} /> Avvia Server NPU ({targetModel})
+              <button
+                className="btn-primary"
+                onClick={() => handleStart(targetModel)}
+                disabled={loading || models.length === 0}
+                style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}
+                aria-label="Avvia server NPU"
+              >
+                <Play size={18} className={loading ? "pulse-icon" : ""} />
+                {loading ? 'Avvio in corso...' : `Avvia Server NPU ${targetModel ? `(${targetModel})` : ''}`}
               </button>
             )}
           </div>
@@ -231,6 +250,7 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
               className="btn-secondary"
               style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#ef4444' }}
               onClick={() => handleStart(targetModel)}
+              aria-label="Riprova ad avviare il server"
             >
               Riprova
             </button>
@@ -238,10 +258,10 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
         )}
       </div>
 
-      {/* 2. UNIFIED MODEL GALLERY */}
+      {/* 2. UNIFIED MODEL GALLERY / EMPTY ONBOARDING STATE */}
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'white' }}>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-main)' }}>
             <HardDrive size={22} color="var(--accent-cyan)" /> Modelli Quantizzati Disponibili
           </h3>
 
@@ -262,132 +282,202 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
                 gap: '0.4rem',
                 boxShadow: '0 0 15px rgba(139, 92, 246, 0.4)'
               }}
+              aria-label="Apri finestra aggiungi modello"
             >
               <Plus size={16} /> Aggiungi Modello
             </button>
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
-          {models.map(m => {
-            const isServed = status?.is_running && status?.model === m.id;
-            const isSelected = targetModel === m.id;
-            const mKernel = kernelStatus?.[m.id] || (kernelStatus?.manifest_model_type === m.arch ? kernelStatus : null);
-            const isKernelMatching = mKernel?.manifest_exists;
-
-            return (
+        {/* Loading Skeletons */}
+        {modelsLoading ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
+            {[1, 2].map(n => (
               <div
-                key={m.id}
-                onClick={() => setTargetModel(m.id)}
-                className="glass-card"
-                style={{
-                  padding: '1.35rem',
-                  cursor: 'pointer',
-                  border: isServed ? '2px solid #10b981' : isSelected ? '2px solid var(--accent-purple)' : '1px solid var(--border-color)',
-                  background: isServed ? 'rgba(16, 185, 129, 0.08)' : isSelected ? 'rgba(139, 92, 246, 0.1)' : 'rgba(23, 32, 54, 0.6)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '1rem'
-                }}
-              >
-                {/* Header Card */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div>
-                    <h4 style={{ fontSize: '1.15rem', fontWeight: 700, color: isSelected ? '#c084fc' : 'white' }}>
-                      {m.id}
-                    </h4>
-                    <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                      Architettura: <strong>{m.arch}</strong> • Dimensione: {m.size_mb} MB
-                    </span>
-                  </div>
+                key={n}
+                className="glass-card pulse-icon"
+                style={{ height: '180px', borderRadius: '12px', opacity: 0.6 }}
+              />
+            ))}
+          </div>
+        ) : models.length === 0 ? (
+          /* First-run Empty State Onboarding Card */
+          <div
+            className="glass-card"
+            style={{
+              padding: '3rem 2rem',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '1.25rem',
+              maxWidth: '640px',
+              margin: '0 auto',
+              borderColor: 'rgba(139, 92, 246, 0.3)'
+            }}
+          >
+            <div style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '16px',
+              background: 'rgba(139, 92, 246, 0.15)',
+              border: '1px solid rgba(139, 92, 246, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: 'var(--shadow-glow)'
+            }}>
+              <HardDrive size={32} color="var(--accent-purple)" />
+            </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.3rem' }}>
-                    {isServed && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={12} /> IN ESECUZIONE</span>}
-                    {isServed && !status?.is_loaded && <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> CARICAMENTO ({status?.load_progress || 0}%)</span>}
-                    {isSelected && !isServed && <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.4)' }}>SELEZIONATO</span>}
-                  </div>
-                </div>
+            <div>
+              <h3 style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '0.5rem' }}>
+                Nessun Modello LLM Trovato
+              </h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
+                Per poter eseguire l'inferenza sull'hardware NPU AMD Ryzen AI, è necessario installare almeno un modello quantizzato.
+                Puoi scaricare con 1-click un modello supportato (come Gemma 4 12B) oppure importare un file <code>.gguf</code> locale.
+              </p>
+            </div>
 
-                {/* Performance Speed Badge if active */}
-                {isServed && status?.tok_per_sec > 0 && (
-                  <div style={{
-                    fontSize: '0.83rem',
-                    padding: '0.45rem 0.75rem',
-                    borderRadius: '6px',
-                    background: 'rgba(6, 182, 212, 0.15)',
-                    border: '1px solid rgba(6, 182, 212, 0.3)',
-                    color: 'var(--accent-cyan)',
+            <button
+              onClick={() => setIsAddModelOpen(true)}
+              className="btn-primary"
+              style={{ padding: '0.75rem 1.5rem', fontSize: '0.95rem' }}
+              aria-label="Guida aggiungi modello"
+            >
+              <Plus size={18} /> Scarica o Importa il tuo Primo Modello
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
+            {models.map(m => {
+              const isServed = status?.is_running && status?.model === m.id;
+              const isSelected = targetModel === m.id;
+              const mKernel = kernelStatus?.[m.id] || (kernelStatus?.manifest_model_type === m.arch ? kernelStatus : null);
+              const isKernelMatching = mKernel?.manifest_exists;
+
+              return (
+                <div
+                  key={m.id}
+                  onClick={() => setTargetModel(m.id)}
+                  className="glass-card"
+                  style={{
+                    padding: '1.35rem',
+                    cursor: 'pointer',
+                    border: isServed ? '2px solid #10b981' : isSelected ? '2px solid var(--accent-purple)' : '1px solid var(--border-color)',
+                    background: isServed ? 'rgba(16, 185, 129, 0.08)' : isSelected ? 'rgba(139, 92, 246, 0.1)' : 'rgba(23, 32, 54, 0.6)',
                     display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    fontWeight: 600
-                  }}>
-                    <span>Velocità Misurata:</span>
-                    <span>⚡ {status.tok_per_sec} tok/s</span>
+                    flexDirection: 'column',
+                    gap: '1rem'
+                  }}
+                >
+                  {/* Header Card */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <h4 style={{ fontSize: '1.15rem', fontWeight: 700, color: isSelected ? '#c084fc' : 'var(--text-main)' }}>
+                        {m.id}
+                      </h4>
+                      <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                        Architettura: <strong>{m.arch}</strong> • Dimensione: {m.size_mb} MB
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.3rem' }}>
+                      {isServed && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={12} /> IN ESECUZIONE</span>}
+                      {isServed && !status?.is_loaded && <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> CARICAMENTO ({status?.load_progress || 0}%)</span>}
+                      {isSelected && !isServed && <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.4)' }}>SELEZIONATO</span>}
+                    </div>
                   </div>
-                )}
 
-                {/* Kernel Status Indicator */}
-                <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span>Kernel Hardware NPU:</span>
-                  {isKernelMatching ? (
-                    <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                      ✓ Compilati ({mKernel.kernels_count} kernel)
-                    </span>
-                  ) : (
-                    <span style={{ color: '#fbbf24', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                      ⚠️ Non Compilati
-                    </span>
+                  {/* Performance Speed Badge if active */}
+                  {isServed && status?.tok_per_sec > 0 && (
+                    <div style={{
+                      fontSize: '0.83rem',
+                      padding: '0.45rem 0.75rem',
+                      borderRadius: '6px',
+                      background: 'rgba(6, 182, 212, 0.15)',
+                      border: '1px solid rgba(6, 182, 212, 0.3)',
+                      color: 'var(--accent-cyan)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      fontWeight: 600
+                    }}>
+                      <span>Velocità Misurata:</span>
+                      <span>⚡ {status.tok_per_sec} tok/s</span>
+                    </div>
                   )}
+
+                  {/* Kernel Status Indicator */}
+                  <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Kernel Hardware NPU:</span>
+                    {isKernelMatching ? (
+                      <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        ✓ Compilati ({mKernel.kernels_count} kernel)
+                      </span>
+                    ) : (
+                      <span style={{ color: '#fbbf24', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        ⚠️ Non Compilati
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div style={{ display: 'flex', gap: '0.6rem', marginTop: 'auto', paddingTop: '0.5rem' }}>
+                    <button
+                      className="btn-primary"
+                      style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem', justifyContent: 'center' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTargetModel(m.id);
+                        if (isServed) {
+                          handleRestart(m.id);
+                        } else {
+                          handleStart(m.id);
+                        }
+                      }}
+                      disabled={loading}
+                      aria-label={`Avvia o riavvia modello ${m.id}`}
+                    >
+                      {isServed ? <RotateCw size={14} /> : <Play size={14} />}
+                      {isServed ? "Riavvia" : "Carica & Avvia"}
+                    </button>
+
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTargetModel(m.id);
+                        handleBuildKernels(m.id);
+                      }}
+                      disabled={buildingModel === m.id}
+                      title="Compila/Rigenera kernel .xclbin NPU per questo modello"
+                      aria-label={`Compila kernel NPU per ${m.id}`}
+                    >
+                      <Hammer size={14} /> {buildingModel === m.id ? "Compilazione..." : "Compila Kernel"}
+                    </button>
+
+                    <button
+                      className="btn-danger"
+                      style={{ padding: '0.5rem 0.65rem', fontSize: '0.85rem' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteModel(m.id);
+                      }}
+                      disabled={loading || (status?.is_running && status?.model === m.id)}
+                      title="Elimina modello, pesi quantizzati e kernel da disco"
+                      aria-label={`Elimina modello ${m.id}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-
-                {/* Action Buttons */}
-                <div style={{ display: 'flex', gap: '0.6rem', marginTop: 'auto', paddingTop: '0.5rem' }}>
-                  <button
-                    className="btn-primary"
-                    style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem', justifyContent: 'center' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setTargetModel(m.id);
-                      isServed ? handleRestart(m.id) : handleStart(m.id);
-                    }}
-                    disabled={loading}
-                  >
-                    {isServed ? <RotateCw size={14} /> : <Play size={14} />}
-                    {isServed ? "Riavvia" : "Carica & Avvia"}
-                  </button>
-
-                  <button
-                    className="btn-secondary"
-                    style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setTargetModel(m.id);
-                      handleBuildKernels(m.id);
-                    }}
-                    disabled={buildingModel === m.id}
-                    title="Compila/Rigenera kernel .xclbin NPU per questo modello"
-                  >
-                    <Hammer size={14} /> {buildingModel === m.id ? "Compilazione..." : "Compila Kernel"}
-                  </button>
-
-                  <button
-                    className="btn-danger"
-                    style={{ padding: '0.5rem 0.65rem', fontSize: '0.85rem' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteModel(m.id);
-                    }}
-                    disabled={loading || (status?.is_running && status?.model === m.id)}
-                    title="Elimina modello, pesi quantizzati e kernel da disco"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* 3. SETTINGS & OPTIONS PANEL */}
@@ -397,7 +487,7 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
             <Settings size={20} color="var(--accent-cyan)" /> Configurazione Server & Opzioni Avanzate Kernel
           </h3>
 
-          <button className="btn-secondary" onClick={() => setShowBuildOptions(!showBuildOptions)} style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem' }}>
+          <button className="btn-secondary" onClick={() => setShowBuildOptions(!showBuildOptions)} style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem' }} aria-expanded={showBuildOptions}>
             {showBuildOptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />} Opzioni Avanzate Compilazione
           </button>
         </div>

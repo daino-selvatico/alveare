@@ -19,7 +19,10 @@ import {
   FileText,
   Upload,
   X,
-  Sliders
+  Sliders,
+  AlertTriangle,
+  RefreshCw,
+  HardDrive
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -124,6 +127,7 @@ function CodeBlock({ _node, inline, className, children, ...props }) {
         </span>
         <button
           onClick={handleCopyCode}
+          aria-label="Copia codice negli appunti"
           style={{
             background: 'none',
             border: 'none',
@@ -154,7 +158,14 @@ function CodeBlock({ _node, inline, className, children, ...props }) {
   );
 }
 
-export default function ChatPlayground({ apiBase, activeModel, isServerRunning }) {
+export default function ChatPlayground({
+  apiBase,
+  activeModel,
+  isServerRunning,
+  models = [],
+  modelsLoading = false,
+  onNavigateToControl
+}) {
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvIdState] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -163,6 +174,8 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [expandedThinking, setExpandedThinking] = useState({});
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [generationError, setGenerationError] = useState(null);
+  const [lastUserPrompt, setLastUserPrompt] = useState(null);
 
   // File upload state
   const [attachments, setAttachments] = useState([]);
@@ -174,7 +187,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const fileInputRef = useRef(null);
   const uploadMenuRef = useRef(null);
 
-  // Generation parameters state (stored per conversation and persisted in localStorage)
+  // Generation parameters state
   const [genSettings, setGenSettings] = useState(() => getGlobalSettings());
   const [showSettings, setShowSettings] = useState(false);
 
@@ -182,6 +195,25 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
+
+  // Keyboard shortcut listener: Esc to stop generation or close modals
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (isGenerating) {
+          handleStop();
+        } else if (previewImageModal) {
+          setPreviewImageModal(null);
+        } else if (showSettings) {
+          setShowSettings(false);
+        } else if (showUploadMenu) {
+          setShowUploadMenu(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isGenerating, previewImageModal, showSettings, showUploadMenu]);
 
   // Helper to load settings from conversation or global default
   const applyConvSettings = (conv) => {
@@ -253,7 +285,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
-  // Settings update handlers
   const handleUpdateSettings = (newSettings) => {
     setGenSettings(newSettings);
     if (activeConvId) {
@@ -276,7 +307,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     handleUpdateSettings(globalDefaults);
   };
 
-  // Conversation history actions
   const handleSelectConversation = (id) => {
     if (isGenerating) {
       if (!window.confirm("C'è una generazione in corso. Vuoi interromperla per cambiare conversazione?")) {
@@ -293,6 +323,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
       setExpandedThinking({});
       setAttachments([]);
+      setGenerationError(null);
     }
   };
 
@@ -312,6 +343,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
     setExpandedThinking({});
     setAttachments([]);
+    setGenerationError(null);
   };
 
   const handleRenameConversation = (id, newTitle) => {
@@ -352,9 +384,9 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
     setExpandedThinking({});
     setAttachments([]);
+    setGenerationError(null);
   };
 
-  // Upload actions
   const handleOpenUpload = (filterType) => {
     let accept = '*/*';
     if (filterType === 'image') accept = 'image/*';
@@ -370,8 +402,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
   const handleFilesSelected = async (fileList) => {
     if (!fileList || fileList.length === 0) return;
-
-    setIsUploading(true);
 
     const newAttachments = [];
 
@@ -408,14 +438,12 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     }
 
     setAttachments(prev => [...prev, ...newAttachments]);
-    setIsUploading(false);
   };
 
   const removeAttachment = (id) => {
     setAttachments(prev => prev.filter(a => a.id !== id));
   };
 
-  // Drag and drop handlers
   const handleDragOver = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -440,11 +468,13 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     }
   };
 
-  // Send message
   const handleSend = async (overridePrompt) => {
     const messageText = overridePrompt !== undefined ? overridePrompt : input;
     if ((!messageText || !messageText.trim()) && attachments.length === 0) return;
     if (!isServerRunning) return;
+
+    setGenerationError(null);
+    setLastUserPrompt(messageText);
 
     let fullPromptContent = messageText.trim();
     let displayContent = messageText.trim();
@@ -547,7 +577,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
       if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`Errore Server (${response.status}): ${errText}`);
+        throw new Error(`Errore Server (${response.status}): ${errText || 'Servizio momentaneamente non disponibile'}`);
       }
 
       const reader = response.body.getReader();
@@ -601,13 +631,14 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
-        accumulatedContent += `\n\n⚠️ [Errore]: ${err.message}`;
+        const friendlyErrorMsg = `Impossibile completare la risposta. ${err.message || 'Si è verificato un errore durante la connessione al server NPU.'}`;
+        setGenerationError(friendlyErrorMsg);
         setMessages(prev => {
           const updated = [...prev];
           if (updated[assistantIndex]) {
             updated[assistantIndex] = {
               ...updated[assistantIndex],
-              content: accumulatedContent
+              content: accumulatedContent ? `${accumulatedContent}\n\n⚠️ ${friendlyErrorMsg}` : `⚠️ ${friendlyErrorMsg}`
             };
           }
           return updated;
@@ -646,7 +677,6 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
   const activeConvObj = conversations.find(c => c.id === activeConvId);
 
-  // Check if non-default settings are present
   const isCustomizedSettings =
     genSettings.temperature !== DEFAULT_SETTINGS.temperature ||
     genSettings.topP !== DEFAULT_SETTINGS.topP ||
@@ -661,6 +691,8 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       style={{ display: 'flex', height: 'calc(100vh - 64px)', width: '100%', overflow: 'hidden', position: 'relative' }}
+      role="region"
+      aria-label="Area Playground Chat Multimodale"
     >
       {/* Hidden file input */}
       <input
@@ -670,6 +702,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
         style={{ display: 'none' }}
         accept={acceptFilter}
         multiple
+        aria-hidden="true"
       />
 
       {/* Drag overlay */}
@@ -720,9 +753,11 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           padding: '0.85rem 1.5rem',
           borderBottom: '1px solid var(--border-color)',
           display: 'flex',
-          justifyContent: 'space-between',
+          justify: 'space-between',
           alignItems: 'center',
-          background: 'var(--bg-card)'
+          background: 'var(--bg-card)',
+          flexWrap: 'wrap',
+          gap: '0.5rem'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
             <span style={{
@@ -748,7 +783,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               </span>
             )}
             
-            <button className="btn-secondary" onClick={handleNewConversation} title="Nuova Conversazione">
+            <button className="btn-secondary" onClick={handleNewConversation} title="Nuova Conversazione" aria-label="Crea una nuova conversazione">
               <Plus size={16} /> Nuova Chat
             </button>
 
@@ -756,6 +791,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               className={`btn-secondary ${showSettings ? 'active' : ''}`}
               onClick={() => setShowSettings(!showSettings)}
               title="Parametri di generazione (System prompt, Temperature, CoT...)"
+              aria-label="Apri impostazioni parametri di generazione"
               style={{ position: 'relative' }}
             >
               <Sliders size={16} /> Impostazioni
@@ -776,8 +812,47 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           </div>
         </div>
 
-        {/* Message Stream or Welcome Screen */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        {/* First-Run No Models Onboarding Banner */}
+        {models.length === 0 && !modelsLoading && (
+          <div style={{
+            padding: '1rem 1.5rem',
+            background: 'linear-gradient(90deg, rgba(245, 158, 11, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%)',
+            borderBottom: '1px solid rgba(245, 158, 11, 0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+            flexWrap: 'wrap'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <HardDrive size={22} color="var(--accent-amber)" style={{ flexShrink: 0 }} />
+              <div>
+                <strong style={{ color: 'var(--text-main)', fontSize: '0.9rem' }}>
+                  Nessun Modello LLM Presente su Disco
+                </strong>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  Per chattare con l'hardware AMD Ryzen AI, scarica o aggiungi il tuo primo modello quantizzato.
+                </div>
+              </div>
+            </div>
+
+            <button
+              className="btn-primary"
+              onClick={onNavigateToControl}
+              style={{ padding: '0.45rem 0.95rem', fontSize: '0.85rem' }}
+              aria-label="Vai al Control Panel per aggiungere un modello"
+            >
+              <Plus size={16} /> Scarica Modello
+            </button>
+          </div>
+        )}
+
+        {/* Message Stream or Empty Welcome Screen */}
+        <div
+          style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}
+          role="log"
+          aria-live="polite"
+        >
           {messages.length === 0 ? (
             <div style={{
               flex: 1,
@@ -810,7 +885,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 </h2>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
                   Chatta direttamente in locale con i modelli LLM accelerati da hardware AMD Ryzen AI (XDNA2 NPU).
-                  Supporta caricamento di file multimodali (immagini, audio, documenti) e storicizzazione delle conversazioni.
+                  Supporta caricamento di file multimodali (immagini, audio, documenti) e ragionamento Chain-of-Thought.
                 </p>
               </div>
 
@@ -831,17 +906,20 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                   <button
                     key={idx}
                     onClick={() => handleSend(prompt.desc)}
+                    disabled={!isServerRunning || models.length === 0}
                     style={{
                       background: 'var(--bg-card)',
                       border: '1px solid var(--border-color)',
                       borderRadius: '12px',
                       padding: '1rem',
                       textAlign: 'left',
-                      cursor: 'pointer',
+                      cursor: isServerRunning && models.length > 0 ? 'pointer' : 'not-allowed',
                       transition: 'all 0.2s ease',
-                      color: 'var(--text-main)'
+                      color: 'var(--text-main)',
+                      opacity: isServerRunning && models.length > 0 ? 1 : 0.6
                     }}
                     className="glass-card"
+                    aria-label={`Invia prompt: ${prompt.title}`}
                   >
                     <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--accent-purple)', marginBottom: '0.25rem' }}>
                       {prompt.title}
@@ -952,6 +1030,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                         }}>
                           <button
                             onClick={() => toggleThinking(idx)}
+                            aria-expanded={isExpanded}
                             style={{
                               width: '100%',
                               padding: '0.6rem 0.85rem',
@@ -994,19 +1073,29 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                         </div>
                       )}
 
+                      {/* Streaming First-Token Pulse Placeholder */}
+                      {isCurrentlyGeneratingThis && !displayMessageText && !thinking && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--accent-cyan)', fontSize: '0.9rem', padding: '0.2rem 0' }}>
+                          <Sparkles size={18} className="pulse-icon" />
+                          <span>Inizializzazione contesto NPU e prima risposta in corso...</span>
+                        </div>
+                      )}
+
                       {/* Markdown Text Body */}
                       <div style={{ fontSize: '0.94rem', lineHeight: '1.6' }}>
                         {isUser ? (
                           <div style={{ whiteSpace: 'pre-wrap' }}>{displayMessageText}</div>
                         ) : (
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            components={{
-                              code: CodeBlock
-                            }}
-                          >
-                            {displayMessageText || (isGenerating && idx === messages.length - 1 ? 'Thinking...' : '')}
-                          </ReactMarkdown>
+                          displayMessageText && (
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                code: CodeBlock
+                              }}
+                            >
+                              {displayMessageText}
+                            </ReactMarkdown>
+                          )
                         )}
                       </div>
 
@@ -1015,6 +1104,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.6rem' }}>
                           <button
                             onClick={() => copyToClipboard(displayMessageText, idx)}
+                            aria-label="Copia testo risposta"
                             style={{
                               background: 'none',
                               border: 'none',
@@ -1037,6 +1127,38 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               );
             })
           )}
+
+          {/* Resilient Error Retry Banner for failed generation */}
+          {generationError && lastUserPrompt && !isGenerating && (
+            <div style={{
+              alignSelf: 'center',
+              maxWidth: '600px',
+              width: '100%',
+              margin: '0.5rem 0',
+              padding: '0.85rem 1.25rem',
+              borderRadius: '12px',
+              background: 'rgba(239, 68, 68, 0.12)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '1rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: '#fca5a5', fontSize: '0.85rem' }}>
+                <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+                <span>La generazione si è interrotta. Desideri riprovare l'ultimo messaggio?</span>
+              </div>
+              <button
+                className="btn-secondary"
+                onClick={() => handleSend(lastUserPrompt)}
+                style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', color: '#fca5a5', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+                aria-label="Riprova invio messaggio"
+              >
+                <RefreshCw size={14} /> Riprova
+              </button>
+            </div>
+          )}
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -1077,6 +1199,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 <button
                   onClick={() => removeAttachment(att.id)}
                   style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}
+                  aria-label={`Rimuovi allegato ${att.name}`}
                 >
                   <X size={12} />
                 </button>
@@ -1087,7 +1210,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
         {/* Input Bar */}
         <div style={{
-          padding: '1rem 1.5rem',
+          padding: '0.85rem 1.5rem',
           borderTop: '1px solid var(--border-color)',
           background: 'var(--bg-secondary)'
         }}>
@@ -1099,6 +1222,9 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 className="btn-secondary"
                 onClick={() => setShowUploadMenu(!showUploadMenu)}
                 title="Allega file (Immagini, Audio, Documenti)"
+                aria-label="Apri menu allegati"
+                aria-expanded={showUploadMenu}
+                disabled={!isServerRunning || isGenerating}
                 style={{ padding: '0.75rem', borderRadius: '10px' }}
               >
                 <Paperclip size={18} />
@@ -1106,36 +1232,42 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
               {/* Upload Dropdown Menu */}
               {showUploadMenu && (
-                <div style={{
-                  position: 'absolute',
-                  bottom: '100%',
-                  left: 0,
-                  marginBottom: '0.5rem',
-                  background: 'var(--bg-secondary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '10px',
-                  padding: '0.4rem',
-                  boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.2rem',
-                  zIndex: 100,
-                  width: '170px'
-                }}>
+                <div
+                  role="menu"
+                  style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: 0,
+                    marginBottom: '0.5rem',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '10px',
+                    padding: '0.4rem',
+                    boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.2rem',
+                    zIndex: 100,
+                    width: '170px'
+                  }}
+                >
                   <button
                     onClick={() => handleOpenUpload('image')}
+                    role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
                     <ImageIcon size={16} color="var(--accent-purple)" /> Immagine
                   </button>
                   <button
                     onClick={() => handleOpenUpload('audio')}
+                    role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
                     <Music size={16} color="var(--accent-cyan)" /> Audio
                   </button>
                   <button
                     onClick={() => handleOpenUpload('document')}
+                    role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
                     <FileText size={16} color="var(--accent-green)" /> Documento
@@ -1153,8 +1285,15 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                   handleSend();
                 }
               }}
-              placeholder={isServerRunning ? "Invia un messaggio o trascina file qui... (Invio per inviare, Shift+Invio per nuova riga)" : "Avvia prima il server per chattare!"}
-              disabled={!isServerRunning || isGenerating}
+              placeholder={
+                !isServerRunning
+                  ? "Avvia prima il server nel Control Panel per chattare!"
+                  : models.length === 0
+                  ? "Nessun modello presente su disco. Scarica prima un modello!"
+                  : "Invia un messaggio o trascina file qui... (Invio per inviare, Shift+Invio per nuova riga)"
+              }
+              disabled={!isServerRunning || isGenerating || models.length === 0}
+              aria-label="Campo testo messaggio"
               style={{
                 flex: 1,
                 padding: '0.8rem 1rem',
@@ -1171,19 +1310,32 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
             />
 
             {isGenerating ? (
-              <button className="btn-danger" onClick={handleStop} style={{ height: '52px' }}>
+              <button
+                className="btn-danger"
+                onClick={handleStop}
+                style={{ height: '52px' }}
+                aria-label="Interrompi generazione"
+                title="Ferma la generazione in corso (Tasto Esc)"
+              >
                 <StopCircle size={20} /> Ferma
               </button>
             ) : (
               <button
                 className="btn-primary"
                 onClick={() => handleSend()}
-                disabled={!isServerRunning || (!input.trim() && attachments.length === 0)}
+                disabled={!isServerRunning || (!input.trim() && attachments.length === 0) || models.length === 0}
                 style={{ height: '52px' }}
+                aria-label="Invia messaggio"
               >
                 <Send size={18} /> Invia
               </button>
             )}
+          </div>
+
+          {/* Keyboard shortcut legend footer */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.4rem', fontSize: '0.72rem', color: 'var(--text-subtle)' }}>
+            <span>Caricamento rapido: trascina immagini, audio o documenti direttamente nella finestra</span>
+            <span><code>Enter</code> invia • <code>Shift+Enter</code> nuova riga • <code>Esc</code> ferma</span>
           </div>
         </div>
       </div>
@@ -1192,6 +1344,8 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       {previewImageModal && (
         <div
           onClick={() => setPreviewImageModal(null)}
+          role="dialog"
+          aria-label="Anteprima Immagine"
           style={{
             position: 'fixed',
             inset: 0,

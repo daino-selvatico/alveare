@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Cpu, CheckCircle, AlertTriangle, ArrowRight, Zap, Server, Sliders, Check } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Cpu, CheckCircle, AlertTriangle, ArrowRight, Zap, Check } from 'lucide-react';
 
 export default function OnboardingWizard({ onComplete, apiBase }) {
   const [step, setStep] = useState(1);
@@ -14,11 +14,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
   const [legacy, setLegacy] = useState(false);
   const [offline, setOffline] = useState(false);
 
-  useEffect(() => {
-    fetchInitialData();
-  }, []);
-
-  const fetchInitialData = async () => {
+  const fetchInitialData = useCallback(async () => {
     setLoading(true);
     try {
       const [npuRes, modelsRes] = await Promise.all([
@@ -30,7 +26,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
       
       setNpuStatus(npuData);
       setModels(modelsData);
-      if (modelsData.length > 0) {
+      if (modelsData && modelsData.length > 0) {
         setSelectedModel(modelsData[0].id);
       }
     } catch (e) {
@@ -38,7 +34,11 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiBase]);
+
+  useEffect(() => {
+    fetchInitialData();
+  }, [fetchInitialData]);
 
   const handleFinish = async () => {
     // 1. Save config first_launch = false
@@ -192,7 +192,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                     background: selectedModel === m.id ? 'rgba(139, 92, 246, 0.12)' : 'rgba(255,255,255,0.02)',
                     cursor: 'pointer',
                     display: 'flex',
-                    justify: 'space-between',
+                    justifyContent: 'space-between',
                     alignItems: 'center',
                     transition: 'all 0.2s ease'
                   }}
