@@ -5,6 +5,41 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+_Progress since alpha.1, toward the 2.0 release. Gemma-3 now runs on the fast NPU
+FFN (the CPU fallback is gone), decoding gained **configurable sampling**, and the
+web UI grew into a real chat app: streaming, conversation history, file upload, and a
+generation-settings panel._
+
+### Added
+- **Sampling (temperature / top-k / top-p / seed).** The decoder is no longer
+  greedy-only: `temperature`, `top_p`, `top_k`, and `seed` are read from the
+  OpenAI-style request body. `temperature<=0` keeps the exact greedy argmax (the
+  12B/e4b/gemma3 defaults stay deterministic/bit-exact); `temperature>0` does
+  temperature scaling → optional top-k → nucleus (top-p) → multinomial sampling. The
+  RNG is seeded once per request, so a fixed `seed` reproduces the whole generation
+  while `seed=0` is nondeterministic.
+- **Real-time streaming chat + Markdown** in the web UI (SSE token-by-token, code
+  blocks with copy, auto-scroll, Stop).
+- **Conversation history & multi-turn** — persistent conversations (localStorage),
+  sidebar with new/rename/delete, and full-history requests that exploit the runtime's
+  KV-cache prefix reuse.
+- **Multimodal file upload** — images/audio/documents with drag-and-drop, attachment
+  chips, and inline players/preview.
+- **Generation-settings panel** — system prompt (with presets), temperature/top-p/
+  top-k sliders, max-tokens/context, thinking toggle, plus a dark/light theme; settings
+  persist per-conversation.
+- **Model-management UX** — live model-load progress and measured tok/s surfaced from
+  the server logs, with readable error banners on load failure.
+- **2.0 documentation** — refreshed README plus quickstart, adding-models, and sampling
+  guides.
+
+### Fixed
+- **Gemma-3 back on the NPU FFN.** The H=2048 fused-FFN kernel was NaN-ing at runtime
+  because `build_kernels.py`'s direct-path `.compile(xclbin_path, inst_path)` bypasses
+  the jit cache and emits a broken (~65 KB smaller) xclbin. It now warms the cache with
+  a no-arg `.compile()` and copies the correct artifacts, so Gemma-3 drops the CPU
+  fallback and decodes ~1.4× faster on the NPU (~276 ms/token). 12B/e4b unaffected.
+
 ## [2.0.0-alpha.1] — 2026-08-05
 
 _First 2.0 pre-release. Alveare now serves **three Gemma families** end-to-end on
