@@ -113,6 +113,43 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
   const handleStartSetup = async () => {
     setErrorMessage('');
+
+    // Pre-validation
+    if (mode === 'auto') {
+      const alias = autoAlias.trim() || selectedSupported;
+      if (!alias) {
+        setErrorMessage("L'alias del modello è obbligatorio.");
+        return;
+      }
+      if (!/^[a-zA-Z0-9_\-]+$/.test(alias)) {
+        setErrorMessage("L'alias del modello può contenere solo lettere, numeri, trattini e underscore.");
+        return;
+      }
+    } else {
+      const alias = manualAlias.trim();
+      const path = localGgufPath.trim();
+      if (!path) {
+        setErrorMessage("Inserisci il percorso assoluto del file .gguf locale.");
+        return;
+      }
+      if (!path.toLowerCase().endsWith('.gguf')) {
+        setErrorMessage("Il file specificato deve avere estensione .gguf.");
+        return;
+      }
+      if (!alias) {
+        setErrorMessage("L'alias del modello è obbligatorio.");
+        return;
+      }
+      if (!/^[a-zA-Z0-9_\-]+$/.test(alias)) {
+        setErrorMessage("L'alias del modello può contenere solo lettere, numeri, trattini e underscore.");
+        return;
+      }
+      if (manualArch === 'custom' && !customScriptPath.trim()) {
+        setErrorMessage("Specificare il percorso dello script Python quantizzatore custom.");
+        return;
+      }
+    }
+
     setIsSettingUp(true);
     setProgress(5);
     setLogs([]);

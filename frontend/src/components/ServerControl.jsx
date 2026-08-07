@@ -141,42 +141,101 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
     <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       
       {/* 1. HERO SERVER STATUS BANNER */}
-      <div className="glass-card" style={{ padding: '1.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-            <Server size={26} color="var(--accent-purple)" />
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>Inference Engine Controller</h2>
+      <div className="glass-card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+              <Server size={26} color="var(--accent-purple)" />
+              <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>Inference Engine Controller</h2>
+              
+              {status?.status === 'running' && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={14} /> In Esecuzione ({status.model})</span>}
+              {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
+                <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" /> Caricamento Modello ({status?.load_progress || 0}%)</span>
+              )}
+              {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> Server Spento</span>}
+              {status?.status === 'error' && <span className="badge badge-danger"><AlertCircle size={14} /> Errore Server</span>}
+              {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> Compilazione Kernel NPU...</span>}
+            </div>
             
-            {status?.status === 'running' && <span className="badge badge-success"><CheckCircle size={14} /> In Esecuzione ({status.model})</span>}
-            {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> Server Spento</span>}
-            {status?.status === 'starting' && <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" /> In Avvio...</span>}
-            {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> Compilazione Kernel NPU in corso...</span>}
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+              {status?.is_running
+                ? `Server attivo su http://${status.host}:${status.port} (PID: ${status.pid}, Uptime: ${status.uptime_seconds}s)`
+                : "Seleziona un modello dalla scheda sottostante e clicca 'Carica & Avvia'."}
+            </p>
           </div>
-          
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            {status?.is_running
-              ? `Server attivo su http://${status.host}:${status.port} (PID: ${status.pid}, Uptime: ${status.uptime_seconds}s)`
-              : "Seleziona un modello dalla scheda sottostante e clicca 'Carica & Avvia'."}
-          </p>
+
+          {/* Global Action Controls */}
+          <div style={{ display: 'flex', gap: '0.75rem' }}>
+            {status?.is_running ? (
+              <>
+                <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading}>
+                  <RotateCw size={18} /> Riavvia
+                </button>
+                <button className="btn-danger" onClick={handleStop} disabled={loading}>
+                  <Square size={18} /> Arresta
+                </button>
+              </>
+            ) : (
+              <button className="btn-primary" onClick={() => handleStart(targetModel)} disabled={loading} style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
+                <Play size={18} /> Avvia Server NPU ({targetModel})
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Global Action Controls */}
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
-          {status?.is_running ? (
-            <>
-              <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading}>
-                <RotateCw size={18} /> Riavvia
-              </button>
-              <button className="btn-danger" onClick={handleStop} disabled={loading}>
-                <Square size={18} /> Arresta
-              </button>
-            </>
-          ) : (
-            <button className="btn-primary" onClick={() => handleStart(targetModel)} disabled={loading} style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
-              <Play size={18} /> Avvia Server NPU ({targetModel})
+        {/* Model Load Progress Bar */}
+        {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
+          <div style={{
+            background: 'rgba(0,0,0,0.3)',
+            borderRadius: '10px',
+            padding: '1rem',
+            border: '1px solid rgba(245, 158, 11, 0.3)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 600, color: 'white', marginBottom: '0.4rem' }}>
+              <span>{status?.load_step || "Caricamento pesi layer e inizializzazione NPU in corso..."}</span>
+              <span style={{ color: '#fbbf24' }}>{status?.load_progress || 0}%</span>
+            </div>
+            <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                width: `${status?.load_progress || 0}%`,
+                background: 'linear-gradient(90deg, #f59e0b 0%, #10b981 100%)',
+                borderRadius: '4px',
+                transition: 'width 0.3s ease'
+              }} />
+            </div>
+          </div>
+        )}
+
+        {/* Error Alert Box */}
+        {(status?.status === 'error' || status?.last_error) && (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            borderRadius: '10px',
+            padding: '1rem 1.25rem',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '0.85rem'
+          }}>
+            <AlertCircle size={22} color="#ef4444" style={{ marginTop: '0.1rem', flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ color: '#ef4444', fontWeight: 700, fontSize: '0.95rem', marginBottom: '0.25rem' }}>
+                Errore durante l'esecuzione del Server di Inferenza
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', maxHeight: '120px', overflowY: 'auto' }}>
+                {status?.last_error || "Il server si è arrestato inaspettatamente."}
+              </div>
+            </div>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#ef4444' }}
+              onClick={() => handleStart(targetModel)}
+            >
+              Riprova
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* 2. UNIFIED MODEL GALLERY */}
@@ -243,10 +302,30 @@ export default function ServerControl({ apiBase, status, models, onRefresh }) {
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.3rem' }}>
-                    {isServed && <span className="badge badge-success"><CheckCircle size={12} /> IN ESECUZIONE</span>}
+                    {isServed && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={12} /> IN ESECUZIONE</span>}
+                    {isServed && !status?.is_loaded && <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> CARICAMENTO ({status?.load_progress || 0}%)</span>}
                     {isSelected && !isServed && <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.4)' }}>SELEZIONATO</span>}
                   </div>
                 </div>
+
+                {/* Performance Speed Badge if active */}
+                {isServed && status?.tok_per_sec > 0 && (
+                  <div style={{
+                    fontSize: '0.83rem',
+                    padding: '0.45rem 0.75rem',
+                    borderRadius: '6px',
+                    background: 'rgba(6, 182, 212, 0.15)',
+                    border: '1px solid rgba(6, 182, 212, 0.3)',
+                    color: 'var(--accent-cyan)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    fontWeight: 600
+                  }}>
+                    <span>Velocità Misurata:</span>
+                    <span>⚡ {status.tok_per_sec} tok/s</span>
+                  </div>
+                )}
 
                 {/* Kernel Status Indicator */}
                 <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

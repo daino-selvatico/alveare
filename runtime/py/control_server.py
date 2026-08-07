@@ -5,10 +5,16 @@ import json
 import asyncio
 import subprocess
 import signal
+import re
+import httpx
+import base64
+import io
+import mimetypes
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +25,122 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT_DIR / ".alveare_config.json"
 
 app = FastAPI(title="Alveare Control & Web UI Backend")
+
+def format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{round(size_bytes / 1024, 1)} KB"
+    else:
+        return f"{round(size_bytes / (1024 * 1024), 1)} MB"
+
+def extract_document_text(data: bytes, filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            text = "\n".join([page.extract_text() or "" for page in reader.pages])
+            if text.strip():
+                return text.strip()
+        except Exception:
+            pass
+        try:
+            import PyPDF2
+            reader = PyPDF2.PdfReader(io.BytesIO(data))
+            text = "\n".join([page.extract_text() or "" for page in reader.pages])
+            if text.strip():
+                return text.strip()
+        except Exception:
+            pass
+        import re
+        matches = re.findall(rb'\((.*?)\)\s*Tj', data)
+        if matches:
+            extracted = " ".join([m.decode('utf-8', errors='ignore') for m in matches if len(m) > 1])
+            if len(extracted.strip()) > 20:
+                return extracted.strip()
+
+    try:
+        return data.decode("utf-8", errors="replace")
+    except Exception:
+        try:
+            return data.decode("latin-1", errors="replace")
+        except Exception:
+            return f"[File binario non leggibile come testo: {filename}]"
+
+def parse_file_upload(file_name: str, content: bytes, mime_type: Optional[str] = None) -> Dict[str, Any]:
+    if not mime_type or mime_type == "application/octet-stream":
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+    ext = Path(file_name).suffix.lower()
+    size_bytes = len(content)
+    size_str = format_size(size_bytes)
+    file_id = f"file-{uuid.uuid4().hex[:8]}"
+
+    file_type = "other"
+    if mime_type.startswith("image/") or ext in [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]:
+        file_type = "image"
+    elif mime_type.startswith("audio/") or ext in [".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac"]:
+        file_type = "audio"
+    elif mime_type.startswith("text/") or mime_type in ["application/pdf", "application/json", "application/xml"] or ext in [
+        ".pdf", ".txt", ".md", ".csv", ".json", ".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css",
+        ".cpp", ".h", ".c", ".rs", ".go", ".java", ".yaml", ".yml", ".sh", ".log", ".rst", ".tex", ".ini", ".env"
+    ]:
+        file_type = "document"
+
+    preview_url = ""
+    extracted_text = ""
+    metadata = {}
+
+    if file_type == "image":
+        b64_str = base64.b64encode(content).decode("utf-8")
+        preview_url = f"data:{mime_type};base64,{b64_str}"
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(content))
+            metadata["width"] = img.width
+            metadata["height"] = img.height
+            metadata["format"] = img.format
+            extracted_text = f"[Allegato Immagine: '{file_name}' ({img.width}x{img.height} px, {size_str})]"
+        except Exception:
+            extracted_text = f"[Allegato Immagine: '{file_name}' ({size_str})]"
+
+    elif file_type == "audio":
+        b64_str = base64.b64encode(content).decode("utf-8")
+        preview_url = f"data:{mime_type};base64,{b64_str}"
+        try:
+            import wave
+            with wave.open(io.BytesIO(content), "rb") as wf:
+                duration = round(wf.getnframes() / float(wf.getframerate()), 1)
+                metadata["duration_seconds"] = duration
+                metadata["channels"] = wf.getnchannels()
+                extracted_text = f"[Allegato Audio: '{file_name}' (Durata: {duration}s, {size_str})]"
+        except Exception:
+            extracted_text = f"[Allegato Audio: '{file_name}' ({size_str})]"
+
+    elif file_type == "document":
+        full_text = extract_document_text(content, file_name)
+        truncated_text = full_text[:12000]
+        if len(full_text) > 12000:
+            truncated_text += f"\n... [Testo troncato a 12.000 car. su {len(full_text)} totali]"
+        
+        extracted_text = f"[Allegato Documento '{file_name}' ({size_str})]:\n```\n{truncated_text}\n```"
+        metadata["character_count"] = len(full_text)
+
+    else:
+        extracted_text = f"[Allegato File: '{file_name}' ({size_str}, Tipo: {mime_type})]"
+
+    return {
+        "file_id": file_id,
+        "filename": file_name,
+        "file_type": file_type,
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+        "size_formatted": size_str,
+        "extracted_text": extracted_text,
+        "preview_url": preview_url,
+        "metadata": metadata
+    }
 
 # Enable CORS for local dev (e.g. Vite on port 5173)
 app.add_middleware(
@@ -45,6 +167,11 @@ class ServerState:
         self.last_error: str = ""
         self.log_buffer: List[str] = []
         self.max_logs: int = 500
+        self.load_progress: float = 0.0
+        self.load_step: str = ""
+        self.is_loaded: bool = False
+        self.tok_per_sec: float = 0.0
+        self.total_layers: int = 48
 
 class SetupState:
     def __init__(self):
@@ -158,6 +285,53 @@ def discover_models() -> List[Dict[str, Any]]:
         })
     return models
 
+# Regex patterns for parsing C++ / Python server stdout
+LAYER_LOAD_RE = re.compile(r'(?:Loading weights for layer|Loading layer|Pre-packing FFN fused weights for layer|layer)\s+(\d+)(?:/(\d+))?', re.IGNORECASE)
+TOKEN_SPEED_RE = re.compile(r'(?:Token\s+\d+/\d+\s+in|generated in)\s+([\d\.]+)\s*ms', re.IGNORECASE)
+TPS_RE = re.compile(r'([\d\.]+)\s*tok/s', re.IGNORECASE)
+
+def parse_server_log_line(line_str: str):
+    # 1. Parse layer load progress
+    m_layer = LAYER_LOAD_RE.search(line_str)
+    if m_layer:
+        current_layer = int(m_layer.group(1))
+        if m_layer.group(2):
+            state.total_layers = int(m_layer.group(2))
+        else:
+            state.total_layers = max(state.total_layers, current_layer + 1)
+        
+        state.load_progress = min(99.0, round((current_layer / max(1, state.total_layers)) * 100.0, 1))
+        state.load_step = line_str.strip()
+
+    if "Model ready" in line_str or "Server ready" in line_str:
+        state.load_progress = 100.0
+        state.is_loaded = True
+        state.load_step = "Modello pronto"
+        state.status = "running"
+
+    # 2. Parse tok/s speed metrics
+    m_token = TOKEN_SPEED_RE.search(line_str)
+    if m_token:
+        try:
+            ms = float(m_token.group(1))
+            if ms > 0:
+                instant_tps = 1000.0 / ms
+                state.tok_per_sec = round(instant_tps if state.tok_per_sec == 0 else (state.tok_per_sec * 0.7 + instant_tps * 0.3), 1)
+        except Exception:
+            pass
+
+    m_tps = TPS_RE.search(line_str)
+    if m_tps:
+        try:
+            state.tok_per_sec = round(float(m_tps.group(1)), 1)
+        except Exception:
+            pass
+
+    # 3. Error detection
+    if any(err_kw in line_str for err_kw in ["Error:", "Exception:", "CUDA error", "XRT error", "FATAL", "Aborted", "Segmentation fault"]):
+        state.last_error = line_str.strip()
+
+
 def start_inference_server(model: str, host: str, port: int, legacy: bool, offline: bool) -> bool:
     if state.process and state.process.poll() is None:
         stop_inference_server()
@@ -176,6 +350,19 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
     state.port = port
     state.legacy = legacy
     state.offline = offline
+    state.load_progress = 0.0
+    state.load_step = "Avvio processo server..."
+    state.is_loaded = False
+    state.tok_per_sec = 0.0
+    state.last_error = ""
+
+    # Estimate total layers based on model name/arch
+    if "12b" in model.lower() or "gemma4" in model.lower():
+        state.total_layers = 48
+    elif "gemma3" in model.lower() or "1b" in model.lower() or "llama" in model.lower():
+        state.total_layers = 26
+    else:
+        state.total_layers = 32
 
     env = os.environ.copy()
     if offline:
@@ -200,15 +387,23 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
                 return
             for line in iter(state.process.stdout.readline, ''):
                 if line:
-                    append_log(line.strip())
-            state.status = "stopped"
+                    stripped = line.strip()
+                    append_log(stripped)
+                    parse_server_log_line(stripped)
+            
+            exit_code = state.process.poll() if state.process else None
+            if exit_code is not None and exit_code != 0 and exit_code != -signal.SIGTERM and exit_code != -signal.SIGKILL:
+                state.status = "error"
+                if not state.last_error:
+                    state.last_error = f"Il server di inferenza si è arrestato in modo anomalo (exit code {exit_code})."
+            else:
+                state.status = "stopped"
             append_log("Inference server process exited.")
 
         import threading
         t = threading.Thread(target=log_reader, daemon=True)
         t.start()
 
-        state.status = "running"
         return True
     except Exception as e:
         state.status = "error"
@@ -231,6 +426,9 @@ def stop_inference_server():
                 pass
         state.process = None
     state.status = "stopped"
+    state.is_loaded = False
+    state.load_progress = 0.0
+    state.tok_per_sec = 0.0
     append_log("Inference server stopped.")
 
 class StartRequest(BaseModel):
@@ -260,6 +458,10 @@ async def get_status():
     return {
         "status": state.status,
         "is_running": is_running,
+        "is_loaded": state.is_loaded,
+        "load_progress": state.load_progress,
+        "load_step": state.load_step,
+        "tok_per_sec": state.tok_per_sec,
         "model": state.active_model,
         "host": state.host,
         "port": state.port,
@@ -449,13 +651,111 @@ def run_setup_task(req: ModelSetupRequest):
 @app.post("/api/models/setup")
 async def start_model_setup(req: ModelSetupRequest):
     if setup_state.is_running:
-        raise HTTPException(status_code=400, detail="A model setup task is already in progress.")
+        raise HTTPException(status_code=400, detail="Un'operazione di setup modello è già in corso.")
     
+    alias = (req.alias or "").strip()
+    if not alias:
+        raise HTTPException(status_code=400, detail="L'alias del modello è obbligatorio.")
+    
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', alias):
+        raise HTTPException(status_code=400, detail="L'alias può contenere solo lettere, numeri, trattini e underscore.")
+
+    valid_archs = {"gemma4", "gemma4-e4b", "gemma3", "llama", "custom"}
+    if req.arch not in valid_archs:
+        raise HTTPException(status_code=400, detail=f"Architettura non supportata '{req.arch}'. Opzioni ammesse: {', '.join(valid_archs)}")
+
+    if req.source_type == "local":
+        if not req.local_gguf_path:
+            raise HTTPException(status_code=400, detail="Il percorso del file GGUF locale è obbligatorio in modalità manuale.")
+        
+        gguf_p = Path(req.local_gguf_path).resolve()
+        if not gguf_p.exists() or not gguf_p.is_file():
+            raise HTTPException(status_code=400, detail=f"Il file GGUF locale non esiste: {req.local_gguf_path}")
+        
+        if not gguf_p.name.endswith(".gguf"):
+            raise HTTPException(status_code=400, detail="Il file deve avere estensione .gguf")
+        
+        try:
+            with open(gguf_p, "rb") as f:
+                magic = f.read(4)
+                if magic != b"GGUF":
+                    raise HTTPException(status_code=400, detail=f"Il file {gguf_p.name} non è un file GGUF valido (magic header atteso: GGUF, trovato: {magic}).")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Impossibile leggere il file GGUF locale: {e}")
+    else:
+        # Auto mode
+        if not req.url_or_repo and not any(m["id"] == alias or m["arch"] == req.arch for m in SUPPORTED_MODELS):
+            raise HTTPException(status_code=400, detail="Specificare un repository HuggingFace/URL GGUF o selezionare un modello supportato predefinito.")
+
     import threading
     t = threading.Thread(target=run_setup_task, args=(req,), daemon=True)
     t.start()
 
     return {"status": "ok", "message": f"Setup started for model {req.alias}"}
+
+# HTTP Unbuffered SSE Proxy for /v1/chat/completions
+@app.post("/v1/chat/completions")
+async def proxy_chat_completions(request: Request):
+    if not (state.process and state.process.poll() is None):
+        raise HTTPException(status_code=503, detail="Inference server is not running. Start it from the Control Panel.")
+
+    body = await request.body()
+    target_url = f"http://{state.host}:{state.port}/v1/chat/completions"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+
+    req_json = {}
+    try:
+        req_json = json.loads(body.decode("utf-8"))
+    except Exception:
+        pass
+
+    is_stream = req_json.get("stream", False)
+
+    if is_stream:
+        async def stream_generator():
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                try:
+                    async with client.stream("POST", target_url, headers=headers, content=body) as resp:
+                        if resp.status_code != 200:
+                            err_content = await resp.aread()
+                            yield err_content
+                            return
+                        async for chunk in resp.aiter_bytes():
+                            yield chunk
+                except Exception as e:
+                    err_json = json.dumps({"error": {"message": f"Proxy streaming error: {e}"}})
+                    yield f"data: {err_json}\n\n".encode("utf-8")
+
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+    else:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            try:
+                resp = await client.post(target_url, headers=headers, content=body)
+                return JSONResponse(status_code=resp.status_code, content=resp.json())
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Error connecting to inference server: {e}")
+
+class FileUploadItem(BaseModel):
+    filename: str
+    content_b64: str
+    mime_type: Optional[str] = None
+
+class FileUploadRequest(BaseModel):
+    files: List[FileUploadItem]
+
+@app.post("/api/upload")
+async def upload_files(req: FileUploadRequest):
+    results = []
+    for item in req.files:
+        try:
+            content = base64.b64decode(item.content_b64)
+            parsed = parse_file_upload(item.filename, content, item.mime_type)
+            results.append(parsed)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Errore decodifica file '{item.filename}': {e}")
+    return {"files": results}
 
 @app.post("/api/control/start")
 async def control_start(req: StartRequest):
