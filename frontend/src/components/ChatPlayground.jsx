@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Send,
-  Bot,
   User,
-  Sliders,
+  Bot,
   Cpu,
   Zap,
   StopCircle,
@@ -12,8 +11,6 @@ import {
   Brain,
   ChevronDown,
   ChevronUp,
-  ToggleLeft,
-  ToggleRight,
   Plus,
   Sparkles,
   Paperclip,
@@ -22,11 +19,12 @@ import {
   FileText,
   Upload,
   X,
-  File
+  Sliders
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import SidebarHistory from './SidebarHistory';
+import GenerationSettingsPanel from './GenerationSettingsPanel';
 import {
   getConversations,
   getConversation,
@@ -37,7 +35,10 @@ import {
   clearAllConversations,
   getActiveConversationId,
   setActiveConversationId,
-  generateTitleFromMessage
+  generateTitleFromMessage,
+  getGlobalSettings,
+  saveGlobalSettings,
+  DEFAULT_SETTINGS
 } from '../utils/chatStorage';
 
 function parseThinking(content) {
@@ -165,30 +166,34 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
   // File upload state
   const [attachments, setAttachments] = useState([]);
-  const [isUploading, setIsUploading] = useState(false);
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const [acceptFilter, setAcceptFilter] = useState('*/*');
   const [isDragging, setIsDragging] = useState(false);
   const [previewImageModal, setPreviewImageModal] = useState(null);
-  const [expandedDocs, setExpandedDocs] = useState({});
 
   const fileInputRef = useRef(null);
   const uploadMenuRef = useRef(null);
 
-  // Generation parameters
-  const [systemPrompt, setSystemPrompt] = useState('Sei un assistente AI esperto ed utile.');
-  const [temperature, setTemperature] = useState(0.7);
-  const [topP, setTopP] = useState(0.9);
-  const [topK, setTopK] = useState(50);
-  const [maxTokens, setMaxTokens] = useState(512);
-  const [maxContextLength, setMaxContextLength] = useState(4096);
-  const [enableThinking, setEnableThinking] = useState(true);
+  // Generation parameters state (stored per conversation and persisted in localStorage)
+  const [genSettings, setGenSettings] = useState(() => getGlobalSettings());
   const [showSettings, setShowSettings] = useState(false);
 
   const [metrics, setMetrics] = useState({ tokens: 0, elapsed: 0, tps: 0 });
 
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
+
+  // Helper to load settings from conversation or global default
+  const applyConvSettings = (conv) => {
+    const globalDefaults = getGlobalSettings();
+    if (conv && conv.settings) {
+      setGenSettings({ ...globalDefaults, ...conv.settings });
+    } else if (conv && conv.systemPrompt !== undefined) {
+      setGenSettings({ ...globalDefaults, systemPrompt: conv.systemPrompt });
+    } else {
+      setGenSettings(globalDefaults);
+    }
+  };
 
   // Load conversations on component mount
   useEffect(() => {
@@ -201,9 +206,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       if (conv) {
         setActiveConvIdState(conv.id);
         setMessages(conv.messages || []);
-        if (conv.systemPrompt !== undefined) {
-          setSystemPrompt(conv.systemPrompt);
-        }
+        applyConvSettings(conv);
         return;
       }
     }
@@ -211,19 +214,20 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     if (list.length > 0) {
       setActiveConvIdState(list[0].id);
       setMessages(list[0].messages || []);
-      if (list[0].systemPrompt !== undefined) {
-        setSystemPrompt(list[0].systemPrompt);
-      }
+      applyConvSettings(list[0]);
       setActiveConversationId(list[0].id);
     } else {
+      const globalDefaults = getGlobalSettings();
       const welcomeConv = createConversation(
         'Prima conversazione',
         [{ role: 'assistant', content: "Ciao! Sono il modello LLM in esecuzione sull'NPU AMD Ryzen AI. Come posso aiutarti oggi?" }],
-        'Sei un assistente AI esperto ed utile.'
+        globalDefaults.systemPrompt,
+        globalDefaults
       );
       setConversations([welcomeConv]);
       setActiveConvIdState(welcomeConv.id);
       setMessages(welcomeConv.messages);
+      applyConvSettings(welcomeConv);
     }
   }, []);
 
@@ -249,8 +253,27 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
-  const toggleDocExpand = (docId) => {
-    setExpandedDocs(prev => ({ ...prev, [docId]: !prev[docId] }));
+  // Settings update handlers
+  const handleUpdateSettings = (newSettings) => {
+    setGenSettings(newSettings);
+    if (activeConvId) {
+      const conv = getConversation(activeConvId);
+      if (conv) {
+        conv.settings = newSettings;
+        conv.systemPrompt = newSettings.systemPrompt;
+        saveConversation(conv);
+        setConversations(getConversations());
+      }
+    }
+  };
+
+  const handleSaveAsGlobalDefaults = (settingsToSave) => {
+    saveGlobalSettings(settingsToSave);
+  };
+
+  const handleResetToDefaults = () => {
+    const globalDefaults = getGlobalSettings();
+    handleUpdateSettings(globalDefaults);
   };
 
   // Conversation history actions
@@ -266,9 +289,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       setActiveConvIdState(conv.id);
       setActiveConversationId(conv.id);
       setMessages(conv.messages || []);
-      if (conv.systemPrompt !== undefined) {
-        setSystemPrompt(conv.systemPrompt);
-      }
+      applyConvSettings(conv);
       setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
       setExpandedThinking({});
       setAttachments([]);
@@ -282,10 +303,12 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       }
       handleStop();
     }
-    const newConv = createConversation('Nuova conversazione', [], systemPrompt);
+    const currentGlobal = getGlobalSettings();
+    const newConv = createConversation('Nuova conversazione', [], currentGlobal.systemPrompt, currentGlobal);
     setConversations(getConversations());
     setActiveConvIdState(newConv.id);
     setMessages([]);
+    setGenSettings(currentGlobal);
     setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
     setExpandedThinking({});
     setAttachments([]);
@@ -311,6 +334,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
         setActiveConvIdState(nextConv.id);
         setActiveConversationId(nextConv.id);
         setMessages(nextConv.messages || []);
+        applyConvSettings(nextConv);
       } else {
         setActiveConvIdState(null);
         setActiveConversationId(null);
@@ -348,52 +372,50 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     if (!fileList || fileList.length === 0) return;
 
     setIsUploading(true);
-    const readPromises = Array.from(fileList).map(file => {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result || '';
-          const b64Data = typeof result === 'string' && result.includes(',') ? result.split(',')[1] : result;
-          resolve({
-            filename: file.name,
-            content_b64: b64Data,
-            mime_type: file.type || undefined
-          });
-        };
-        reader.onerror = error => reject(error);
-        reader.readAsDataURL(file);
-      });
-    });
 
-    try {
-      const payloadFiles = await Promise.all(readPromises);
-      const res = await fetch(`${apiBase}/api/upload`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: payloadFiles })
-      });
+    const newAttachments = [];
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || `Errore caricamento file (${res.status})`);
+    for (const file of Array.from(fileList)) {
+      const fileId = `att_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      let category = 'document';
+      if (file.type.startsWith('image/')) category = 'image';
+      else if (file.type.startsWith('audio/')) category = 'audio';
+
+      const item = {
+        id: fileId,
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+        category,
+        url: null,
+        textData: null
+      };
+
+      if (category === 'image') {
+        item.url = URL.createObjectURL(file);
       }
 
-      const data = await res.json();
-      if (data.files && data.files.length > 0) {
-        setAttachments(prev => [...prev, ...data.files]);
+      if (category === 'document' || file.name.match(/\.(txt|md|csv|json|py|js|ts|jsx|tsx|html|css|cpp|h|c|rs|go|yaml|yml|sh|log)$/i)) {
+        try {
+          const content = await file.text();
+          item.textData = content;
+        } catch {
+          // Ignore binary reading error
+        }
       }
-    } catch (err) {
-      alert(`Impossibile caricare i file: ${err.message}`);
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      newAttachments.push(item);
     }
+
+    setAttachments(prev => [...prev, ...newAttachments]);
+    setIsUploading(false);
   };
 
-  const handleRemoveAttachment = (file_id) => {
-    setAttachments(prev => prev.filter(a => a.file_id !== file_id));
+  const removeAttachment = (id) => {
+    setAttachments(prev => prev.filter(a => a.id !== id));
   };
 
+  // Drag and drop handlers
   const handleDragOver = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -403,6 +425,9 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
   const handleDragLeave = (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (e.relatedTarget === null || e.currentTarget.contains(e.relatedTarget)) {
+      return;
+    }
     setIsDragging(false);
   };
 
@@ -410,46 +435,46 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       handleFilesSelected(e.dataTransfer.files);
     }
   };
 
-  // Send message and execute full multi-turn completion
-  const handleSend = async (customInput) => {
-    const textToSend = typeof customInput === 'string' ? customInput : input;
-    if ((!textToSend.trim() && attachments.length === 0) || isGenerating) return;
+  // Send message
+  const handleSend = async (overridePrompt) => {
+    const messageText = overridePrompt !== undefined ? overridePrompt : input;
+    if ((!messageText || !messageText.trim()) && attachments.length === 0) return;
+    if (!isServerRunning) return;
 
-    if (!isServerRunning) {
-      alert("Il server di inferenza non è in esecuzione! Avvialo dal Control Panel.");
-      return;
-    }
+    let fullPromptContent = messageText.trim();
+    let displayContent = messageText.trim();
 
-    let promptContent = textToSend.trim();
     if (attachments.length > 0) {
-      const fileContexts = attachments.map(att => att.extracted_text).filter(Boolean).join('\n\n');
-      promptContent = promptContent ? `${promptContent}\n\n${fileContexts}` : fileContexts;
-      promptContent = promptContent.trim();
+      const attachSummary = attachments.map(a => {
+        if (a.textData) {
+          return `\n\n--- [Allegato: ${a.name}] ---\n${a.textData}\n--- [Fine ${a.name}] ---`;
+        }
+        return `\n[Allegato caricato: ${a.name} (${a.category}, ${(a.size / 1024).toFixed(1)} KB)]`;
+      }).join('');
+
+      fullPromptContent = fullPromptContent ? `${fullPromptContent}\n${attachSummary}` : attachSummary.trim();
     }
 
     const userMsg = {
       role: 'user',
-      content: promptContent,
-      displayText: textToSend.trim() || undefined,
+      content: fullPromptContent,
+      displayText: displayContent || undefined,
       attachments: [...attachments],
       timestamp: Date.now()
     };
 
     const updatedMessagesWithUser = [...messages, userMsg];
-    
-    // Manage conversation instance
     let currentConvId = activeConvId;
     let currentTitle = 'Nuova conversazione';
 
     if (!currentConvId) {
       currentTitle = generateTitleFromMessage(userMsg.displayText || userMsg.content);
-      const newConv = createConversation(currentTitle, updatedMessagesWithUser, systemPrompt);
+      const newConv = createConversation(currentTitle, updatedMessagesWithUser, genSettings.systemPrompt, genSettings);
       currentConvId = newConv.id;
       setActiveConvIdState(currentConvId);
     } else {
@@ -477,13 +502,14 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       id: currentConvId,
       title: currentTitle,
       messages: messagesForState,
-      systemPrompt
+      settings: genSettings,
+      systemPrompt: genSettings.systemPrompt
     });
     setConversations(getConversations());
 
     const chatMessagesPayload = [];
-    if (systemPrompt.trim()) {
-      chatMessagesPayload.push({ role: 'system', content: systemPrompt.trim() });
+    if (genSettings.systemPrompt && genSettings.systemPrompt.trim()) {
+      chatMessagesPayload.push({ role: 'system', content: genSettings.systemPrompt.trim() });
     }
     for (const msg of updatedMessagesWithUser) {
       if (msg.role && msg.content !== undefined) {
@@ -508,12 +534,12 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
         body: JSON.stringify({
           model: activeModel,
           messages: chatMessagesPayload,
-          temperature,
-          top_p: topP,
-          top_k: topK,
-          max_tokens: maxTokens,
-          max_context_length: maxContextLength,
-          enable_thinking: enableThinking,
+          temperature: genSettings.temperature,
+          top_p: genSettings.topP,
+          top_k: genSettings.topK,
+          max_tokens: genSettings.maxTokens,
+          max_context_length: genSettings.maxContextLength,
+          enable_thinking: genSettings.enableThinking,
           stream: true
         }),
         signal: abortController.signal
@@ -596,7 +622,8 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           id: currentConvId,
           title: currentTitle,
           messages: latestMessages,
-          systemPrompt
+          settings: genSettings,
+          systemPrompt: genSettings.systemPrompt
         });
         setConversations(getConversations());
         return latestMessages;
@@ -619,6 +646,15 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
 
   const activeConvObj = conversations.find(c => c.id === activeConvId);
 
+  // Check if non-default settings are present
+  const isCustomizedSettings =
+    genSettings.temperature !== DEFAULT_SETTINGS.temperature ||
+    genSettings.topP !== DEFAULT_SETTINGS.topP ||
+    genSettings.systemPrompt !== DEFAULT_SETTINGS.systemPrompt ||
+    genSettings.enableThinking !== DEFAULT_SETTINGS.enableThinking ||
+    genSettings.maxTokens !== DEFAULT_SETTINGS.maxTokens ||
+    genSettings.maxContextLength !== DEFAULT_SETTINGS.maxContextLength;
+
   return (
     <div
       onDragOver={handleDragOver}
@@ -626,6 +662,16 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
       onDrop={handleDrop}
       style={{ display: 'flex', height: 'calc(100vh - 64px)', width: '100%', overflow: 'hidden', position: 'relative' }}
     >
+      {/* Hidden file input */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={e => handleFilesSelected(e.target.files)}
+        style={{ display: 'none' }}
+        accept={acceptFilter}
+        multiple
+      />
+
       {/* Drag overlay */}
       {isDragging && (
         <div style={{
@@ -676,13 +722,13 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          background: 'rgba(19, 27, 46, 0.5)'
+          background: 'var(--bg-card)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
             <span style={{
               fontWeight: 700,
               fontSize: '1rem',
-              color: 'white',
+              color: 'var(--text-main)',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -706,8 +752,26 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               <Plus size={16} /> Nuova Chat
             </button>
 
-            <button className="btn-secondary" onClick={() => setShowSettings(!showSettings)} title="Parametri di generazione">
+            <button
+              className={`btn-secondary ${showSettings ? 'active' : ''}`}
+              onClick={() => setShowSettings(!showSettings)}
+              title="Parametri di generazione (System prompt, Temperature, CoT...)"
+              style={{ position: 'relative' }}
+            >
               <Sliders size={16} /> Impostazioni
+              {isCustomizedSettings && (
+                <span
+                  style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: 'var(--accent-purple)',
+                    display: 'inline-block',
+                    marginLeft: '2px'
+                  }}
+                  title="Parametri personalizzati attivi"
+                />
+              )}
             </button>
           </div>
         </div>
@@ -735,13 +799,13 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 0 30px rgba(139, 92, 246, 0.4)'
+                boxShadow: 'var(--shadow-glow)'
               }}>
                 <Sparkles size={32} color="white" />
               </div>
 
               <div>
-                <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'white', marginBottom: '0.5rem' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '0.5rem' }}>
                   Alveare NPU Multimodal Chat Playground
                 </h2>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
@@ -768,7 +832,7 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                     key={idx}
                     onClick={() => handleSend(prompt.desc)}
                     style={{
-                      background: 'rgba(30, 41, 59, 0.6)',
+                      background: 'var(--bg-card)',
                       border: '1px solid var(--border-color)',
                       borderRadius: '12px',
                       padding: '1rem',
@@ -798,200 +862,176 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
               const isExpanded = !!expandedThinking[idx];
 
               return (
-                <div key={idx} style={{
-                  display: 'flex',
-                  gap: '1rem',
-                  maxWidth: '85%',
-                  alignSelf: isUser ? 'flex-end' : 'flex-start',
-                  flexDirection: isUser ? 'row-reverse' : 'row'
-                }}>
-                  <div style={{
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: '50%',
-                    background: isUser ? 'var(--gradient-brand)' : 'rgba(139, 92, 246, 0.2)',
-                    border: !isUser ? '1px solid var(--accent-purple)' : 'none',
+                <div
+                  key={idx}
+                  style={{
                     display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0
-                  }}>
-                    {isUser ? <User size={18} color="white" /> : <Bot size={18} color="#c084fc" />}
-                  </div>
-
+                    flexDirection: 'column',
+                    alignItems: isUser ? 'flex-end' : 'flex-start',
+                    maxWidth: '850px',
+                    alignSelf: isUser ? 'flex-end' : 'flex-start',
+                    width: '100%'
+                  }}
+                >
                   <div style={{
-                    background: isUser ? 'rgba(139, 92, 246, 0.18)' : 'rgba(30, 41, 59, 0.7)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '12px',
-                    padding: '0.85rem 1.1rem',
-                    color: 'var(--text-main)',
-                    fontSize: '0.95rem',
-                    lineHeight: '1.6',
-                    position: 'relative',
-                    minWidth: '240px'
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.75rem',
+                    flexDirection: isUser ? 'row-reverse' : 'row',
+                    width: '100%'
                   }}>
-                    {/* Attachments rendering */}
-                    {msg.attachments && msg.attachments.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.65rem', marginBottom: '0.75rem' }}>
-                        {msg.attachments.map((att, aIdx) => {
-                          const docId = `msg-${idx}-att-${aIdx}`;
-                          return (
-                            <div key={aIdx} style={{
-                              background: 'rgba(15, 23, 42, 0.85)',
-                              border: '1px solid rgba(139, 92, 246, 0.3)',
-                              borderRadius: '10px',
-                              padding: '0.5rem 0.75rem',
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: '0.4rem',
-                              maxWidth: '320px'
-                            }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                {att.file_type === 'image' && <ImageIcon size={16} color="#f472b6" />}
-                                {att.file_type === 'audio' && <Music size={16} color="#06b6d4" />}
-                                {att.file_type === 'document' && <FileText size={16} color="#a78bfa" />}
-                                {att.file_type === 'other' && <File size={16} color="#94a3b8" />}
-                                <span style={{ fontSize: '0.83rem', fontWeight: 600, color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                  {att.filename}
-                                </span>
-                                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: 'auto', flexShrink: 0 }}>
-                                  {att.size_formatted}
-                                </span>
-                              </div>
-                              {att.file_type === 'image' && att.preview_url && (
-                                <img
-                                  src={att.preview_url}
-                                  alt={att.filename}
-                                  style={{ width: '100%', height: 'auto', borderRadius: '6px', cursor: 'pointer', maxHeight: '180px', objectFit: 'cover' }}
-                                  onClick={() => setPreviewImageModal(att.preview_url)}
-                                />
-                              )}
-                              {att.file_type === 'audio' && att.preview_url && (
-                                <audio controls src={att.preview_url} style={{ width: '100%', height: '32px' }} />
-                              )}
-                              {att.file_type === 'document' && att.extracted_text && (
-                                <div>
-                                  <button
-                                    onClick={() => toggleDocExpand(docId)}
-                                    style={{ background: 'none', border: 'none', color: '#c084fc', fontSize: '0.74rem', cursor: 'pointer', padding: 0 }}
-                                  >
-                                    {expandedDocs[docId] ? 'Nascondi testo estratto' : 'Mostra testo estratto'}
-                                  </button>
-                                  {expandedDocs[docId] && (
-                                    <pre style={{ fontSize: '0.75rem', overflow: 'auto', maxHeight: '120px', whiteSpace: 'pre-wrap', background: 'rgba(0,0,0,0.3)', padding: '0.4rem', borderRadius: '4px', marginTop: '0.3rem' }}>
-                                      {att.extracted_text}
-                                    </pre>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                    {/* Avatar */}
+                    <div style={{
+                      width: '34px',
+                      height: '34px',
+                      borderRadius: '10px',
+                      background: isUser ? 'var(--accent-purple)' : 'var(--gradient-brand)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+                    }}>
+                      {isUser ? <User size={18} color="white" /> : <Bot size={18} color="white" />}
+                    </div>
 
-                    {/* Thinking Section */}
-                    {!isUser && thinking && (
-                      isCurrentlyGeneratingThis ? (
-                        <div style={{
-                          background: 'rgba(139, 92, 246, 0.12)',
-                          border: '1px solid rgba(139, 92, 246, 0.3)',
-                          borderRadius: '8px',
-                          padding: '0.6rem 0.85rem',
-                          marginBottom: '0.75rem',
-                          fontSize: '0.85rem'
-                        }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--accent-purple)', fontWeight: 600, marginBottom: '0.3rem' }}>
-                            <Brain size={15} className="pulse-icon" /> Thinking in corso...
-                          </div>
-                          <div style={{ fontFamily: 'monospace', fontSize: '0.82rem', opacity: 0.9, whiteSpace: 'pre-wrap', maxHeight: '180px', overflowY: 'auto' }}>
-                            {thinking}
-                          </div>
+                    {/* Message Bubble */}
+                    <div style={{
+                      flex: 1,
+                      background: isUser ? 'rgba(139, 92, 246, 0.15)' : 'var(--bg-card)',
+                      border: isUser ? '1px solid rgba(139, 92, 246, 0.3)' : '1px solid var(--border-color)',
+                      borderRadius: '14px',
+                      padding: '1rem 1.25rem',
+                      color: 'var(--text-main)',
+                      boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+                      position: 'relative'
+                    }}>
+                      {/* Attachments preview if user message */}
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', marginBottom: '0.85rem' }}>
+                          {msg.attachments.map(att => (
+                            <div
+                              key={att.id}
+                              style={{
+                                background: 'rgba(0,0,0,0.3)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '8px',
+                                padding: '0.4rem 0.6rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
+                                fontSize: '0.8rem'
+                              }}
+                            >
+                              {att.category === 'image' && att.url ? (
+                                <img
+                                  src={att.url}
+                                  alt={att.name}
+                                  onClick={() => setPreviewImageModal(att.url)}
+                                  style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '6px', cursor: 'pointer' }}
+                                />
+                              ) : (
+                                <FileText size={16} color="var(--accent-cyan)" />
+                              )}
+                              <span style={{ fontWeight: 500, maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {att.name}
+                              </span>
+                            </div>
+                          ))}
                         </div>
-                      ) : (
-                        <div style={{ marginBottom: text ? '0.75rem' : '0' }}>
+                      )}
+
+                      {/* Thinking Chain-of-Thought Section */}
+                      {!isUser && thinking && (
+                        <div style={{
+                          marginBottom: '1rem',
+                          background: 'rgba(139, 92, 246, 0.08)',
+                          border: '1px solid rgba(139, 92, 246, 0.25)',
+                          borderRadius: '10px',
+                          overflow: 'hidden'
+                        }}>
                           <button
                             onClick={() => toggleThinking(idx)}
                             style={{
-                              background: 'rgba(139, 92, 246, 0.15)',
-                              border: '1px solid rgba(139, 92, 246, 0.3)',
-                              borderRadius: '8px',
-                              padding: '0.45rem 0.8rem',
-                              color: '#c084fc',
-                              fontSize: '0.82rem',
+                              width: '100%',
+                              padding: '0.6rem 0.85rem',
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--accent-purple)',
                               fontWeight: 600,
+                              fontSize: '0.82rem',
                               cursor: 'pointer',
-                              display: 'inline-flex',
+                              display: 'flex',
                               alignItems: 'center',
-                              gap: '0.45rem',
-                              transition: 'all 0.2s ease'
+                              justifyContent: 'space-between'
                             }}
                           >
-                            <Brain size={15} />
-                            <span>{isExpanded ? 'Nascondi Thinking' : `Mostra Step Thinking (${thinking.length} car.)`}</span>
-                            {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                              <Brain size={16} /> Pensiero / Chain of Thought
+                              {isCurrentlyGeneratingThis && !displayMessageText && (
+                                <span className="pulse-icon" style={{ fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>
+                                  (In elaborazione...)
+                                </span>
+                              )}
+                            </span>
+                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                           </button>
 
-                          {isExpanded && (
+                          {(isExpanded || (isCurrentlyGeneratingThis && !displayMessageText)) && (
                             <div style={{
-                              marginTop: '0.5rem',
-                              background: 'rgba(15, 23, 42, 0.85)',
-                              border: '1px dashed rgba(139, 92, 246, 0.4)',
-                              borderRadius: '8px',
-                              padding: '0.75rem 0.9rem',
-                              fontFamily: 'Consolas, Monaco, monospace',
-                              fontSize: '0.83rem',
+                              padding: '0.75rem 0.85rem',
+                              borderTop: '1px solid rgba(139, 92, 246, 0.15)',
+                              fontSize: '0.84rem',
                               lineHeight: '1.5',
                               color: 'var(--text-muted)',
+                              fontFamily: 'var(--font-mono)',
                               whiteSpace: 'pre-wrap',
-                              maxHeight: '300px',
-                              overflowY: 'auto'
+                              background: 'rgba(0,0,0,0.15)'
                             }}>
                               {thinking}
                             </div>
                           )}
                         </div>
-                      )
-                    )}
+                      )}
 
-                    {/* Main Response / Text Content */}
-                    {isUser ? (
-                      <div style={{ whiteSpace: 'pre-wrap' }}>{displayMessageText}</div>
-                    ) : text ? (
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          code: CodeBlock
-                        }}
-                      >
-                        {text}
-                      </ReactMarkdown>
-                    ) : (
-                      isCurrentlyGeneratingThis && (
-                        <span className="pulse-icon">
-                          {thinking ? 'Generazione risposta finale...' : 'Generazione in corso...'}
-                        </span>
-                      )
-                    )}
+                      {/* Markdown Text Body */}
+                      <div style={{ fontSize: '0.94rem', lineHeight: '1.6' }}>
+                        {isUser ? (
+                          <div style={{ whiteSpace: 'pre-wrap' }}>{displayMessageText}</div>
+                        ) : (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              code: CodeBlock
+                            }}
+                          >
+                            {displayMessageText || (isGenerating && idx === messages.length - 1 ? 'Thinking...' : '')}
+                          </ReactMarkdown>
+                        )}
+                      </div>
 
-                    {!isUser && msg.content && (
-                      <button
-                        onClick={() => copyToClipboard(msg.content, idx)}
-                        style={{
-                          position: 'absolute',
-                          top: '0.5rem',
-                          right: '0.5rem',
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--text-muted)',
-                          cursor: 'pointer',
-                          opacity: 0.7
-                        }}
-                        title="Copia messaggio completo"
-                      >
-                        {copiedIndex === idx ? <Check size={14} color="var(--accent-green)" /> : <Copy size={14} />}
-                      </button>
-                    )}
+                      {/* Copy Action */}
+                      {!isUser && displayMessageText && (
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.6rem' }}>
+                          <button
+                            onClick={() => copyToClipboard(displayMessageText, idx)}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: copiedIndex === idx ? 'var(--accent-green)' : 'var(--text-muted)',
+                              cursor: 'pointer',
+                              fontSize: '0.76rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.3rem'
+                            }}
+                          >
+                            {copiedIndex === idx ? <Check size={14} /> : <Copy size={14} />}
+                            <span>{copiedIndex === idx ? 'Copiato!' : 'Copia'}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -1000,109 +1040,105 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Bottom Input Area */}
+        {/* Selected Attachments Bar */}
+        {attachments.length > 0 && (
+          <div style={{
+            padding: '0.6rem 1.5rem',
+            background: 'rgba(0,0,0,0.2)',
+            borderTop: '1px solid var(--border-color)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.6rem',
+            overflowX: 'auto'
+          }}>
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>
+              Allegati ({attachments.length}):
+            </span>
+            {attachments.map(att => (
+              <div
+                key={att.id}
+                style={{
+                  background: 'rgba(139, 92, 246, 0.15)',
+                  border: '1px solid rgba(139, 92, 246, 0.3)',
+                  borderRadius: '6px',
+                  padding: '0.25rem 0.55rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  fontSize: '0.78rem',
+                  color: 'white',
+                  flexShrink: 0
+                }}
+              >
+                <FileText size={14} color="var(--accent-purple)" />
+                <span style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {att.name}
+                </span>
+                <button
+                  onClick={() => removeAttachment(att.id)}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Input Bar */}
         <div style={{
           padding: '1rem 1.5rem',
           borderTop: '1px solid var(--border-color)',
-          background: 'rgba(13, 19, 33, 0.7)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.75rem'
+          background: 'var(--bg-secondary)'
         }}>
-          {/* Attachment chips */}
-          {attachments.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-              {attachments.map(att => (
-                <div
-                  key={att.file_id}
-                  style={{
-                    background: 'rgba(30, 41, 59, 0.9)',
-                    border: '1px solid rgba(139, 92, 246, 0.4)',
-                    padding: '0.35rem 0.65rem',
-                    borderRadius: '8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.4rem',
-                    fontSize: '0.82rem',
-                    color: 'white'
-                  }}
-                >
-                  {att.file_type === 'image' && <ImageIcon size={14} color="#f472b6" />}
-                  {att.file_type === 'audio' && <Music size={14} color="#06b6d4" />}
-                  {att.file_type === 'document' && <FileText size={14} color="#a78bfa" />}
-                  {att.file_type === 'other' && <File size={14} color="#94a3b8" />}
-                  <span style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {att.filename}
-                  </span>
-                  <button
-                    onClick={() => handleRemoveAttachment(att.file_id)}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0 2px', display: 'flex', alignItems: 'center' }}
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Hidden File Input */}
-          <input
-            type="file"
-            ref={fileInputRef}
-            accept={acceptFilter}
-            multiple
-            onChange={e => handleFilesSelected(e.target.files)}
-            style={{ display: 'none' }}
-          />
-
-          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-            {/* Upload Button + Dropdown Menu */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', position: 'relative' }}>
+            
+            {/* Attachment Button */}
             <div style={{ position: 'relative' }} ref={uploadMenuRef}>
               <button
                 className="btn-secondary"
                 onClick={() => setShowUploadMenu(!showUploadMenu)}
-                disabled={!isServerRunning || isGenerating || isUploading}
-                title="Allega file"
-                style={{ height: '52px', padding: '0 0.9rem' }}
+                title="Allega file (Immagini, Audio, Documenti)"
+                style={{ padding: '0.75rem', borderRadius: '10px' }}
               >
                 <Paperclip size={18} />
               </button>
+
+              {/* Upload Dropdown Menu */}
               {showUploadMenu && (
                 <div style={{
                   position: 'absolute',
-                  bottom: '60px',
+                  bottom: '100%',
                   left: 0,
-                  background: '#131b2e',
+                  marginBottom: '0.5rem',
+                  background: 'var(--bg-secondary)',
                   border: '1px solid var(--border-color)',
-                  padding: '0.5rem',
-                  borderRadius: '12px',
+                  borderRadius: '10px',
+                  padding: '0.4rem',
+                  boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '0.35rem',
-                  boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
-                  zIndex: 200,
-                  minWidth: '150px'
+                  gap: '0.2rem',
+                  zIndex: 100,
+                  width: '170px'
                 }}>
                   <button
                     onClick={() => handleOpenUpload('image')}
-                    style={{ background: 'none', border: 'none', color: 'white', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
-                    className="menu-item-hover"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
-                    <ImageIcon size={16} color="#f472b6" /> Immagine
+                    <ImageIcon size={16} color="var(--accent-purple)" /> Immagine
                   </button>
                   <button
                     onClick={() => handleOpenUpload('audio')}
-                    style={{ background: 'none', border: 'none', color: 'white', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
-                    className="menu-item-hover"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
-                    <Music size={16} color="#06b6d4" /> Audio
+                    <Music size={16} color="var(--accent-cyan)" /> Audio
                   </button>
                   <button
                     onClick={() => handleOpenUpload('document')}
-                    style={{ background: 'none', border: 'none', color: 'white', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
-                    className="menu-item-hover"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
-                    <FileText size={16} color="#a78bfa" /> Documento
+                    <FileText size={16} color="var(--accent-green)" /> Documento
                   </button>
                 </div>
               )}
@@ -1125,11 +1161,12 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
                 borderRadius: '10px',
                 background: 'rgba(0,0,0,0.3)',
                 border: '1px solid var(--border-color)',
-                color: 'white',
+                color: 'var(--text-main)',
                 fontSize: '0.95rem',
                 resize: 'none',
                 height: '52px',
-                outline: 'none'
+                outline: 'none',
+                fontFamily: 'var(--font-sans)'
               }}
             />
 
@@ -1175,225 +1212,15 @@ export default function ChatPlayground({ apiBase, activeModel, isServerRunning }
         </div>
       )}
 
-      {/* Settings Drawer */}
-      {showSettings && (
-        <div style={{
-          width: '340px',
-          borderLeft: '1px solid var(--border-color)',
-          background: 'rgba(19, 27, 46, 0.85)',
-          padding: '1.25rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '1.25rem',
-          overflowY: 'auto'
-        }}>
-          <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: 'white', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Sliders size={18} color="var(--accent-purple)" /> Opzioni & Parametri
-          </h3>
-
-          {/* Thinking Toggle */}
-          <div style={{
-            background: 'rgba(139, 92, 246, 0.1)',
-            border: '1px solid rgba(139, 92, 246, 0.25)',
-            borderRadius: '10px',
-            padding: '0.85rem'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-              <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'white', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Brain size={16} color="var(--accent-purple)" /> Thinking (CoT)
-              </span>
-              <button
-                onClick={() => setEnableThinking(!enableThinking)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  color: enableThinking ? 'var(--accent-purple)' : 'var(--text-muted)',
-                  display: 'flex',
-                  alignItems: 'center'
-                }}
-              >
-                {enableThinking ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
-              </button>
-            </div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
-              {enableThinking ? 'Abilitato: mostra i passaggi di ragionamento del modello.' : 'Disabilitato: il modello risponde direttamente senza thinking.'}
-            </div>
-          </div>
-
-          <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              Prompt di Sistema
-            </label>
-            <textarea
-              value={systemPrompt}
-              onChange={e => {
-                const val = e.target.value;
-                setSystemPrompt(val);
-                if (activeConvId) {
-                  const conv = getConversation(activeConvId);
-                  if (conv) {
-                    conv.systemPrompt = val;
-                    saveConversation(conv);
-                  }
-                }
-              }}
-              rows={3}
-              style={{
-                width: '100%',
-                padding: '0.6rem',
-                borderRadius: '8px',
-                background: 'rgba(0,0,0,0.3)',
-                border: '1px solid var(--border-color)',
-                color: 'white',
-                fontSize: '0.85rem'
-              }}
-            />
-          </div>
-
-          {/* Contesto Massimo */}
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              <span>Contesto Massimo (Token)</span>
-              <input
-                type="number"
-                min="512"
-                max="131072"
-                step="512"
-                value={maxContextLength}
-                onChange={e => setMaxContextLength(Math.max(512, Math.min(131072, parseInt(e.target.value) || 4096)))}
-                style={{
-                  width: '80px',
-                  padding: '0.2rem 0.4rem',
-                  borderRadius: '6px',
-                  background: 'rgba(0,0,0,0.4)',
-                  border: '1px solid var(--border-color)',
-                  color: 'white',
-                  fontWeight: 600,
-                  fontSize: '0.85rem',
-                  textAlign: 'right'
-                }}
-              />
-            </div>
-            <input
-              type="range"
-              min="512"
-              max="131072"
-              step="512"
-              value={maxContextLength}
-              onChange={e => setMaxContextLength(parseInt(e.target.value))}
-              style={{ width: '100%', cursor: 'pointer' }}
-            />
-            <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
-              {[4096, 8192, 16384, 32768, 131072].map(val => (
-                <button
-                  key={val}
-                  onClick={() => setMaxContextLength(val)}
-                  style={{
-                    padding: '0.2rem 0.5rem',
-                    fontSize: '0.72rem',
-                    borderRadius: '4px',
-                    border: '1px solid var(--border-color)',
-                    background: maxContextLength === val ? 'var(--accent-purple)' : 'rgba(0,0,0,0.3)',
-                    color: maxContextLength === val ? 'white' : 'var(--text-muted)',
-                    cursor: 'pointer',
-                    fontWeight: 600
-                  }}
-                >
-                  {val >= 1024 ? `${val / 1024}K` : val}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Max Tokens Risposta */}
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              <span>Max Tokens Risposta</span>
-              <input
-                type="number"
-                min="16"
-                max="32768"
-                step="64"
-                value={maxTokens}
-                onChange={e => setMaxTokens(Math.max(16, Math.min(32768, parseInt(e.target.value) || 512)))}
-                style={{
-                  width: '80px',
-                  padding: '0.2rem 0.4rem',
-                  borderRadius: '6px',
-                  background: 'rgba(0,0,0,0.4)',
-                  border: '1px solid var(--border-color)',
-                  color: 'white',
-                  fontWeight: 600,
-                  fontSize: '0.85rem',
-                  textAlign: 'right'
-                }}
-              />
-            </div>
-            <input
-              type="range"
-              min="16"
-              max="16384"
-              step="64"
-              value={maxTokens}
-              onChange={e => setMaxTokens(parseInt(e.target.value))}
-              style={{ width: '100%', cursor: 'pointer' }}
-            />
-            <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
-              {[512, 1024, 2048, 4096, 8192, 16384].map(val => (
-                <button
-                  key={val}
-                  onClick={() => setMaxTokens(val)}
-                  style={{
-                    padding: '0.2rem 0.5rem',
-                    fontSize: '0.72rem',
-                    borderRadius: '4px',
-                    border: '1px solid var(--border-color)',
-                    background: maxTokens === val ? 'var(--accent-purple)' : 'rgba(0,0,0,0.3)',
-                    color: maxTokens === val ? 'white' : 'var(--text-muted)',
-                    cursor: 'pointer',
-                    fontWeight: 600
-                  }}
-                >
-                  {val >= 1024 ? `${val / 1024}K` : val}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              <span>Temperature</span>
-              <span style={{ color: 'white', fontWeight: 600 }}>{temperature}</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="2"
-              step="0.1"
-              value={temperature}
-              onChange={e => setTemperature(parseFloat(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              <span>Top-P</span>
-              <span style={{ color: 'white', fontWeight: 600 }}>{topP}</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={topP}
-              onChange={e => setTopP(parseFloat(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-        </div>
-      )}
+      {/* Generation Settings Drawer/Modal */}
+      <GenerationSettingsPanel
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={genSettings}
+        onUpdateSettings={handleUpdateSettings}
+        onSaveAsGlobalDefaults={handleSaveAsGlobalDefaults}
+        onResetToDefaults={handleResetToDefaults}
+      />
     </div>
   );
 }
