@@ -3,6 +3,8 @@
   --bg-secondary: #131b2e;
   --bg-card: rgba(23, 32, 54, 0.7);
   --bg-card-hover: rgba(30, 42, 70, 0.8);
+  --navbar-bg: rgba(19, 27, 46, 0.75);
+  --nav-tab-bg: rgba(0, 0, 0, 0.3);
   --border-color: rgba(255, 255, 255, 0.08);
   --border-highlight: rgba(139, 92, 246, 0.4);
   
@@ -24,6 +26,31 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
+[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-card: rgba(241, 245, 249, 0.85);
+  --bg-card-hover: rgba(226, 232, 240, 0.9);
+  --navbar-bg: rgba(255, 255, 255, 0.85);
+  --nav-tab-bg: rgba(241, 245, 249, 0.9);
+  --border-color: rgba(0, 0, 0, 0.1);
+  --border-highlight: rgba(124, 58, 237, 0.5);
+
+  --text-main: #0f172a;
+  --text-muted: #475569;
+  --text-subtle: #94a3b8;
+
+  --accent-purple: #7c3aed;
+  --accent-cyan: #0891b2;
+  --accent-green: #059669;
+  --accent-amber: #d97706;
+  --accent-red: #dc2626;
+
+  --gradient-brand: linear-gradient(135deg, #7c3aed 0%, #0891b2 100%);
+  --gradient-card: linear-gradient(180deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0) 100%);
+  --shadow-glow: 0 4px 20px rgba(124, 58, 237, 0.15);
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -38,6 +65,7 @@ body {
   overflow-x: hidden;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
 
 /* Custom Scrollbar */
@@ -46,14 +74,14 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.1);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(148, 163, 184, 0.3);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(148, 163, 184, 0.5);
 }
 
 /* Glassmorphism Card Utility */
@@ -63,12 +91,12 @@ body {
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border-color);
   border-radius: 12px;
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.15);
   transition: all 0.2s ease-in-out;
 }
 
 .glass-card:hover {
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: var(--border-highlight);
 }
 
 /* Glowing Button */
@@ -113,9 +141,19 @@ body {
   transition: all 0.2s ease;
 }
 
+[data-theme="light"] .btn-secondary {
+  background: rgba(0, 0, 0, 0.04);
+}
+
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(139, 92, 246, 0.12);
+  border-color: var(--border-highlight);
+}
+
+.btn-secondary.active {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: var(--accent-purple);
+  color: var(--text-main);
 }
 
 .btn-danger {
@@ -167,11 +205,16 @@ body {
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
-/* Pulse indicator animation */
+/* Animations */
 @keyframes pulse-dot {
   0% { transform: scale(0.95); opacity: 0.8; }
   50% { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .pulse-icon {
