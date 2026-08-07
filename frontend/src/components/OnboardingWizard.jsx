@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Cpu, CheckCircle, AlertTriangle, ArrowRight, Zap, Check } from 'lucide-react';
+import { useTranslation } from '../i18n/I18nContext';
 
 export default function OnboardingWizard({ onComplete, apiBase }) {
+  const { t } = useTranslation();
   const [step, setStep] = useState(1);
   const [npuStatus, setNpuStatus] = useState(null);
   const [models, setModels] = useState([]);
@@ -97,19 +99,19 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
             fontSize: '0.85rem',
             marginBottom: '1rem'
           }}>
-            <Zap size={16} /> Alveare NPU Setup Wizard
+            <Zap size={16} /> {t('onboarding.setupWizardBadge')}
           </div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', marginBottom: '0.5rem' }}>
-            {step === 1 && "Benvenuto in Alveare NPU"}
-            {step === 2 && "Seleziona il Modello LLM"}
-            {step === 3 && "Configura i Parametri di Avvio"}
-            {step === 4 && "Setup Completato!"}
+            {step === 1 && t('onboarding.step1Title')}
+            {step === 2 && t('onboarding.step2Title')}
+            {step === 3 && t('onboarding.step3Title')}
+            {step === 4 && t('onboarding.step4Title')}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>
-            {step === 1 && "Verifica hardware dell'NPU AMD Ryzen AI (XDNA2)"}
-            {step === 2 && "Scegli il modello quantizzato da caricare sull'NPU"}
-            {step === 3 && "Imposta porta, indirizzo host ed opzioni del server"}
-            {step === 4 && "Pronto per l'avvio del server e l'utilizzo dell'interfaccia"}
+            {step === 1 && t('onboarding.step1Subtitle')}
+            {step === 2 && t('onboarding.step2Subtitle')}
+            {step === 3 && t('onboarding.step3Subtitle')}
+            {step === 4 && t('onboarding.step4Subtitle')}
           </p>
 
           {/* Stepper Dots */}
@@ -131,48 +133,48 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
           <div>
             <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '10px', padding: '1.25rem', marginBottom: '1.5rem' }}>
               <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Cpu size={18} color="var(--accent-cyan)" /> Preflight Hardware NPU
+                <Cpu size={18} color="var(--accent-cyan)" /> {t('onboarding.npuPreflight')}
               </h3>
               
               {loading ? (
-                <p style={{ color: 'var(--text-muted)' }}>Analisi hardware in corso...</p>
+                <p style={{ color: 'var(--text-muted)' }}>{t('onboarding.analyzingHardware')}</p>
               ) : npuStatus ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>Dispositivo NPU (`/dev/accel/accel0`):</span>
+                    <span>{t('onboarding.deviceNodeLabel')}</span>
                     {npuStatus.device_node ? (
-                      <span className="badge badge-success"><Check size={14} /> Rilevato</span>
+                      <span className="badge badge-success"><Check size={14} /> {t('onboarding.detected')}</span>
                     ) : (
-                      <span className="badge badge-danger"><AlertTriangle size={14} /> Mancante</span>
+                      <span className="badge badge-danger"><AlertTriangle size={14} /> {t('onboarding.missing')}</span>
                     )}
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>Driver XRT SMI:</span>
+                    <span>{t('onboarding.xrtDriverLabel')}</span>
                     {npuStatus.xrt_smi ? (
-                      <span className="badge badge-success"><Check size={14} /> OK</span>
+                      <span className="badge badge-success"><Check size={14} /> {t('onboarding.ok')}</span>
                     ) : (
-                      <span className="badge badge-warning">Non installato</span>
+                      <span className="badge badge-warning">{t('onboarding.notInstalled')}</span>
                     )}
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>Stack MLIR-AIE (PyXRT):</span>
+                    <span>{t('onboarding.pyxrtStackLabel')}</span>
                     {npuStatus.pyxrt_import ? (
-                      <span className="badge badge-success"><Check size={14} /> Attivo</span>
+                      <span className="badge badge-success"><Check size={14} /> {t('onboarding.active')}</span>
                     ) : (
-                      <span className="badge badge-warning">Usa fallback</span>
+                      <span className="badge badge-warning">{t('onboarding.usesFallback')}</span>
                     )}
                   </div>
                 </div>
               ) : (
-                <p style={{ color: 'var(--accent-red)' }}>Impossibile verificare lo stato NPU.</p>
+                <p style={{ color: 'var(--accent-red)' }}>{t('onboarding.unableToVerify')}</p>
               )}
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button className="btn-primary" onClick={() => setStep(2)}>
-                Continua <ArrowRight size={18} />
+                {t('onboarding.continue')} <ArrowRight size={18} />
               </button>
             </div>
           </div>
@@ -202,7 +204,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                       {m.id}
                     </div>
                     <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                      Architettura: {m.arch} • Dimensione: {m.size_mb} MB
+                      {t('onboarding.archInfo', { arch: m.arch, size: m.size_mb })}
                     </div>
                   </div>
                   {selectedModel === m.id && <CheckCircle size={22} color="var(--accent-purple)" />}
@@ -211,9 +213,9 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <button className="btn-secondary" onClick={() => setStep(1)}>Indietro</button>
+              <button className="btn-secondary" onClick={() => setStep(1)}>{t('onboarding.back')}</button>
               <button className="btn-primary" onClick={() => setStep(3)}>
-                Continua <ArrowRight size={18} />
+                {t('onboarding.continue')} <ArrowRight size={18} />
               </button>
             </div>
           </div>
@@ -224,7 +226,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginBottom: '1.5rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>
-                  Indirizzo Host (Serve)
+                  {t('onboarding.hostAddressLabel')}
                 </label>
                 <input
                   type="text"
@@ -244,7 +246,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
 
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>
-                  Porta Server HTTP (default: 8000)
+                  {t('onboarding.portLabel')}
                 </label>
                 <input
                   type="number"
@@ -269,7 +271,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                     checked={legacy}
                     onChange={e => setLegacy(e.target.checked)}
                   />
-                  <span>Server Legacy Python (fastapi)</span>
+                  <span>{t('onboarding.legacyPythonServerLabel')}</span>
                 </label>
 
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer' }}>
@@ -278,15 +280,15 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
                     checked={offline}
                     onChange={e => setOffline(e.target.checked)}
                   />
-                  <span>Modalità Offline (HF_HUB_OFFLINE)</span>
+                  <span>{t('onboarding.offlineModeLabel')}</span>
                 </label>
               </div>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <button className="btn-secondary" onClick={() => setStep(2)}>Indietro</button>
+              <button className="btn-secondary" onClick={() => setStep(2)}>{t('onboarding.back')}</button>
               <button className="btn-primary" onClick={() => setStep(4)}>
-                Riepilogo <ArrowRight size={18} />
+                {t('onboarding.summaryBtn')} <ArrowRight size={18} />
               </button>
             </div>
           </div>
@@ -296,20 +298,20 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
           <div>
             <div style={{ background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '10px', padding: '1.25rem', marginBottom: '1.5rem' }}>
               <h3 style={{ fontSize: '1.05rem', color: '#34d399', fontWeight: 600, marginBottom: '0.8rem' }}>
-                Riepilogo Configurazione Iniziale
+                {t('onboarding.initialSummaryTitle')}
               </h3>
               <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem', color: 'var(--text-main)', fontSize: '0.95rem' }}>
-                <li>• <strong>Modello selezionato:</strong> {selectedModel}</li>
-                <li>• <strong>Endpoint API:</strong> http://{host}:{port}/v1</li>
-                <li>• <strong>Runtime Engine:</strong> {legacy ? "Legacy Python (Uvicorn)" : "Native C++ Server (XRT Direct)"}</li>
-                <li>• <strong>Offline:</strong> {offline ? "Sì" : "No"}</li>
+                <li>• <strong>{t('onboarding.selectedModelSummary')}:</strong> {selectedModel}</li>
+                <li>• <strong>{t('onboarding.apiEndpointSummary')}:</strong> http://{host}:{port}/v1</li>
+                <li>• <strong>{t('onboarding.runtimeEngineSummary')}:</strong> {legacy ? t('onboarding.legacyPythonUvicorn') : t('onboarding.nativeCppServer')}</li>
+                <li>• <strong>{t('onboarding.offlineSummary')}:</strong> {offline ? t('onboarding.yes') : t('onboarding.no')}</li>
               </ul>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <button className="btn-secondary" onClick={() => setStep(3)}>Indietro</button>
+              <button className="btn-secondary" onClick={() => setStep(3)}>{t('onboarding.back')}</button>
               <button className="btn-primary" onClick={handleFinish} style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
-                Completa Setup e Avvia Server <Zap size={18} />
+                {t('onboarding.completeSetupAndStart')} <Zap size={18} />
               </button>
             </div>
           </div>
@@ -319,3 +321,4 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
     </div>
   );
 }
+

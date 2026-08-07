@@ -5,8 +5,12 @@ import ChatPlayground from './components/ChatPlayground';
 import ServerControl from './components/ServerControl';
 import LogsViewer from './components/LogsViewer';
 import ErrorBoundary from './components/ErrorBoundary';
+import LanguageSwitcher from './components/LanguageSwitcher';
+import { useTranslation } from './i18n/I18nContext';
 
 export default function App() {
+  const { t } = useTranslation();
+
   const apiBase = window.location.origin.includes('5173')
     ? 'http://127.0.0.1:8080'
     : window.location.origin;
@@ -141,10 +145,10 @@ export default function App() {
 
           <div>
             <div style={{ fontWeight: 800, fontSize: '1.1rem', letterSpacing: '-0.02em', background: 'var(--gradient-brand)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-              ALVEARE NPU
+              {t('nav.brandTitle')}
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: '1' }}>
-              AMD Ryzen AI (XDNA2) Control Dashboard
+              {t('nav.brandSubtitle')}
             </div>
           </div>
         </div>
@@ -170,7 +174,7 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <MessageSquare size={16} /> Playground Chat
+            <MessageSquare size={16} /> {t('nav.playground')}
           </button>
 
           <button
@@ -192,9 +196,9 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <Server size={16} /> Control Panel & Modelli
+            <Server size={16} /> {t('nav.controlPanel')}
             {models.length === 0 && !modelsLoading && (
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-amber)', display: 'inline-block' }} title="Nessun modello presente" />
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-amber)', display: 'inline-block' }} title={t('nav.noModelsBadge')} />
             )}
           </button>
 
@@ -217,7 +221,7 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <Terminal size={16} /> Log & Diagnostica
+            <Terminal size={16} /> {t('nav.logs')}
           </button>
         </div>
 
@@ -225,38 +229,41 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           {connectionError ? (
             <span className="badge badge-danger">
-              ● Server Non Raggiungibile
+              ● {t('nav.serverUnreachable')}
             </span>
           ) : status?.is_running ? (
             <span className="badge badge-success">
-              <span className="pulse-icon">●</span> Server Attivo ({status.model})
+              <span className="pulse-icon">●</span> {t('nav.serverActive', { model: status.model })}
             </span>
           ) : (
             <span className="badge badge-danger">
-              ● Server Spento
+              ● {t('nav.serverStopped')}
             </span>
           )}
+
+          {/* Language Switcher */}
+          <LanguageSwitcher />
 
           {/* Theme Switcher Button */}
           <button
             className="btn-secondary"
             style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
             onClick={toggleTheme}
-            title={theme === 'dark' ? "Passa a Tema Chiaro" : "Passa a Tema Scuro"}
-            aria-label={theme === 'dark' ? "Passa a Tema Chiaro" : "Passa a Tema Scuro"}
+            title={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
+            aria-label={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
           >
             {theme === 'dark' ? <Sun size={14} color="var(--accent-amber)" /> : <Moon size={14} color="var(--accent-purple)" />}
-            <span style={{ fontSize: '0.78rem' }}>{theme === 'dark' ? 'Chiaro' : 'Scuro'}</span>
+            <span style={{ fontSize: '0.78rem' }}>{theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}</span>
           </button>
 
           <button
             className="btn-secondary"
             style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
             onClick={() => setShowWizard(true)}
-            title="Riapri Setup Wizard"
-            aria-label="Riapri Setup Wizard"
+            title={t('nav.reopenWizard')}
+            aria-label={t('nav.reopenWizard')}
           >
-            <Settings size={14} /> Wizard
+            <Settings size={14} /> {t('nav.wizard')}
           </button>
         </div>
 
@@ -282,9 +289,9 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.88rem', color: 'var(--text-main)' }}>
             <AlertTriangle size={20} color="#ef4444" style={{ flexShrink: 0 }} />
             <div>
-              <strong>Impossibile connettersi al server di controllo Alveare ({apiBase}).</strong>
+              <strong>{t('connectionBanner.cannotConnect', { apiBase })}</strong>
               <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
-                Verifica che il servizio backend sia avviato o che l'indirizzo sia corretto.
+                {t('connectionBanner.verifyBackend')}
               </span>
             </div>
           </div>
@@ -294,10 +301,10 @@ export default function App() {
             onClick={handleRetryConnection}
             disabled={isRetrying}
             style={{ padding: '0.4rem 0.85rem', fontSize: '0.82rem', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#fca5a5' }}
-            aria-label="Riprova connessione al server"
+            aria-label={t('connectionBanner.retryConnection')}
           >
             <RefreshCw size={14} className={isRetrying ? "pulse-icon" : ""} />
-            {isRetrying ? 'Connessione in corso...' : 'Riprova Connessione'}
+            {isRetrying ? t('connectionBanner.connecting') : t('connectionBanner.retryConnection')}
           </button>
         </div>
       )}
@@ -308,7 +315,7 @@ export default function App() {
           <div style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
             <ChatPlayground
               apiBase={apiBase}
-              activeModel={status?.model || (models.length > 0 ? models[0].id : 'Nessun modello')}
+              activeModel={status?.model || (models.length > 0 ? models[0].id : t('nav.noModelsBadge'))}
               isServerRunning={status?.is_running || false}
               models={models}
               modelsLoading={modelsLoading}
@@ -334,3 +341,4 @@ export default function App() {
     </div>
   );
 }
+

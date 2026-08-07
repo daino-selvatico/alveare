@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, Download, HardDrive, Cpu, CheckCircle2, AlertCircle, Sparkles, Code, Info } from 'lucide-react';
+import { useTranslation } from '../i18n/I18nContext';
 
 export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplete }) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState('auto'); // 'auto' | 'manual'
   const [supportedModels, setSupportedModels] = useState([]);
   
@@ -124,34 +126,34 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
     if (mode === 'auto') {
       const alias = autoAlias.trim() || selectedSupported;
       if (!alias) {
-        setErrorMessage("L'alias del modello è obbligatorio.");
+        setErrorMessage(t('addModel.aliasRequired'));
         return;
       }
       if (!/^[a-zA-Z0-9_-]+$/.test(alias)) {
-        setErrorMessage("L'alias del modello può contenere solo lettere, numeri, trattini e underscore.");
+        setErrorMessage(t('addModel.aliasInvalidFormat'));
         return;
       }
     } else {
       const alias = manualAlias.trim();
       const path = localGgufPath.trim();
       if (!path) {
-        setErrorMessage("Inserisci il percorso assoluto del file .gguf locale.");
+        setErrorMessage(t('addModel.ggufPathRequired'));
         return;
       }
       if (!path.toLowerCase().endsWith('.gguf')) {
-        setErrorMessage("Il file specificato deve avere estensione .gguf.");
+        setErrorMessage(t('addModel.ggufExtensionRequired'));
         return;
       }
       if (!alias) {
-        setErrorMessage("L'alias del modello è obbligatorio.");
+        setErrorMessage(t('addModel.aliasRequired'));
         return;
       }
       if (!/^[a-zA-Z0-9_-]+$/.test(alias)) {
-        setErrorMessage("L'alias del modello può contenere solo lettere, numeri, trattini e underscore.");
+        setErrorMessage(t('addModel.aliasInvalidFormat'));
         return;
       }
       if (manualArch === 'custom' && !customScriptPath.trim()) {
-        setErrorMessage("Specificare il percorso dello script Python quantizzatore custom.");
+        setErrorMessage(t('addModel.customScriptRequired'));
         return;
       }
     }
@@ -185,7 +187,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
       if (!res.ok) {
         const errData = await res.json();
-        throw new Error(errData.detail || "Impossibile avviare il setup del modello");
+        throw new Error(errData.detail || t('addModel.setupStartError'));
       }
     } catch (e) {
       setIsSettingUp(false);
@@ -250,10 +252,10 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
             </div>
             <div>
               <h2 id="add-model-title" style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, color: 'white' }}>
-                Aggiungi / Installa Modello NPU
+                {t('addModel.title')}
               </h2>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                Download automatico 1-click o importazione manuale con quantizzatore custom
+                {t('addModel.subtitle')}
               </div>
             </div>
           </div>
@@ -261,7 +263,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
           <button
             onClick={onClose}
             disabled={isSettingUp}
-            aria-label="Chiudi finestra"
+            aria-label={t('addModel.closeWindow')}
             style={{
               background: 'none',
               border: 'none',
@@ -308,7 +310,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                 }}
               >
                 <Sparkles size={16} />
-                <span>Automatico (1-Click)</span>
+                <span>{t('addModel.modeAuto')}</span>
               </button>
 
               <button
@@ -330,7 +332,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                 }}
               >
                 <HardDrive size={16} />
-                <span>Manuale / Custom</span>
+                <span>{t('addModel.modeManual')}</span>
               </button>
             </div>
           )}
@@ -340,7 +342,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                  Seleziona Modello Supportato
+                  {t('addModel.selectSupportedLabel')}
                 </label>
                 <select
                   value={selectedSupported}
@@ -388,7 +390,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                  Link HuggingFace / Repository GGUF (Modificabile)
+                  {t('addModel.hfLinkOrRepoLabel')}
                 </label>
                 <input
                   type="text"
@@ -409,7 +411,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                  Nome Identificativo (Alias)
+                  {t('addModel.aliasLabel')}
                 </label>
                 <input
                   type="text"
@@ -435,7 +437,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                  Percorso File GGUF Locale
+                  {t('addModel.localGgufPathLabel')}
                 </label>
                 <input
                   type="text"
@@ -453,14 +455,14 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                   }}
                 />
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
-                  Inserisci il percorso assoluto del file .gguf già scaricato sul tuo sistema.
+                  {t('addModel.localGgufPathNotice')}
                 </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                    Architettura / Algoritmo
+                    {t('addModel.archAlgorithmLabel')}
                   </label>
                   <select
                     value={manualArch}
@@ -479,13 +481,13 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                     <option value="gemma4-e4b">Gemma 4 E4B (gemma4-e4b)</option>
                     <option value="gemma3">Gemma 3 1B (gemma3)</option>
                     <option value="llama">Llama 3.2 (llama)</option>
-                    <option value="custom">★ Algoritmo Custom (Plugin Python)</option>
+                    <option value="custom">{t('addModel.customAlgorithmOption')}</option>
                   </select>
                 </div>
 
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-                    Nome Modello (Alias)
+                    {t('addModel.aliasLabel')}
                   </label>
                   <input
                     type="text"
@@ -514,7 +516,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600, color: 'white', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
                     <Code size={16} color="var(--accent-purple)" />
-                    <span>Percorso Script Python Quantizzatore Custom</span>
+                    <span>{t('addModel.customScriptLabel')}</span>
                   </div>
                   <input
                     type="text"
@@ -532,7 +534,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                     }}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem', lineHeight: '1.4' }}>
-                    Lo script deve sottoclassare <code>BaseQuantizer</code> o definire la funzione <code>quantize(gguf_path, out_dir)</code>.
+                    {t('addModel.customScriptNotice')}
                   </div>
                 </div>
               )}
@@ -546,7 +548,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '0.4rem', fontWeight: 600 }}>
                   <span style={{ color: 'white', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                     <Cpu size={16} className="pulse-icon" />
-                    <span>Configurazione modello in corso ({currentStep})...</span>
+                    <span>{t('addModel.setupInProgress', { step: currentStep })}</span>
                   </span>
                   <span style={{ color: 'var(--accent-purple)' }}>{Math.round(progress)}%</span>
                 </div>
@@ -575,7 +577,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                 lineHeight: '1.5'
               }}>
                 {logs.length === 0 ? (
-                  <div style={{ color: 'rgba(255,255,255,0.4)', fontStyle: 'italic' }}>Avvio processo...</div>
+                  <div style={{ color: 'rgba(255,255,255,0.4)', fontStyle: 'italic' }}>{t('addModel.startingProcess')}</div>
                 ) : (
                   logs.map((l, i) => (
                     <div key={i} style={{ color: l.step === 'error' ? 'var(--accent-red)' : 'var(--text-muted)' }}>
@@ -621,7 +623,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               gap: '0.5rem'
             }}>
               <CheckCircle2 size={18} />
-              <span>Modello installato e configurato con successo per la NPU!</span>
+              <span>{t('addModel.setupSuccessBanner')}</span>
             </div>
           )}
 
@@ -633,7 +635,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
           borderTop: '1px solid var(--border-color)',
           background: 'rgba(0, 0, 0, 0.2)',
           display: 'flex',
-          justifyContent: 'flex-end',
+          justify: 'flex-end',
           gap: '0.75rem'
         }}>
           <button
@@ -650,7 +652,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               fontWeight: 600
             }}
           >
-            {progress === 100 ? 'Chiudi' : 'Annulla'}
+            {progress === 100 ? t('addModel.closeBtn') : t('addModel.cancelBtn')}
           </button>
 
           {progress !== 100 && (
@@ -675,12 +677,12 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               {isSettingUp ? (
                 <>
                   <Cpu size={16} className="pulse-icon" />
-                  <span>Installazione in corso...</span>
+                  <span>{t('addModel.installingInProgressBtn')}</span>
                 </>
               ) : (
                 <>
                   <Download size={16} />
-                  <span>Installa Modello</span>
+                  <span>{t('addModel.installModelBtn')}</span>
                 </>
               )}
             </button>
@@ -691,3 +693,4 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
     </div>
   );
 }
+

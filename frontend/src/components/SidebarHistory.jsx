@@ -12,8 +12,9 @@ import {
   Clock,
   Trash
 } from 'lucide-react';
+import { useTranslation } from '../i18n/I18nContext';
 
-function formatDateLabel(timestamp) {
+function formatDateLabel(timestamp, t) {
   if (!timestamp) return '';
   const date = new Date(timestamp);
   const now = new Date();
@@ -27,7 +28,7 @@ function formatDateLabel(timestamp) {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
   if (isYesterday) {
-    return 'Ieri';
+    return t('sidebar.yesterday');
   }
   return date.toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
@@ -43,6 +44,7 @@ export default function SidebarHistory({
   isCollapsed = false,
   onToggleCollapse
 }) {
+  const { t } = useTranslation();
   const [editingId, setEditingId] = useState(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -105,7 +107,7 @@ export default function SidebarHistory({
           onClick={onToggleCollapse}
           className="btn-secondary"
           style={{ padding: '0.6rem', borderRadius: '10px' }}
-          title="Espandi Sidebar Storico"
+          title={t('sidebar.expandSidebar')}
         >
           <PanelLeft size={18} />
         </button>
@@ -114,7 +116,7 @@ export default function SidebarHistory({
           onClick={onNewConversation}
           className="btn-primary"
           style={{ padding: '0.6rem', borderRadius: '10px' }}
-          title="Nuova Conversazione"
+          title={t('sidebar.newChat')}
         >
           <Plus size={18} />
         </button>
@@ -155,7 +157,7 @@ export default function SidebarHistory({
                   transition: 'all 0.2s ease',
                   position: 'relative'
                 }}
-                title={`${conv.title} (${formatDateLabel(conv.updatedAt)})`}
+                title={`${conv.title} (${formatDateLabel(conv.updatedAt, t)})`}
               >
                 <MessageSquare size={18} color={isActive ? '#c084fc' : 'currentColor'} />
               </button>
@@ -190,7 +192,7 @@ export default function SidebarHistory({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-main)' }}>
             <Clock size={16} color="var(--accent-purple)" />
-            <span>Storico Chat</span>
+            <span>{t('sidebar.chatHistory')}</span>
             <span style={{
               fontSize: '0.72rem',
               padding: '0.1rem 0.45rem',
@@ -215,7 +217,7 @@ export default function SidebarHistory({
               display: 'flex',
               alignItems: 'center'
             }}
-            title="Riduci Sidebar"
+            title={t('sidebar.collapseSidebar')}
           >
             <PanelLeftClose size={18} />
           </button>
@@ -233,7 +235,7 @@ export default function SidebarHistory({
             borderRadius: '9px'
           }}
         >
-          <Plus size={18} /> Nuova Conversazione
+          <Plus size={18} /> {t('sidebar.newChat')}
         </button>
 
         {/* Search Input */}
@@ -242,7 +244,7 @@ export default function SidebarHistory({
             <Search size={14} style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
             <input
               type="text"
-              placeholder="Cerca chat..."
+              placeholder={t('sidebar.searchPlaceholder')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               style={{
@@ -298,13 +300,15 @@ export default function SidebarHistory({
             gap: '0.5rem'
           }}>
             <MessageSquare size={24} style={{ opacity: 0.4 }} />
-            {searchQuery ? 'Nessuna conversazione trovata.' : 'Nessuna conversazione salvata.'}
+            {searchQuery ? t('sidebar.noConversationsFound') : t('sidebar.noConversationsSaved')}
           </div>
         ) : (
           filteredConversations.map(conv => {
             const isActive = conv.id === activeId;
             const isEditing = editingId === conv.id;
             const isDeleting = deletingId === conv.id;
+            const count = conv.messages ? conv.messages.length : 0;
+            const countStr = count === 1 ? t('sidebar.messagesCount_one', { count: 1 }) : t('sidebar.messagesCount_other', { count });
 
             return (
               <div
@@ -357,14 +361,14 @@ export default function SidebarHistory({
                       <button
                         onClick={e => saveRename(conv.id, e)}
                         style={{ background: 'none', border: 'none', color: 'var(--accent-green)', cursor: 'pointer', padding: '0.2rem' }}
-                        title="Salva"
+                        title={t('sidebar.save')}
                       >
                         <Check size={14} />
                       </button>
                       <button
                         onClick={cancelRename}
                         style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.2rem' }}
-                        title="Annulla"
+                        title={t('sidebar.cancel')}
                       >
                         <X size={14} />
                       </button>
@@ -379,10 +383,10 @@ export default function SidebarHistory({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {conv.title || 'Nuova conversazione'}
+                        {conv.title || t('sidebar.defaultTitle')}
                       </span>
                       <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                        {formatDateLabel(conv.updatedAt)} • {conv.messages ? conv.messages.length : 0} messagg{conv.messages && conv.messages.length === 1 ? 'io' : 'i'}
+                        {formatDateLabel(conv.updatedAt, t)} • {countStr}
                       </span>
                     </div>
                   )}
@@ -396,14 +400,14 @@ export default function SidebarHistory({
                         <button
                           onClick={e => executeDelete(conv.id, e)}
                           style={{ background: 'var(--accent-red)', border: 'none', borderRadius: '4px', color: 'white', cursor: 'pointer', padding: '0.15rem 0.4rem', fontSize: '0.7rem', fontWeight: 600 }}
-                          title="Conferma eliminazione"
+                          title={t('sidebar.confirmDelete')}
                         >
-                          Elimina
+                          {t('sidebar.confirmDelete')}
                         </button>
                         <button
                           onClick={e => { e.stopPropagation(); setDeletingId(null); }}
                           style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.15rem' }}
-                          title="Annulla"
+                          title={t('sidebar.cancel')}
                         >
                           <X size={13} />
                         </button>
@@ -421,7 +425,7 @@ export default function SidebarHistory({
                             borderRadius: '4px',
                             transition: 'color 0.2s ease'
                           }}
-                          title="Rinomina conversazione"
+                          title={t('sidebar.rename')}
                         >
                           <Edit3 size={13} />
                         </button>
@@ -437,7 +441,7 @@ export default function SidebarHistory({
                             borderRadius: '4px',
                             transition: 'color 0.2s ease'
                           }}
-                          title="Elimina conversazione"
+                          title={t('sidebar.delete')}
                         >
                           <Trash2 size={13} />
                         </button>
@@ -462,7 +466,7 @@ export default function SidebarHistory({
         }}>
           <button
             onClick={() => {
-              if (window.confirm('Sei sicuro di voler eliminare tutte le conversazioni dallo storico?')) {
+              if (window.confirm(t('sidebar.deleteConfirm'))) {
                 onClearAllConversations();
               }
             }}
@@ -477,12 +481,13 @@ export default function SidebarHistory({
               gap: '0.35rem',
               transition: 'color 0.2s ease'
             }}
-            title="Cancella tutte le conversazioni salvate"
+            title={t('sidebar.clearHistoryTitle')}
           >
-            <Trash size={13} /> Svuota storico
+            <Trash size={13} /> {t('sidebar.clearHistory')}
           </button>
         </div>
       )}
     </aside>
   );
 }
+

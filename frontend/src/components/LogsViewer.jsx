@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Terminal, Cpu, RefreshCw } from 'lucide-react';
+import { useTranslation } from '../i18n/I18nContext';
 
 export default function LogsViewer({ apiBase }) {
+  const { t } = useTranslation();
   const [logs, setLogs] = useState([]);
   const [npu, setNpu] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -52,34 +54,34 @@ export default function LogsViewer({ apiBase }) {
       {/* NPU Health Card */}
       <div className="glass-card" style={{ padding: '1.25rem' }}>
         <h3 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Cpu size={20} color="var(--accent-cyan)" /> Diagnostica Hardware AMD Ryzen AI (XDNA2)
+          <Cpu size={20} color="var(--accent-cyan)" /> {t('logsViewer.npuDiagnosticsTitle')}
         </h3>
 
         {npu ? (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
             <div style={{ padding: '0.85rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Nodo Dispositivo NPU</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('logsViewer.deviceNodeLabel')}</div>
               <div style={{ fontWeight: 600, marginTop: '0.2rem', color: npu.device_node ? '#34d399' : '#fca5a5' }}>
-                {npu.device_node ? "✓ /dev/accel/accel0 OK" : "✗ Non trovato"}
+                {npu.device_node ? t('logsViewer.deviceNodeOk') : t('logsViewer.deviceNodeNotFound')}
               </div>
             </div>
 
             <div style={{ padding: '0.85rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Driver XRT SMI</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('logsViewer.xrtSmiLabel')}</div>
               <div style={{ fontWeight: 600, marginTop: '0.2rem', color: npu.xrt_smi ? '#34d399' : '#fca5a5' }}>
-                {npu.xrt_smi ? "✓ xrt-smi installato" : "✗ Mancante"}
+                {npu.xrt_smi ? t('logsViewer.xrtSmiInstalled') : t('logsViewer.xrtSmiMissing')}
               </div>
             </div>
 
             <div style={{ padding: '0.85rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>PyXRT Python Bindings</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('logsViewer.pyxrtLabel')}</div>
               <div style={{ fontWeight: 600, marginTop: '0.2rem', color: npu.pyxrt_import ? '#34d399' : '#fca5a5' }}>
-                {npu.pyxrt_import ? "✓ pyxrt disponibile" : "✗ Non importabile"}
+                {npu.pyxrt_import ? t('logsViewer.pyxrtAvailable') : t('logsViewer.pyxrtNotImportable')}
               </div>
             </div>
           </div>
         ) : (
-          <p style={{ color: 'var(--text-muted)' }}>Caricamento diagnostica...</p>
+          <p style={{ color: 'var(--text-muted)' }}>{t('logsViewer.loadingDiagnostics')}</p>
         )}
       </div>
 
@@ -87,16 +89,16 @@ export default function LogsViewer({ apiBase }) {
       <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', flex: 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Terminal size={20} color="var(--accent-purple)" /> Log in Realtime del Server
+            <Terminal size={20} color="var(--accent-purple)" /> {t('logsViewer.realtimeServerLogs')}
           </h3>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.rem' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer' }}>
               <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
-              <span>Auto-scroll</span>
+              <span>{t('logsViewer.autoScroll')}</span>
             </label>
-            <button className="btn-secondary" onClick={fetchLogs} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }} aria-label="Aggiorna log">
-              <RefreshCw size={14} /> Aggiorna
+            <button className="btn-secondary" onClick={fetchLogs} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }} aria-label={t('logsViewer.refresh')}>
+              <RefreshCw size={14} /> {t('logsViewer.refresh')}
             </button>
           </div>
         </div>
@@ -114,7 +116,7 @@ export default function LogsViewer({ apiBase }) {
           border: '1px solid rgba(255,255,255,0.05)'
         }}>
           {logs.length === 0 ? (
-            <div style={{ color: 'var(--text-subtle)' }}>Nessun log disponibile al momento.</div>
+            <div style={{ color: 'var(--text-subtle)' }}>{t('logsViewer.noLogsAvailable')}</div>
           ) : (
             logs.map((line, idx) => (
               <div key={idx} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
@@ -129,3 +131,4 @@ export default function LogsViewer({ apiBase }) {
     </div>
   );
 }
+
