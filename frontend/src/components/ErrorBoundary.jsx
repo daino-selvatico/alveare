@@ -1,7 +1,10 @@
 import React from 'react';
 import { AlertTriangle, RefreshCw, Home } from 'lucide-react';
+import { I18nContext } from '../i18n/I18nContext';
 
 export default class ErrorBoundary extends React.Component {
+  static contextType = I18nContext;
+
   constructor(props) {
     super(props);
     this.state = { hasError: false, error: null, errorInfo: null };
@@ -29,6 +32,8 @@ export default class ErrorBoundary extends React.Component {
 
   render() {
     if (this.state.hasError) {
+      const t = this.context?.t || ((k) => k);
+
       return (
         <div
           role="alert"
@@ -75,10 +80,10 @@ export default class ErrorBoundary extends React.Component {
 
             <div>
               <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '0.5rem' }}>
-                Si è verificato un errore imprevisto
+                {t('errorBoundary.title')}
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
-                Un componente dell'interfaccia ha riscontrato un problema. L'applicazione è stata isolata per prevenire blocchi completi.
+                {t('errorBoundary.subtitle')}
               </p>
             </div>
 
@@ -98,7 +103,7 @@ export default class ErrorBoundary extends React.Component {
                   overflowY: 'auto'
                 }}
               >
-                <strong>Dettaglio Errore:</strong> {this.state.error.toString()}
+                <strong>{t('errorBoundary.errorDetail')}:</strong> {this.state.error.toString()}
               </div>
             )}
 
@@ -106,16 +111,16 @@ export default class ErrorBoundary extends React.Component {
               <button
                 className="btn-primary"
                 onClick={this.handleReset}
-                aria-label="Riprova a caricare il componente"
+                aria-label={t('errorBoundary.retryComponent')}
               >
-                <RefreshCw size={16} /> Riprova Componente
+                <RefreshCw size={16} /> {t('errorBoundary.retryComponent')}
               </button>
               <button
                 className="btn-secondary"
                 onClick={this.handleReload}
-                aria-label="Ricarica la pagina web"
+                aria-label={t('errorBoundary.reloadPage')}
               >
-                <Home size={16} /> Ricarica Pagina
+                <Home size={16} /> {t('errorBoundary.reloadPage')}
               </button>
             </div>
           </div>
@@ -126,3 +131,4 @@ export default class ErrorBoundary extends React.Component {
     return this.props.children;
   }
 }
+

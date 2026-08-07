@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Play, Square, RotateCw, Server, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
 import AddModelModal from './AddModelModal';
+import { useTranslation } from '../i18n/I18nContext';
 
 export default function ServerControl({ apiBase, status, models = [], modelsLoading = false, onRefresh }) {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [targetModel, setTargetModel] = useState(status?.model || (models.length > 0 ? models[0].id : 'gemma4'));
   const [host, setHost] = useState(status?.host || '127.0.0.1');
@@ -42,10 +44,10 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
   const handleDeleteModel = async (modelId) => {
     if (status?.is_running && status?.model === modelId) {
-      alert(`Impossibile eliminare '${modelId}' perché è attualmente in esecuzione. Arresta prima il server.`);
+      alert(t('serverControl.deleteRunningModelAlert', { modelId }));
       return;
     }
-    if (!confirm(`Sei sicuro di voler eliminare il modello '${modelId}'? I pesi quantizzati ed i kernel compilati verranno rimossi definitivamente da disco.`)) {
+    if (!confirm(t('serverControl.deleteConfirm', { modelId }))) {
       return;
     }
     setLoading(true);
@@ -53,12 +55,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       const res = await fetch(`${apiBase}/api/models/${modelId}`, { method: 'DELETE' });
       if (!res.ok) {
         const errData = await res.json();
-        throw new Error(errData.detail || "Errore durante l'eliminazione del modello");
+        throw new Error(errData.detail || "Error deleting model");
       }
-      alert(`Modello '${modelId}' eliminato con successo.`);
+      alert(t('serverControl.deleteSuccess', { modelId }));
       onRefresh();
     } catch (e) {
-      alert(`Errore eliminazione modello: ${e.message}`);
+      alert(t('serverControl.deleteError', { error: e.message }));
     } finally {
       setLoading(false);
     }
@@ -67,7 +69,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   const handleStart = async (modelToStart) => {
     const selected = modelToStart || targetModel;
     if (!selected) {
-      alert("Seleziona prima un modello da avviare.");
+      alert(t('serverControl.selectModelFirst'));
       return;
     }
     setLoading(true);
@@ -82,7 +84,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         fetchKernelStatus();
       }, 1000);
     } catch (e) {
-      alert(`Errore avvio server: ${e}`);
+      alert(t('serverControl.startError', { error: e }));
     } finally {
       setLoading(false);
     }
@@ -97,7 +99,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         fetchKernelStatus();
       }, 1000);
     } catch (e) {
-      alert(`Errore arresto server: ${e}`);
+      alert(t('serverControl.stopError', { error: e }));
     } finally {
       setLoading(false);
     }
@@ -117,14 +119,14 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         fetchKernelStatus();
       }, 1500);
     } catch (e) {
-      alert(`Errore riavvio server: ${e}`);
+      alert(t('serverControl.restartError', { error: e }));
     } finally {
       setLoading(false);
     }
   };
 
   const handleBuildKernels = async (modelId) => {
-    if (!confirm(`Vuoi avviare la compilazione dei kernel NPU per '${modelId}'? La procedura compila i file .xclbin e aggiorna kernels/build/manifest.json.`)) {
+    if (!confirm(t('serverControl.buildKernelConfirm', { modelId }))) {
       return;
     }
     setBuildingModel(modelId);
@@ -138,10 +140,10 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           max_batch: maxBatch
         })
       });
-      alert(`Compilazione kernel avviata per '${modelId}'. Puoi seguire i log in tempo reale nella tab 'Log & Diagnostica'.`);
+      alert(t('serverControl.buildKernelStarted', { modelId }));
       setTimeout(fetchKernelStatus, 3000);
     } catch (e) {
-      alert(`Errore avvio compilazione kernel: ${e}`);
+      alert(t('serverControl.buildKernelError', { error: e }));
     } finally {
       setBuildingModel(null);
     }
@@ -156,23 +158,23 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
               <Server size={26} color="var(--accent-purple)" />
-              <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>Inference Engine Controller</h2>
+              <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>{t('serverControl.engineController')}</h2>
               
-              {status?.status === 'running' && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={14} /> In Esecuzione ({status.model})</span>}
+              {status?.status === 'running' && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={14} /> {t('serverControl.statusRunning', { model: status.model })}</span>}
               {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
-                <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" /> Caricamento Modello ({status?.load_progress || 0}%)</span>
+                <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" /> {t('serverControl.statusLoading', { progress: status?.load_progress || 0 })}</span>
               )}
-              {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> Server Spento</span>}
-              {status?.status === 'error' && <span className="badge badge-danger"><AlertCircle size={14} /> Errore Server</span>}
-              {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> Compilazione Kernel NPU...</span>}
+              {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> {t('serverControl.statusStopped')}</span>}
+              {status?.status === 'error' && <span className="badge badge-danger"><AlertCircle size={14} /> {t('serverControl.statusError')}</span>}
+              {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> {t('serverControl.statusBuildingKernels')}</span>}
             </div>
             
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
               {status?.is_running
-                ? `Server attivo su http://${status.host}:${status.port} (PID: ${status.pid}, Uptime: ${status.uptime_seconds}s)`
+                ? t('serverControl.serverActiveOn', { host: status.host, port: status.port, pid: status.pid, uptime: status.uptime_seconds })
                 : models.length > 0
-                ? "Seleziona un modello dalla scheda sottostante e clicca 'Carica & Avvia'."
-                : "Nessun modello trovato. Clicca 'Aggiungi Modello' per iniziare."}
+                ? t('serverControl.selectModelToStart')
+                : t('serverControl.noModelsFound')}
             </p>
           </div>
 
@@ -180,11 +182,11 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             {status?.is_running ? (
               <>
-                <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading} aria-label="Riavvia server NPU">
-                  <RotateCw size={18} className={loading ? "pulse-icon" : ""} /> Riavvia
+                <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading} aria-label={t('serverControl.restartNpu')}>
+                  <RotateCw size={18} className={loading ? "pulse-icon" : ""} /> {t('serverControl.restart')}
                 </button>
-                <button className="btn-danger" onClick={handleStop} disabled={loading} aria-label="Arresta server NPU">
-                  <Square size={18} /> Arresta
+                <button className="btn-danger" onClick={handleStop} disabled={loading} aria-label={t('serverControl.stopNpu')}>
+                  <Square size={18} /> {t('serverControl.stop')}
                 </button>
               </>
             ) : (
@@ -193,10 +195,10 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 onClick={() => handleStart(targetModel)}
                 disabled={loading || models.length === 0}
                 style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}
-                aria-label="Avvia server NPU"
+                aria-label={t('serverControl.startNpu')}
               >
                 <Play size={18} className={loading ? "pulse-icon" : ""} />
-                {loading ? 'Avvio in corso...' : `Avvia Server NPU ${targetModel ? `(${targetModel})` : ''}`}
+                {loading ? t('serverControl.starting') : targetModel ? t('serverControl.startServerModel', { model: targetModel }) : t('serverControl.startServer')}
               </button>
             )}
           </div>
@@ -211,7 +213,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
             border: '1px solid rgba(245, 158, 11, 0.3)'
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 600, color: 'white', marginBottom: '0.4rem' }}>
-              <span>{status?.load_step || "Caricamento pesi layer e inizializzazione NPU in corso..."}</span>
+              <span>{status?.load_step || t('serverControl.loadingWeightsStep')}</span>
               <span style={{ color: '#fbbf24' }}>{status?.load_progress || 0}%</span>
             </div>
             <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
@@ -240,19 +242,19 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
             <AlertCircle size={22} color="#ef4444" style={{ marginTop: '0.1rem', flexShrink: 0 }} />
             <div style={{ flex: 1 }}>
               <div style={{ color: '#ef4444', fontWeight: 700, fontSize: '0.95rem', marginBottom: '0.25rem' }}>
-                Errore durante l'esecuzione del Server di Inferenza
+                {t('serverControl.executionErrorTitle')}
               </div>
               <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', maxHeight: '120px', overflowY: 'auto' }}>
-                {status?.last_error || "Il server si è arrestato inaspettatamente."}
+                {status?.last_error || t('serverControl.serverStoppedUnexpectedly')}
               </div>
             </div>
             <button
               className="btn-secondary"
               style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#ef4444' }}
               onClick={() => handleStart(targetModel)}
-              aria-label="Riprova ad avviare il server"
+              aria-label={t('serverControl.retry')}
             >
-              Riprova
+              {t('serverControl.retry')}
             </button>
           </div>
         )}
@@ -262,7 +264,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
           <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-main)' }}>
-            <HardDrive size={22} color="var(--accent-cyan)" /> Modelli Quantizzati Disponibili
+            <HardDrive size={22} color="var(--accent-cyan)" /> {t('serverControl.availableModels')}
           </h3>
 
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
@@ -282,9 +284,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 gap: '0.4rem',
                 boxShadow: '0 0 15px rgba(139, 92, 246, 0.4)'
               }}
-              aria-label="Apri finestra aggiungi modello"
+              aria-label={t('serverControl.addModel')}
             >
-              <Plus size={16} /> Aggiungi Modello
+              <Plus size={16} /> {t('serverControl.addModel')}
             </button>
           </div>
         </div>
@@ -332,11 +334,10 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
             <div>
               <h3 style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '0.5rem' }}>
-                Nessun Modello LLM Trovato
+                {t('serverControl.noModelsTitle')}
               </h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
-                Per poter eseguire l'inferenza sull'hardware NPU AMD Ryzen AI, è necessario installare almeno un modello quantizzato.
-                Puoi scaricare con 1-click un modello supportato (come Gemma 4 12B) oppure importare un file <code>.gguf</code> locale.
+                {t('serverControl.noModelsDesc')}
               </p>
             </div>
 
@@ -344,9 +345,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
               onClick={() => setIsAddModelOpen(true)}
               className="btn-primary"
               style={{ padding: '0.75rem 1.5rem', fontSize: '0.95rem' }}
-              aria-label="Guida aggiungi modello"
+              aria-label={t('serverControl.downloadOrImportFirst')}
             >
-              <Plus size={18} /> Scarica o Importa il tuo Primo Modello
+              <Plus size={18} /> {t('serverControl.downloadOrImportFirst')}
             </button>
           </div>
         ) : (
@@ -379,14 +380,14 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                         {m.id}
                       </h4>
                       <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                        Architettura: <strong>{m.arch}</strong> • Dimensione: {m.size_mb} MB
+                        {t('serverControl.arch', { arch: m.arch, size: m.size_mb })}
                       </span>
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.3rem' }}>
-                      {isServed && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={12} /> IN ESECUZIONE</span>}
-                      {isServed && !status?.is_loaded && <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> CARICAMENTO ({status?.load_progress || 0}%)</span>}
-                      {isSelected && !isServed && <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.4)' }}>SELEZIONATO</span>}
+                      {isServed && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={12} /> {t('serverControl.inExecution')}</span>}
+                      {isServed && !status?.is_loaded && <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> {t('serverControl.loadingBadge', { progress: status?.load_progress || 0 })}</span>}
+                      {isSelected && !isServed && <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.4)' }}>{t('serverControl.selectedBadge')}</span>}
                     </div>
                   </div>
 
@@ -404,21 +405,21 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                       justifyContent: 'space-between',
                       fontWeight: 600
                     }}>
-                      <span>Velocità Misurata:</span>
+                      <span>{t('serverControl.measuredSpeed')}</span>
                       <span>⚡ {status.tok_per_sec} tok/s</span>
                     </div>
                   )}
 
                   {/* Kernel Status Indicator */}
                   <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>Kernel Hardware NPU:</span>
+                    <span>{t('serverControl.hardwareKernels')}</span>
                     {isKernelMatching ? (
                       <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        ✓ Compilati ({mKernel.kernels_count} kernel)
+                        {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
                       </span>
                     ) : (
                       <span style={{ color: '#fbbf24', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        ⚠️ Non Compilati
+                        {t('serverControl.notCompiled')}
                       </span>
                     )}
                   </div>
@@ -441,7 +442,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                       aria-label={`Avvia o riavvia modello ${m.id}`}
                     >
                       {isServed ? <RotateCw size={14} /> : <Play size={14} />}
-                      {isServed ? "Riavvia" : "Carica & Avvia"}
+                      {isServed ? t('serverControl.restart') : t('serverControl.loadAndStart')}
                     </button>
 
                     <button
@@ -453,10 +454,10 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                         handleBuildKernels(m.id);
                       }}
                       disabled={buildingModel === m.id}
-                      title="Compila/Rigenera kernel .xclbin NPU per questo modello"
+                      title={t('serverControl.compileKernelTitle')}
                       aria-label={`Compila kernel NPU per ${m.id}`}
                     >
-                      <Hammer size={14} /> {buildingModel === m.id ? "Compilazione..." : "Compila Kernel"}
+                      <Hammer size={14} /> {buildingModel === m.id ? t('serverControl.compiling') : t('serverControl.compileKernel')}
                     </button>
 
                     <button
@@ -467,7 +468,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                         handleDeleteModel(m.id);
                       }}
                       disabled={loading || (status?.is_running && status?.model === m.id)}
-                      title="Elimina modello, pesi quantizzati e kernel da disco"
+                      title={t('serverControl.deleteModelTitle')}
                       aria-label={`Elimina modello ${m.id}`}
                     >
                       <Trash2 size={14} />
@@ -484,18 +485,18 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       <div className="glass-card" style={{ padding: '1.5rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Settings size={20} color="var(--accent-cyan)" /> Configurazione Server & Opzioni Avanzate Kernel
+            <Settings size={20} color="var(--accent-cyan)" /> {t('serverControl.serverConfig')}
           </h3>
 
           <button className="btn-secondary" onClick={() => setShowBuildOptions(!showBuildOptions)} style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem' }} aria-expanded={showBuildOptions}>
-            {showBuildOptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />} Opzioni Avanzate Compilazione
+            {showBuildOptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />} {t('serverControl.advancedCompilationOptions')}
           </button>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
           <div>
             <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              Indirizzo Host
+              {t('serverControl.hostAddress')}
             </label>
             <input
               type="text"
@@ -515,7 +516,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
           <div>
             <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              Porta API HTTP
+              {t('serverControl.httpPort')}
             </label>
             <input
               type="number"
@@ -536,12 +537,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', justifyContent: 'center' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
               <input type="checkbox" checked={legacy} onChange={e => setLegacy(e.target.checked)} />
-              <span>Server Legacy Python (Uvicorn)</span>
+              <span>{t('serverControl.legacyPythonServer')}</span>
             </label>
 
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
               <input type="checkbox" checked={offline} onChange={e => setOffline(e.target.checked)} />
-              <span>Modalità Offline (HF_HUB_OFFLINE)</span>
+              <span>{t('serverControl.offlineMode')}</span>
             </label>
           </div>
         </div>
@@ -551,7 +552,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
               <input type="checkbox" checked={noGemm} onChange={e => setNoGemm(e.target.checked)} />
-              <span>--no-gemm (Compilazione veloce saltando forme GEMM prefill)</span>
+              <span>{t('serverControl.noGemmOption')}</span>
             </label>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.88rem' }}>

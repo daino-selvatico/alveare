@@ -43,6 +43,8 @@ import {
   saveGlobalSettings,
   DEFAULT_SETTINGS
 } from '../utils/chatStorage';
+import { useTranslation } from '../i18n/I18nContext';
+
 
 function parseThinking(content) {
   if (!content) return { thinking: '', text: '' };
@@ -79,6 +81,7 @@ function parseThinking(content) {
 }
 
 function CodeBlock({ _node, inline, className, children, ...props }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || '');
   const codeString = String(children).replace(/\n$/, '');
@@ -127,7 +130,7 @@ function CodeBlock({ _node, inline, className, children, ...props }) {
         </span>
         <button
           onClick={handleCopyCode}
-          aria-label="Copia codice negli appunti"
+          aria-label={t('chat.copyCode')}
           style={{
             background: 'none',
             border: 'none',
@@ -140,7 +143,7 @@ function CodeBlock({ _node, inline, className, children, ...props }) {
           }}
         >
           {copied ? <Check size={13} /> : <Copy size={13} />}
-          <span>{copied ? 'Copiato!' : 'Copia'}</span>
+          <span>{copied ? t('chat.copied') : t('chat.copy')}</span>
         </button>
       </div>
       <pre style={{
@@ -166,6 +169,7 @@ export default function ChatPlayground({
   modelsLoading = false,
   onNavigateToControl
 }) {
+  const { t } = useTranslation();
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvIdState] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -251,8 +255,8 @@ export default function ChatPlayground({
     } else {
       const globalDefaults = getGlobalSettings();
       const welcomeConv = createConversation(
-        'Prima conversazione',
-        [{ role: 'assistant', content: "Ciao! Sono il modello LLM in esecuzione sull'NPU AMD Ryzen AI. Come posso aiutarti oggi?" }],
+        t('sidebar.defaultTitle'),
+        [{ role: 'assistant', content: t('chat.welcomeMsgContent') }],
         globalDefaults.systemPrompt,
         globalDefaults
       );
@@ -261,7 +265,8 @@ export default function ChatPlayground({
       setMessages(welcomeConv.messages);
       applyConvSettings(welcomeConv);
     }
-  }, []);
+  }, [t]);
+
 
   useEffect(() => {
     scrollToBottom();
@@ -309,7 +314,7 @@ export default function ChatPlayground({
 
   const handleSelectConversation = (id) => {
     if (isGenerating) {
-      if (!window.confirm("C'è una generazione in corso. Vuoi interromperla per cambiare conversazione?")) {
+      if (!window.confirm(t('chat.confirmSwitchConv'))) {
         return;
       }
       handleStop();
@@ -329,13 +334,13 @@ export default function ChatPlayground({
 
   const handleNewConversation = () => {
     if (isGenerating) {
-      if (!window.confirm("C'è una generazione in corso. Vuoi interromperla per creare una nuova chat?")) {
+      if (!window.confirm(t('chat.confirmNewChat'))) {
         return;
       }
       handleStop();
     }
     const currentGlobal = getGlobalSettings();
-    const newConv = createConversation('Nuova conversazione', [], currentGlobal.systemPrompt, currentGlobal);
+    const newConv = createConversation(t('sidebar.defaultTitle'), [], currentGlobal.systemPrompt, currentGlobal);
     setConversations(getConversations());
     setActiveConvIdState(newConv.id);
     setMessages([]);
@@ -724,10 +729,10 @@ export default function ChatPlayground({
         }}>
           <Upload size={54} color="var(--accent-purple)" className="pulse-icon" />
           <h3 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'white', marginTop: '1rem' }}>
-            Rilascia i file qui per caricarli
+            {t('chat.dragOverlayTitle')}
           </h3>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.3rem' }}>
-            Supporta immagini, audio, documenti (PDF, TXT, MD, CSV, Codice) e file generici
+            {t('chat.dragOverlayDesc')}
           </p>
         </div>
       )}
@@ -769,7 +774,7 @@ export default function ChatPlayground({
               textOverflow: 'ellipsis',
               maxWidth: '300px'
             }}>
-              {activeConvObj?.title || 'Playground Multimodale'}
+              {activeConvObj?.title || t('chat.playgroundTitle')}
             </span>
             <span className="badge badge-success" style={{ textTransform: 'none', flexShrink: 0 }}>
               <Cpu size={14} /> {activeModel}
@@ -779,22 +784,22 @@ export default function ChatPlayground({
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {metrics.tps > 0 && (
               <span className="badge" style={{ background: 'rgba(6, 182, 212, 0.15)', color: 'var(--accent-cyan)', border: '1px solid rgba(6, 182, 212, 0.3)' }}>
-                <Zap size={14} /> {metrics.tps} tok/s ({metrics.tokens} tok in {metrics.elapsed}s)
+                <Zap size={14} /> {t('chat.tokPerSec', { tps: metrics.tps, tokens: metrics.tokens, elapsed: metrics.elapsed })}
               </span>
             )}
             
-            <button className="btn-secondary" onClick={handleNewConversation} title="Nuova Conversazione" aria-label="Crea una nuova conversazione">
-              <Plus size={16} /> Nuova Chat
+            <button className="btn-secondary" onClick={handleNewConversation} title={t('sidebar.newChat')} aria-label={t('sidebar.newChat')}>
+              <Plus size={16} /> {t('chat.newChatBtn')}
             </button>
 
             <button
               className={`btn-secondary ${showSettings ? 'active' : ''}`}
               onClick={() => setShowSettings(!showSettings)}
-              title="Parametri di generazione (System prompt, Temperature, CoT...)"
-              aria-label="Apri impostazioni parametri di generazione"
+              title={t('chat.settingsTitle')}
+              aria-label={t('chat.settingsTitle')}
               style={{ position: 'relative' }}
             >
-              <Sliders size={16} /> Impostazioni
+              <Sliders size={16} /> {t('chat.settingsBtn')}
               {isCustomizedSettings && (
                 <span
                   style={{
@@ -805,7 +810,7 @@ export default function ChatPlayground({
                     display: 'inline-block',
                     marginLeft: '2px'
                   }}
-                  title="Parametri personalizzati attivi"
+                  title={t('chat.customSettingsActive')}
                 />
               )}
             </button>
@@ -828,10 +833,10 @@ export default function ChatPlayground({
               <HardDrive size={22} color="var(--accent-amber)" style={{ flexShrink: 0 }} />
               <div>
                 <strong style={{ color: 'var(--text-main)', fontSize: '0.9rem' }}>
-                  Nessun Modello LLM Presente su Disco
+                  {t('chat.noModelsBannerTitle')}
                 </strong>
                 <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                  Per chattare con l'hardware AMD Ryzen AI, scarica o aggiungi il tuo primo modello quantizzato.
+                  {t('chat.noModelsBannerDesc')}
                 </div>
               </div>
             </div>
@@ -840,9 +845,9 @@ export default function ChatPlayground({
               className="btn-primary"
               onClick={onNavigateToControl}
               style={{ padding: '0.45rem 0.95rem', fontSize: '0.85rem' }}
-              aria-label="Vai al Control Panel per aggiungere un modello"
+              aria-label={t('chat.downloadModel')}
             >
-              <Plus size={16} /> Scarica Modello
+              <Plus size={16} /> {t('chat.downloadModel')}
             </button>
           </div>
         )}
@@ -881,11 +886,10 @@ export default function ChatPlayground({
 
               <div>
                 <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '0.5rem' }}>
-                  Alveare NPU Multimodal Chat Playground
+                  {t('chat.welcomeTitle')}
                 </h2>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: '1.6' }}>
-                  Chatta direttamente in locale con i modelli LLM accelerati da hardware AMD Ryzen AI (XDNA2 NPU).
-                  Supporta caricamento di file multimodali (immagini, audio, documenti) e ragionamento Chain-of-Thought.
+                  {t('chat.welcomeDesc')}
                 </p>
               </div>
 
@@ -898,10 +902,10 @@ export default function ChatPlayground({
                 marginTop: '1rem'
               }}>
                 {[
-                  { title: "Funzionamento NPU", desc: "Spiegami come l'NPU AMD Ryzen AI accelera l'inferenza LLM." },
-                  { title: "Generazione Codice", desc: "Scrivi un server HTTP in Python ad alte prestazioni." },
-                  { title: "Analisi Architetturale", desc: "Quali sono i vantaggi del KV-cache prefix reuse nell'NPU?" },
-                  { title: "Caratteristiche Gemma 4", desc: "Cosa contraddistingue i modelli Gemma 4 e CoT (Chain-of-Thought)?" }
+                  { title: t('chat.promptSuggestions.npuTitle'), desc: t('chat.promptSuggestions.npuDesc') },
+                  { title: t('chat.promptSuggestions.codeTitle'), desc: t('chat.promptSuggestions.codeDesc') },
+                  { title: t('chat.promptSuggestions.archTitle'), desc: t('chat.promptSuggestions.archDesc') },
+                  { title: t('chat.promptSuggestions.gemmaTitle'), desc: t('chat.promptSuggestions.gemmaDesc') }
                 ].map((prompt, idx) => (
                   <button
                     key={idx}
@@ -1046,10 +1050,10 @@ export default function ChatPlayground({
                             }}
                           >
                             <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                              <Brain size={16} /> Pensiero / Chain of Thought
+                              <Brain size={16} /> {t('chat.thinkingTitle')}
                               {isCurrentlyGeneratingThis && !displayMessageText && (
                                 <span className="pulse-icon" style={{ fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>
-                                  (In elaborazione...)
+                                  {t('chat.thinkingProcessing')}
                                 </span>
                               )}
                             </span>
@@ -1077,7 +1081,7 @@ export default function ChatPlayground({
                       {isCurrentlyGeneratingThis && !displayMessageText && !thinking && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--accent-cyan)', fontSize: '0.9rem', padding: '0.2rem 0' }}>
                           <Sparkles size={18} className="pulse-icon" />
-                          <span>Inizializzazione contesto NPU e prima risposta in corso...</span>
+                          <span>{t('chat.initializingNpu')}</span>
                         </div>
                       )}
 
@@ -1104,7 +1108,7 @@ export default function ChatPlayground({
                         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.6rem' }}>
                           <button
                             onClick={() => copyToClipboard(displayMessageText, idx)}
-                            aria-label="Copia testo risposta"
+                            aria-label={t('chat.copyResponse')}
                             style={{
                               background: 'none',
                               border: 'none',
@@ -1117,7 +1121,7 @@ export default function ChatPlayground({
                             }}
                           >
                             {copiedIndex === idx ? <Check size={14} /> : <Copy size={14} />}
-                            <span>{copiedIndex === idx ? 'Copiato!' : 'Copia'}</span>
+                            <span>{copiedIndex === idx ? t('chat.copied') : t('chat.copy')}</span>
                           </button>
                         </div>
                       )}
@@ -1146,15 +1150,15 @@ export default function ChatPlayground({
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: '#fca5a5', fontSize: '0.85rem' }}>
                 <AlertTriangle size={18} style={{ flexShrink: 0 }} />
-                <span>La generazione si è interrotta. Desideri riprovare l'ultimo messaggio?</span>
+                <span>{t('chat.generationInterrupted')}</span>
               </div>
               <button
                 className="btn-secondary"
                 onClick={() => handleSend(lastUserPrompt)}
                 style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', color: '#fca5a5', borderColor: 'rgba(239, 68, 68, 0.4)' }}
-                aria-label="Riprova invio messaggio"
+                aria-label={t('chat.retry')}
               >
-                <RefreshCw size={14} /> Riprova
+                <RefreshCw size={14} /> {t('chat.retry')}
               </button>
             </div>
           )}
@@ -1174,7 +1178,7 @@ export default function ChatPlayground({
             overflowX: 'auto'
           }}>
             <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>
-              Allegati ({attachments.length}):
+              {t('chat.attachmentsLabel', { count: attachments.length })}
             </span>
             {attachments.map(att => (
               <div
@@ -1221,8 +1225,8 @@ export default function ChatPlayground({
               <button
                 className="btn-secondary"
                 onClick={() => setShowUploadMenu(!showUploadMenu)}
-                title="Allega file (Immagini, Audio, Documenti)"
-                aria-label="Apri menu allegati"
+                title={t('chat.attachFile')}
+                aria-label={t('chat.attachFile')}
                 aria-expanded={showUploadMenu}
                 disabled={!isServerRunning || isGenerating}
                 style={{ padding: '0.75rem', borderRadius: '10px' }}
@@ -1256,21 +1260,21 @@ export default function ChatPlayground({
                     role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
-                    <ImageIcon size={16} color="var(--accent-purple)" /> Immagine
+                    <ImageIcon size={16} color="var(--accent-purple)" /> {t('chat.image')}
                   </button>
                   <button
                     onClick={() => handleOpenUpload('audio')}
                     role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
-                    <Music size={16} color="var(--accent-cyan)" /> Audio
+                    <Music size={16} color="var(--accent-cyan)" /> {t('chat.audio')}
                   </button>
                   <button
                     onClick={() => handleOpenUpload('document')}
                     role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
                   >
-                    <FileText size={16} color="var(--accent-green)" /> Documento
+                    <FileText size={16} color="var(--accent-green)" /> {t('chat.document')}
                   </button>
                 </div>
               )}
@@ -1287,10 +1291,10 @@ export default function ChatPlayground({
               }}
               placeholder={
                 !isServerRunning
-                  ? "Avvia prima il server nel Control Panel per chattare!"
+                  ? t('chat.inputPlaceholderServerOff')
                   : models.length === 0
-                  ? "Nessun modello presente su disco. Scarica prima un modello!"
-                  : "Invia un messaggio o trascina file qui... (Invio per inviare, Shift+Invio per nuova riga)"
+                  ? t('chat.inputPlaceholderNoModels')
+                  : t('chat.inputPlaceholderReady')
               }
               disabled={!isServerRunning || isGenerating || models.length === 0}
               aria-label="Campo testo messaggio"
@@ -1314,10 +1318,10 @@ export default function ChatPlayground({
                 className="btn-danger"
                 onClick={handleStop}
                 style={{ height: '52px' }}
-                aria-label="Interrompi generazione"
-                title="Ferma la generazione in corso (Tasto Esc)"
+                aria-label={t('chat.stop')}
+                title={t('chat.stopTitle')}
               >
-                <StopCircle size={20} /> Ferma
+                <StopCircle size={20} /> {t('chat.stop')}
               </button>
             ) : (
               <button
@@ -1325,17 +1329,17 @@ export default function ChatPlayground({
                 onClick={() => handleSend()}
                 disabled={!isServerRunning || (!input.trim() && attachments.length === 0) || models.length === 0}
                 style={{ height: '52px' }}
-                aria-label="Invia messaggio"
+                aria-label={t('chat.send')}
               >
-                <Send size={18} /> Invia
+                <Send size={18} /> {t('chat.send')}
               </button>
             )}
           </div>
 
           {/* Keyboard shortcut legend footer */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.4rem', fontSize: '0.72rem', color: 'var(--text-subtle)' }}>
-            <span>Caricamento rapido: trascina immagini, audio o documenti direttamente nella finestra</span>
-            <span><code>Enter</code> invia • <code>Shift+Enter</code> nuova riga • <code>Esc</code> ferma</span>
+            <span>{t('chat.shortcutNoticeDrag')}</span>
+            <span>{t('chat.shortcutNoticeKeys')}</span>
           </div>
         </div>
       </div>

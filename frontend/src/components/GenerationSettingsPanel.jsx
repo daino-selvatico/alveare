@@ -13,25 +13,7 @@ import {
   Check
 } from 'lucide-react';
 import { DEFAULT_SETTINGS } from '../utils/chatStorage';
-
-const SYSTEM_PROMPT_PRESETS = [
-  {
-    label: '🤖 Generale',
-    prompt: 'Sei un assistente AI esperto ed utile.'
-  },
-  {
-    label: '💻 Programmatore Senior',
-    prompt: 'Sei uno sviluppatore senior esperto in architettura software, refactoring, TypeScript, Python e C++. Fornisci risposte pratiche, ben strutturate e codice privo di bug.'
-  },
-  {
-    label: '⚡ Risposte Sintetiche',
-    prompt: 'Rispondi in modo estremamente sintetico, diretto ed essenziale, senza preamboli o spiegazioni superflue.'
-  },
-  {
-    label: '🔍 Code Reviewer',
-    prompt: 'Sei un esperto di analisi del codice e sicurezza. Ispeziona il codice fornito per identificare bug, vulnerabilità di sicurezza, colli di bottiglia nelle prestazioni e suggerisci ottimizzazioni precise.'
-  }
-];
+import { useTranslation } from '../i18n/I18nContext';
 
 export default function GenerationSettingsPanel({
   isOpen,
@@ -41,11 +23,31 @@ export default function GenerationSettingsPanel({
   onSaveAsGlobalDefaults,
   onResetToDefaults
 }) {
+  const { t } = useTranslation();
   const [saveToast, setSaveToast] = useState(false);
 
   if (!isOpen) return null;
 
   const currentSettings = { ...DEFAULT_SETTINGS, ...settings };
+
+  const systemPromptPresets = [
+    {
+      label: t('settingsPanel.presetGeneral'),
+      prompt: t('settingsPanel.presetGeneralPrompt')
+    },
+    {
+      label: t('settingsPanel.presetSeniorDev'),
+      prompt: t('settingsPanel.presetSeniorDevPrompt')
+    },
+    {
+      label: t('settingsPanel.presetConcise'),
+      prompt: t('settingsPanel.presetConcisePrompt')
+    },
+    {
+      label: t('settingsPanel.presetReviewer'),
+      prompt: t('settingsPanel.presetReviewerPrompt')
+    }
+  ];
 
   const handleChange = (key, value) => {
     onUpdateSettings({
@@ -67,7 +69,7 @@ export default function GenerationSettingsPanel({
         inset: 0,
         zIndex: 1000,
         display: 'flex',
-        justifyContent: 'flex-end',
+        justify: 'flex-end',
         background: 'rgba(0, 0, 0, 0.4)',
         backdropFilter: 'blur(4px)',
         animation: 'fadeIn 0.2s ease-out'
@@ -109,10 +111,10 @@ export default function GenerationSettingsPanel({
             </div>
             <div>
               <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
-                Impostazioni Generazione
+                {t('settingsPanel.title')}
               </h3>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
-                Parametri modello e prompt di sistema
+                {t('settingsPanel.subtitle')}
               </p>
             </div>
           </div>
@@ -132,7 +134,7 @@ export default function GenerationSettingsPanel({
               transition: 'all 0.2s ease'
             }}
             className="btn-icon-hover"
-            title="Chiudi pannello"
+            title={t('settingsPanel.closePanel')}
           >
             <X size={20} />
           </button>
@@ -152,10 +154,10 @@ export default function GenerationSettingsPanel({
           <div className="glass-card" style={{ padding: '1.1rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                <FileText size={16} color="var(--accent-purple)" /> Prompt di Sistema
+                <FileText size={16} color="var(--accent-purple)" /> {t('settingsPanel.systemPrompt')}
               </label>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                {currentSettings.systemPrompt.length} caratteri
+                {t('settingsPanel.charCount', { count: currentSettings.systemPrompt.length })}
               </span>
             </div>
 
@@ -163,7 +165,7 @@ export default function GenerationSettingsPanel({
               value={currentSettings.systemPrompt}
               onChange={e => handleChange('systemPrompt', e.target.value)}
               rows={4}
-              placeholder="Inserisci qui le istruzioni o la personalità per il modello..."
+              placeholder={t('settingsPanel.systemPromptPlaceholder')}
               style={{
                 width: '100%',
                 padding: '0.75rem',
@@ -182,10 +184,10 @@ export default function GenerationSettingsPanel({
             {/* Presets */}
             <div>
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.4rem', fontWeight: 600 }}>
-                Preset Rapidi:
+                {t('settingsPanel.quickPresets')}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                {SYSTEM_PROMPT_PRESETS.map((preset, idx) => (
+                {systemPromptPresets.map((preset, idx) => (
                   <button
                     key={idx}
                     onClick={() => handleChange('systemPrompt', preset.prompt)}
@@ -228,10 +230,10 @@ export default function GenerationSettingsPanel({
                 </div>
                 <div>
                   <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-main)' }}>
-                    Thinking (Chain-of-Thought)
+                    {t('settingsPanel.thinkingCoT')}
                   </div>
                   <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                    {currentSettings.enableThinking ? 'Ragionamento visibile attivo' : 'Risposte dirette senza CoT'}
+                    {currentSettings.enableThinking ? t('settingsPanel.thinkingActive') : t('settingsPanel.thinkingInactive')}
                   </div>
                 </div>
               </div>
@@ -247,7 +249,7 @@ export default function GenerationSettingsPanel({
                   alignItems: 'center',
                   padding: 0
                 }}
-                title="Attiva/Disattiva Thinking"
+                title={t('settingsPanel.toggleThinking')}
               >
                 {currentSettings.enableThinking ? <ToggleRight size={32} /> : <ToggleLeft size={32} />}
               </button>
@@ -257,14 +259,14 @@ export default function GenerationSettingsPanel({
           {/* Section 3: Sampling Parameters */}
           <div className="glass-card" style={{ padding: '1.1rem', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
             <div style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-              <Thermometer size={16} color="var(--accent-cyan)" /> Parametri di Campionamento
+              <Thermometer size={16} color="var(--accent-cyan)" /> {t('settingsPanel.samplingParams')}
             </div>
 
             {/* Temperature */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
                 <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  Temperatura (Temperature)
+                  {t('settingsPanel.temperature')}
                 </span>
                 <input
                   type="number"
@@ -301,9 +303,9 @@ export default function GenerationSettingsPanel({
               />
 
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                <span>0.0 (Preciso)</span>
-                <span>0.7 (Bilanciato)</span>
-                <span>1.5+ (Creativo)</span>
+                <span>{t('settingsPanel.tempPrecise')}</span>
+                <span>{t('settingsPanel.tempBalanced')}</span>
+                <span>{t('settingsPanel.tempCreative')}</span>
               </div>
             </div>
 
@@ -311,7 +313,7 @@ export default function GenerationSettingsPanel({
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
                 <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  Top-P (Nucleus Sampling)
+                  {t('settingsPanel.topP')}
                 </span>
                 <input
                   type="number"
@@ -348,9 +350,9 @@ export default function GenerationSettingsPanel({
               />
 
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                <span>0.1 (Focalizzato)</span>
-                <span>0.9 (Standard)</span>
-                <span>1.0 (Tutti i token)</span>
+                <span>{t('settingsPanel.topPFocused')}</span>
+                <span>{t('settingsPanel.topPStandard')}</span>
+                <span>{t('settingsPanel.topPAll')}</span>
               </div>
             </div>
 
@@ -358,7 +360,7 @@ export default function GenerationSettingsPanel({
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
                 <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  Top-K
+                  {t('settingsPanel.topK')}
                 </span>
                 <input
                   type="number"
@@ -400,14 +402,14 @@ export default function GenerationSettingsPanel({
           {/* Section 4: Context & Token Limits */}
           <div className="glass-card" style={{ padding: '1.1rem', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
             <div style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-              <Layers size={16} color="var(--accent-amber)" /> Limiti di Contesto & Token
+              <Layers size={16} color="var(--accent-amber)" /> {t('settingsPanel.contextLimits')}
             </div>
 
             {/* Max Context Length */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
                 <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  Contesto Massimo (Token)
+                  {t('settingsPanel.maxContextLength')}
                 </span>
                 <input
                   type="number"
@@ -469,7 +471,7 @@ export default function GenerationSettingsPanel({
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
                 <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  Max Tokens Risposta
+                  {t('settingsPanel.maxTokensResponse')}
                 </span>
                 <input
                   type="number"
@@ -553,7 +555,7 @@ export default function GenerationSettingsPanel({
               alignItems: 'center',
               gap: '0.4rem'
             }}>
-              <Check size={14} /> Salvate come impostazioni predefinite globali!
+              <Check size={14} /> {t('settingsPanel.toastSavedDefaults')}
             </div>
           )}
 
@@ -562,9 +564,9 @@ export default function GenerationSettingsPanel({
               onClick={onResetToDefaults}
               className="btn-secondary"
               style={{ flex: 1, justifyContent: 'center', fontSize: '0.82rem', padding: '0.55rem' }}
-              title="Ripristina valori predefiniti"
+              title={t('settingsPanel.resetTitle')}
             >
-              <RotateCcw size={14} /> Ripristina
+              <RotateCcw size={14} /> {t('settingsPanel.reset')}
             </button>
 
             <button
@@ -579,9 +581,9 @@ export default function GenerationSettingsPanel({
                 borderColor: 'rgba(139, 92, 246, 0.3)',
                 color: 'var(--accent-purple)'
               }}
-              title="Imposta come predefiniti per le nuove chat"
+              title={t('settingsPanel.saveDefaultsTitle')}
             >
-              <Save size={14} /> Salva Predefiniti
+              <Save size={14} /> {t('settingsPanel.saveDefaults')}
             </button>
           </div>
         </div>
@@ -589,3 +591,4 @@ export default function GenerationSettingsPanel({
     </div>
   );
 }
+
