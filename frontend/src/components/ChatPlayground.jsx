@@ -1392,7 +1392,12 @@ export default function ChatPlayground({
         <div
           onClick={() => setPreviewImageModal(null)}
           role="dialog"
+          aria-modal="true"
           aria-label="Anteprima Immagine"
+          tabIndex={-1}
+          onKeyDown={e => {
+            if (e.key === 'Escape') setPreviewImageModal(null);
+          }}
           style={{
             position: 'fixed',
             inset: 0,
@@ -1407,7 +1412,7 @@ export default function ChatPlayground({
         >
           <img
             src={previewImageModal}
-            alt="Anteprima"
+            alt="Anteprima immagine in dimensioni reali"
             style={{ maxWidth: '90%', maxHeight: '90%', borderRadius: '12px', boxShadow: '0 0 40px rgba(0,0,0,0.8)' }}
           />
         </div>

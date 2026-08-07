@@ -150,23 +150,23 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   };
 
   return (
-    <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+    <div role="region" aria-label={t('serverControl.engineController')} style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       
       {/* 1. HERO SERVER STATUS BANNER */}
       <div className="glass-card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-              <Server size={26} color="var(--accent-purple)" />
+              <Server size={26} color="var(--accent-purple)" aria-hidden="true" />
               <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>{t('serverControl.engineController')}</h2>
               
-              {status?.status === 'running' && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={14} /> {t('serverControl.statusRunning', { model: status.model })}</span>}
+              {status?.status === 'running' && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>}
               {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
-                <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" /> {t('serverControl.statusLoading', { progress: status?.load_progress || 0 })}</span>
+                <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" aria-hidden="true" /> {t('serverControl.statusLoading', { progress: status?.load_progress || 0 })}</span>
               )}
-              {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} /> {t('serverControl.statusStopped')}</span>}
-              {status?.status === 'error' && <span className="badge badge-danger"><AlertCircle size={14} /> {t('serverControl.statusError')}</span>}
-              {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" /> {t('serverControl.statusBuildingKernels')}</span>}
+              {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} aria-hidden="true" /> {t('serverControl.statusStopped')}</span>}
+              {status?.status === 'error' && <span className="badge badge-danger"><AlertCircle size={14} aria-hidden="true" /> {t('serverControl.statusError')}</span>}
+              {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" aria-hidden="true" /> {t('serverControl.statusBuildingKernels')}</span>}
             </div>
             
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
@@ -183,10 +183,10 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
             {status?.is_running ? (
               <>
                 <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading} aria-label={t('serverControl.restartNpu')}>
-                  <RotateCw size={18} className={loading ? "pulse-icon" : ""} /> {t('serverControl.restart')}
+                  <RotateCw size={18} className={loading ? "pulse-icon" : ""} aria-hidden="true" /> {t('serverControl.restart')}
                 </button>
                 <button className="btn-danger" onClick={handleStop} disabled={loading} aria-label={t('serverControl.stopNpu')}>
-                  <Square size={18} /> {t('serverControl.stop')}
+                  <Square size={18} aria-hidden="true" /> {t('serverControl.stop')}
                 </button>
               </>
             ) : (
@@ -197,7 +197,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}
                 aria-label={t('serverControl.startNpu')}
               >
-                <Play size={18} className={loading ? "pulse-icon" : ""} />
+                <Play size={18} className={loading ? "pulse-icon" : ""} aria-hidden="true" />
                 {loading ? t('serverControl.starting') : targetModel ? t('serverControl.startServerModel', { model: targetModel }) : t('serverControl.startServer')}
               </button>
             )}
@@ -206,12 +206,16 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
         {/* Model Load Progress Bar */}
         {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
-          <div style={{
-            background: 'rgba(0,0,0,0.3)',
-            borderRadius: '10px',
-            padding: '1rem',
-            border: '1px solid rgba(245, 158, 11, 0.3)'
-          }}>
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              background: 'rgba(0,0,0,0.3)',
+              borderRadius: '10px',
+              padding: '1rem',
+              border: '1px solid rgba(245, 158, 11, 0.3)'
+            }}
+          >
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 600, color: 'white', marginBottom: '0.4rem' }}>
               <span>{status?.load_step || t('serverControl.loadingWeightsStep')}</span>
               <span style={{ color: '#fbbf24' }}>{status?.load_progress || 0}%</span>
@@ -230,16 +234,19 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
         {/* Error Alert Box */}
         {(status?.status === 'error' || status?.last_error) && (
-          <div style={{
-            background: 'rgba(239, 68, 68, 0.12)',
-            border: '1px solid rgba(239, 68, 68, 0.4)',
-            borderRadius: '10px',
-            padding: '1rem 1.25rem',
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: '0.85rem'
-          }}>
-            <AlertCircle size={22} color="#ef4444" style={{ marginTop: '0.1rem', flexShrink: 0 }} />
+          <div
+            role="alert"
+            style={{
+              background: 'rgba(239, 68, 68, 0.12)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              borderRadius: '10px',
+              padding: '1rem 1.25rem',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '0.85rem'
+            }}
+          >
+            <AlertCircle size={22} color="#ef4444" style={{ marginTop: '0.1rem', flexShrink: 0 }} aria-hidden="true" />
             <div style={{ flex: 1 }}>
               <div style={{ color: '#ef4444', fontWeight: 700, fontSize: '0.95rem', marginBottom: '0.25rem' }}>
                 {t('serverControl.executionErrorTitle')}

@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, Download, HardDrive, Cpu, CheckCircle2, AlertCircle, Sparkles, Code, Info } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplete }) {
   const { t } = useTranslation();
+  const containerRef = useRef(null);
+
+  useFocusTrap({ isOpen, onClose, containerRef });
+
   const [mode, setMode] = useState('auto'); // 'auto' | 'manual'
   const [supportedModels, setSupportedModels] = useState([]);
   
@@ -216,18 +221,21 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
         padding: '1.5rem'
       }}
     >
-      <div style={{
-        width: '100%',
-        maxWidth: '720px',
-        maxHeight: '90vh',
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border-color)',
-        borderRadius: '16px',
-        boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden'
-      }}>
+      <div
+        ref={containerRef}
+        style={{
+          width: '100%',
+          maxWidth: '720px',
+          maxHeight: '90vh',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '16px',
+          boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden'
+        }}
+      >
 
         {/* Modal Header */}
         <div style={{
@@ -248,7 +256,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               alignItems: 'center',
               justifyContent: 'center'
             }}>
-              <Download size={20} color="white" />
+              <Download size={20} color="white" aria-hidden="true" />
             </div>
             <div>
               <h2 id="add-model-title" style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, color: 'white' }}>
@@ -273,7 +281,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               borderRadius: '8px'
             }}
           >
-            <X size={20} />
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -293,6 +301,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
             }}>
               <button
                 onClick={() => setMode('auto')}
+                aria-pressed={mode === 'auto'}
                 style={{
                   padding: '0.65rem',
                   borderRadius: '8px',
@@ -309,12 +318,13 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                   transition: 'all 0.2s'
                 }}
               >
-                <Sparkles size={16} />
+                <Sparkles size={16} aria-hidden="true" />
                 <span>{t('addModel.modeAuto')}</span>
               </button>
 
               <button
                 onClick={() => setMode('manual')}
+                aria-pressed={mode === 'manual'}
                 style={{
                   padding: '0.65rem',
                   borderRadius: '8px',
@@ -331,7 +341,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                   transition: 'all 0.2s'
                 }}
               >
-                <HardDrive size={16} />
+                <HardDrive size={16} aria-hidden="true" />
                 <span>{t('addModel.modeManual')}</span>
               </button>
             </div>
@@ -341,10 +351,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
           {mode === 'auto' && !isSettingUp && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                <label id="lbl-supported" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
                   {t('addModel.selectSupportedLabel')}
                 </label>
                 <select
+                  aria-labelledby="lbl-supported"
                   value={selectedSupported}
                   onChange={(e) => handleSelectSupported(e.target.value)}
                   style={{
@@ -376,7 +387,7 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                   alignItems: 'flex-start',
                   gap: '0.75rem'
                 }}>
-                  <Info size={20} color="var(--accent-purple)" style={{ marginTop: '2px', flexShrink: 0 }} />
+                  <Info size={20} color="var(--accent-purple)" style={{ marginTop: '2px', flexShrink: 0 }} aria-hidden="true" />
                   <div>
                     <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'white', marginBottom: '0.2rem' }}>
                       {currentSupportedModel.name}
@@ -389,10 +400,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               )}
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                <label id="lbl-hf-link" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
                   {t('addModel.hfLinkOrRepoLabel')}
                 </label>
                 <input
+                  aria-labelledby="lbl-hf-link"
                   type="text"
                   value={autoUrl}
                   onChange={(e) => setAutoUrl(e.target.value)}
@@ -410,10 +422,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                <label id="lbl-auto-alias" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
                   {t('addModel.aliasLabel')}
                 </label>
                 <input
+                  aria-labelledby="lbl-auto-alias"
                   type="text"
                   value={autoAlias}
                   onChange={(e) => setAutoAlias(e.target.value)}
@@ -436,10 +449,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
           {mode === 'manual' && !isSettingUp && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                <label id="lbl-gguf-path" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
                   {t('addModel.localGgufPathLabel')}
                 </label>
                 <input
+                  aria-labelledby="lbl-gguf-path"
                   type="text"
                   value={localGgufPath}
                   onChange={(e) => setLocalGgufPath(e.target.value)}
@@ -461,10 +475,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                  <label id="lbl-manual-arch" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
                     {t('addModel.archAlgorithmLabel')}
                   </label>
                   <select
+                    aria-labelledby="lbl-manual-arch"
                     value={manualArch}
                     onChange={(e) => setManualArch(e.target.value)}
                     style={{
@@ -486,10 +501,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                  <label id="lbl-manual-alias" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
                     {t('addModel.aliasLabel')}
                   </label>
                   <input
+                    aria-labelledby="lbl-manual-alias"
                     type="text"
                     value={manualAlias}
                     onChange={(e) => setManualAlias(e.target.value)}
@@ -515,10 +531,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                   border: '1px dashed var(--accent-purple)'
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600, color: 'white', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
-                    <Code size={16} color="var(--accent-purple)" />
-                    <span>{t('addModel.customScriptLabel')}</span>
+                    <Code size={16} color="var(--accent-purple)" aria-hidden="true" />
+                    <span id="lbl-custom-script">{t('addModel.customScriptLabel')}</span>
                   </div>
                   <input
+                    aria-labelledby="lbl-custom-script"
                     type="text"
                     value={customScriptPath}
                     onChange={(e) => setCustomScriptPath(e.target.value)}
@@ -543,11 +560,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
           {/* Setup In Progress View */}
           {isSettingUp && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }} role="status" aria-live="polite">
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '0.4rem', fontWeight: 600 }}>
                   <span style={{ color: 'white', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <Cpu size={16} className="pulse-icon" />
+                    <Cpu size={16} className="pulse-icon" aria-hidden="true" />
                     <span>{t('addModel.setupInProgress', { step: currentStep })}</span>
                   </span>
                   <span style={{ color: 'var(--accent-purple)' }}>{Math.round(progress)}%</span>
@@ -593,36 +610,42 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
 
           {/* Error Banner */}
           {errorMessage && (
-            <div style={{
-              padding: '0.85rem 1rem',
-              borderRadius: '8px',
-              background: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: '#fca5a5',
-              fontSize: '0.85rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}>
-              <AlertCircle size={18} />
+            <div
+              role="alert"
+              style={{
+                padding: '0.85rem 1rem',
+                borderRadius: '8px',
+                background: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#fca5a5',
+                fontSize: '0.85rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              <AlertCircle size={18} aria-hidden="true" />
               <span>{errorMessage}</span>
             </div>
           )}
 
           {/* Complete Success Banner */}
           {progress === 100 && !isSettingUp && (
-            <div style={{
-              padding: '0.85rem 1rem',
-              borderRadius: '8px',
-              background: 'rgba(34, 197, 94, 0.1)',
-              border: '1px solid rgba(34, 197, 94, 0.3)',
-              color: '#86efac',
-              fontSize: '0.85rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}>
-              <CheckCircle2 size={18} />
+            <div
+              role="status"
+              style={{
+                padding: '0.85rem 1rem',
+                borderRadius: '8px',
+                background: 'rgba(34, 197, 94, 0.1)',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                color: '#86efac',
+                fontSize: '0.85rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              <CheckCircle2 size={18} aria-hidden="true" />
               <span>{t('addModel.setupSuccessBanner')}</span>
             </div>
           )}
@@ -676,12 +699,12 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
             >
               {isSettingUp ? (
                 <>
-                  <Cpu size={16} className="pulse-icon" />
+                  <Cpu size={16} className="pulse-icon" aria-hidden="true" />
                   <span>{t('addModel.installingInProgressBtn')}</span>
                 </>
               ) : (
                 <>
-                  <Download size={16} />
+                  <Download size={16} aria-hidden="true" />
                   <span>{t('addModel.installModelBtn')}</span>
                 </>
               )}
