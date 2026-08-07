@@ -41,7 +41,15 @@
     "confirmDelete": "Elimina",
     "cancel": "Annulla",
     "save": "Salva",
-    "defaultTitle": "Nuova conversazione"
+    "defaultTitle": "Nuova conversazione",
+    "export": "Esporta",
+    "exportTitle": "Scarica le conversazioni in formato JSON",
+    "exportSelected": "Esporta conversazione",
+    "import": "Importa",
+    "importTitle": "Importa conversazioni da un file JSON",
+    "importSuccess": "Importate con successo {count} conversazioni.",
+    "importErrorSyntax": "Impossibile analizzare il file JSON.",
+    "importErrorInvalid": "Formato JSON non valido: nessuna conversazione valida trovata."
   },
   "chat": {
     "playgroundTitle": "Playground Multimodale",
