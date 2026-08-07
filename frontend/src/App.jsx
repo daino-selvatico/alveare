@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw } from 'lucide-react';
+import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw, BarChart2 } from 'lucide-react';
 import OnboardingWizard from './components/OnboardingWizard';
 import ChatPlayground from './components/ChatPlayground';
 import ServerControl from './components/ServerControl';
 import LogsViewer from './components/LogsViewer';
+import BenchmarksView from './components/BenchmarksView';
 import ErrorBoundary from './components/ErrorBoundary';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import { useTranslation } from './i18n/I18nContext';
@@ -223,6 +224,28 @@ export default function App() {
           >
             <Terminal size={16} /> {t('nav.logs')}
           </button>
+
+          <button
+            onClick={() => setActiveTab('benchmarks')}
+            aria-selected={activeTab === 'benchmarks'}
+            role="tab"
+            style={{
+              padding: '0.5rem 1rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: activeTab === 'benchmarks' ? 'var(--gradient-brand)' : 'transparent',
+              color: activeTab === 'benchmarks' ? 'white' : 'var(--text-muted)',
+              fontWeight: 600,
+              fontSize: '0.85rem',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <BarChart2 size={16} /> {t('nav.benchmarks')}
+          </button>
         </div>
 
         {/* Server Status & Controls Header Badge */}
@@ -335,6 +358,16 @@ export default function App() {
 
           <div style={{ flex: 1, display: activeTab === 'logs' ? 'block' : 'none' }}>
             <LogsViewer apiBase={apiBase} />
+          </div>
+
+          <div style={{ flex: 1, display: activeTab === 'benchmarks' ? 'block' : 'none' }}>
+            <BenchmarksView
+              apiBase={apiBase}
+              status={status}
+              models={models}
+              modelsLoading={modelsLoading}
+              onRefresh={() => { fetchStatus(); fetchModels(); }}
+            />
           </div>
         </ErrorBoundary>
       </main>

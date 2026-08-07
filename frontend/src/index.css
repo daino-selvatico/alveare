@@ -205,6 +205,12 @@ body {
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
+.badge-secondary {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
 /* Animations */
 @keyframes pulse-dot {
   0% { transform: scale(0.95); opacity: 0.8; }
