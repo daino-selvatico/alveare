@@ -5,13 +5,16 @@
 #include <functional>
 #include <mutex>
 #include <vector>
+#include <random>
 
 namespace alveare {
 
 struct GenerationParams {
     int max_tokens = 100;
-    float temperature = 0.0f; // 0.0 means greedy
-    float top_p = 1.0f;
+    float temperature = 0.0f; // 0.0 means greedy (deterministic, bit-exact)
+    float top_p = 1.0f;       // nucleus sampling; 1.0 = disabled
+    int top_k = 0;            // keep only the k highest-logit tokens; 0 = disabled
+    unsigned seed = 0;        // RNG seed; 0 = nondeterministic (random_device)
 };
 
 class Generator {
@@ -43,6 +46,11 @@ private:
     // not reentrant; serialize concurrent server requests (the NPU runs one
     // forward at a time anyway).
     std::mutex gen_mutex_;
+
+    // Sampling RNG. Seeded once per generate() call (from params.seed when set,
+    // else left advancing for nondeterministic output), so draws are independent
+    // across tokens within a request while staying reproducible for a fixed seed.
+    std::mt19937 rng_{std::random_device{}()};
 
     int sample(const std::vector<float>& logits, const GenerationParams& params);
     void run_lm_head(const bf16* x, std::vector<float>& logits);
