@@ -5,6 +5,8 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [2.0.0-alpha.2] — 2026-08-08
+
 _Progress since alpha.1, toward the 2.0 release. Gemma-3 now runs on the fast NPU
 FFN (the CPU fallback is gone), decoding gained **configurable sampling**, and the
 web UI grew into a real chat app: streaming, conversation history, file upload, and a
@@ -30,6 +32,15 @@ generation-settings panel._
   persist per-conversation.
 - **Model-management UX** — live model-load progress and measured tok/s surfaced from
   the server logs, with readable error banners on load failure.
+- **First-run onboarding, error resilience & polish** — onboarding wizard for the
+  no-model case, React error boundary, loading/empty states, and a logs viewer.
+- **Internationalization (IT/EN)** with a language switcher (persisted, browser-default).
+- **Accessibility pass** — aria labels/roles, focus trap in modals, visible focus,
+  contrast, and `prefers-reduced-motion`.
+- **Export / import conversations** (JSON) with validation.
+- **Keyboard shortcuts** (Enter/Shift+Enter, Esc to stop, Ctrl/Cmd+K new chat) + help overlay.
+- **Models / benchmarks view** — per-model size/arch/status and live tok/s.
+- **Frontend test suite** (Vitest + Testing Library) for core utils and components.
 - **2.0 documentation** — refreshed README plus quickstart, adding-models, and sampling
   guides.
 
