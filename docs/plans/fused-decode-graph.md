@@ -58,7 +58,29 @@ Alveare: e4b ~1.1 tok/s (~907 ms/tok), 12B ~1 tok/s, gemma3 ~3.6 tok/s (~276 ms/
   dequant-bandwidth work. Reprioritized: do **step C (fused-layer kernel / shared
   contexts)** FIRST. Est. ~1.3–1.4× on gemma3 (276→~200 ms/tok). Still profile e4b/12B
   to confirm the same pattern (likely worse — more/bigger layers).
-- NEXT: step C. Approach options (measure each): (c1) cheapest — reorder / make QKV and
-  FFN share a single runtime-shape kernel context so switching FFN→QKV is free; (c2) a
-  fused per-layer kernel doing QKV+O+FFN on-chip in one dispatch. Start on gemma3
-  (loads ~8s), validate coherent + ideally bit-exact, measure, then e4b/12B.
+- 2026-08-08 **step C analysis (grounded, decisive)**:
+  - The ~2.6 ms/switch is **inherent XDNA2 hw-context reconfig**, NOT reload/eviction:
+    `npu.cpp` caches one `xrt::hw_context` per kernel shape; `max_contexts=8` and gemma3
+    uses only 3 shapes (gemv_2048x2048, gemv_16384x2048/lm_head, ffn_2048x8192) → no
+    thrashing. Pinning won't help. Confirmed by profile (qkv 3.7 ms/layer WITH switch vs
+    o 0.32 ms/layer reusing qkv's ctx).
+  - gemv (8 cores) and ffn (32 cores) CANNOT spatially coexist in one xclbin → can't
+    share a context by co-placement. The per-layer sequence qkv(ctxA)→**attention(HOST)**
+    →o(ctxA)→ffn(ctxB)→next qkv(ctxA) has 2 switches/layer that ONLY vanish if the WHOLE
+    layer runs in ONE kernel/context — which requires **attention on the NPU** (a single
+    kernel can't yield to the host mid-run). So the switch win ⇒ full fused-layer kernel.
+  - Moving ONLY rmsnorm/rope to NPU is counter-productive (host is ~7 ms; it'd ADD
+    dispatches, not remove switches). Skip.
+  - Existing `kernels/{attention,rope,rmsnorm}/*.cc/.py` sources exist (Python-runtime
+    era) but are UNBUILT + UNINTEGRATED (C++ does these on host). Unknown if they match
+    current gemma3/4 shapes.
+  - **Potential**: eliminating both switches/layer ≈ 2×2.6 ms×26 ≈ 135 ms/tok on gemma3
+    (276→~140, ~7 tok/s) — BUT requires the full fused-layer w/ on-NPU attention = big,
+    high-risk to converge autonomously. Speculative decode (built, gemma4) AMORTIZES
+    switches over a batch (switch cost /B) but is situational (repetitive text only).
+- NEXT (cheap probe before committing): build + self-verify `kernels/attention/attention.py`,
+  `rope.py`, `rmsnorm.py` to assess their state/shapes → decides if composing them into a
+  fused attention-block is viable. If viable, prototype a fused attention-block
+  (qkv→rope→attention→o in ONE context) on gemma3, measure. If not viable / not
+  converging, prefer the honest deliverable: this characterization + a detailed impl plan
+  for the user, and DON'T burn all tokens on a from-scratch on-NPU-attention kernel.
