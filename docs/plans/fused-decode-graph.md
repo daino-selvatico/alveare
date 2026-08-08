@@ -49,4 +49,16 @@ Alveare: e4b ~1.1 tok/s (~907 ms/tok), 12B ~1 tok/s, gemma3 ~3.6 tok/s (~276 ms/
 
 ## Progress Log
 - 2026-08-08: branch created from feat/rc-2.0 (853014a, = v2.0.0-alpha.2). Plan written.
-  Next: step A (baseline profile).
+- 2026-08-08 **step A DONE — key finding**: gemma3 decode ~276 ms/tok, NPU ~95%
+  (`ffn=137 · qkv=97 · o=8 · lm_head=33`; host attn+rest ~7 ms). ANOMALY: **qkv (97 ms)
+  ≫ o (8 ms) for the SAME 2048×2048 shape** → ~88 ms/tok is per-layer kernel
+  **CONTEXT-SWITCH overhead** (qkv switches shape after FFN; o reuses qkv's context,
+  commit 7c67e12). So dispatch/switch ≈ **30%** of NPU time here, NOT ~9%. => the
+  cheapest high-value lever is **removing per-layer context switches**, not the
+  dequant-bandwidth work. Reprioritized: do **step C (fused-layer kernel / shared
+  contexts)** FIRST. Est. ~1.3–1.4× on gemma3 (276→~200 ms/tok). Still profile e4b/12B
+  to confirm the same pattern (likely worse — more/bigger layers).
+- NEXT: step C. Approach options (measure each): (c1) cheapest — reorder / make QKV and
+  FFN share a single runtime-shape kernel context so switching FFN→QKV is free; (c2) a
+  fused per-layer kernel doing QKV+O+FFN on-chip in one dispatch. Start on gemma3
+  (loads ~8s), validate coherent + ideally bit-exact, measure, then e4b/12B.
