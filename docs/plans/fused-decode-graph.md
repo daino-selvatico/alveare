@@ -52,17 +52,24 @@ gemma3 is only a **fast dev vehicle** (loads ~8s, simplest shapes). The context-
 lever is **gemma3-biased**: ~30% of NPU time on gemma3 but only **~12% on the 12B**
 (12B profile: FFN 62%, QKV 23%, O 12% — FFN weight-read/dequant DOMINATES). The 12B is
 the model that matters → **always measure the win on the 12B**, not just gemma3.
-The 12B's real bottleneck (= FLM's ~12× gap) is **FFN/gemv weight-read + dequant**
-(~10 GB/s effective vs ~120 peak). Priorities that actually help the 12B:
-  1. Fused-layer (switch removal) — still develop it (shared technique) but expect small
-     on 12B; validate the ACTUAL 12B gain before investing more.
-  2. **Speculative decode** (already built, gemma4, `ALVEARE_SPECULATIVE`) — amortizes
-     switches AND is compute-bound batched (~3 tok/s cap); make robust / default where it
-     wins (structured text). Real ~2-3× lever for the 12B, lower risk.
-  3. **Q3/Q2 quant** — fewer bytes/token → ~1.2-1.4× on ALL text (memory-bound). New quant
-     + kernels (bigger).
-NEXT: profile the 12B decode to CONFIRM its split; then evaluate lever (2) speculative on
-the 12B (cheapest real gain) before the big on-NPU-attention kernel.
+### Strategy (user-approved 2026-08-11)
+- **Models that matter: e4b + 12B** (the only ones used). gemma3 = fast dev vehicle only.
+- **NO requantization** (Q3/Q2 dropped — quality loss unacceptable). Do everything
+  INTERNALLY via the fused kernel. This is now THE lever.
+- **Order: gemma3 (develop) → e4b (has an FLM reference ~12.6 tok/s to measure against)
+  → 12B (same technique, no FLM reference, best-effort).** e4b is the yardstick.
+- The fused kernel wins on (a) context-switches, (b) host round-trips, (c) KV/activations
+  on-chip. HONEST CAVEAT: it does NOT by itself speed up the FFN weight-read+dequant
+  (~62% on 12B, likely large on e4b too) — that's the same Q4 dequant on the AIE vector
+  unit. So fusion gets PART of the gap; matching FLM's e4b may also need weight-
+  streaming/dequant efficiency (the hard, unknown FLM secret). **Measure on e4b vs 12.6
+  tok/s step by step** to see where fusion plateaus and whether the dequant must be
+  attacked too.
+- Speculative decode (built, gemma4) stays a COMPLEMENTARY lever (amortizes switches,
+  ~3 tok/s cap) but is situational (structured text) — not the main path.
+NEXT: profile the 12B decode (confirm split) + profile e4b (its split + baseline tok/s
+vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
+attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
 - 2026-08-08: branch created from feat/rc-2.0 (853014a, = v2.0.0-alpha.2). Plan written.
