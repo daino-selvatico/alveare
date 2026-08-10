@@ -47,6 +47,23 @@ Alveare: e4b ~1.1 tok/s (~907 ms/tok), 12B ~1 tok/s, gemma3 ~3.6 tok/s (~276 ms/
 - Merge to feat/rc-2.0 ONLY a step that measurably improves tok/s without regressing
   correctness. Everything stays on this branch until proven.
 
+## RE-ORIENTATION (2026-08-11, user steer)
+gemma3 is only a **fast dev vehicle** (loads ~8s, simplest shapes). The context-switch
+lever is **gemma3-biased**: ~30% of NPU time on gemma3 but only **~12% on the 12B**
+(12B profile: FFN 62%, QKV 23%, O 12% — FFN weight-read/dequant DOMINATES). The 12B is
+the model that matters → **always measure the win on the 12B**, not just gemma3.
+The 12B's real bottleneck (= FLM's ~12× gap) is **FFN/gemv weight-read + dequant**
+(~10 GB/s effective vs ~120 peak). Priorities that actually help the 12B:
+  1. Fused-layer (switch removal) — still develop it (shared technique) but expect small
+     on 12B; validate the ACTUAL 12B gain before investing more.
+  2. **Speculative decode** (already built, gemma4, `ALVEARE_SPECULATIVE`) — amortizes
+     switches AND is compute-bound batched (~3 tok/s cap); make robust / default where it
+     wins (structured text). Real ~2-3× lever for the 12B, lower risk.
+  3. **Q3/Q2 quant** — fewer bytes/token → ~1.2-1.4× on ALL text (memory-bound). New quant
+     + kernels (bigger).
+NEXT: profile the 12B decode to CONFIRM its split; then evaluate lever (2) speculative on
+the 12B (cheapest real gain) before the big on-NPU-attention kernel.
+
 ## Progress Log
 - 2026-08-08: branch created from feat/rc-2.0 (853014a, = v2.0.0-alpha.2). Plan written.
 - 2026-08-08 **step A DONE — key finding**: gemma3 decode ~276 ms/tok, NPU ~95%
