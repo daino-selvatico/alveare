@@ -469,11 +469,21 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             // (n_qkv 6144) exceed every candidate and keep the fused-FFN path.
             int TN_pick = 0;
             if (os_on && qkv_K > 0) {
-                // Only shapes close to hidden_size pay off: the down tiles use just
-                // hidden_size of the TN rows, so a large TN (e.g. 6144 for the global
-                // layers) wastes more in padding than it saves in switches — measured
-                // 514 ms/token with globals at 6144 vs 468 ms leaving them fused.
-                for (int cand : {3072, 4096}) {
+                // Pick the SMALLEST kernel shape that fits both the down tiles
+                // (hidden_size rows) and this layer's QKV — but only if it stays within
+                // 2x hidden_size: the down tiles use just hidden_size of the TN rows, so
+                // an oversized TN wastes more in padding than it saves in switches
+                // (measured: e4b global layers at TN=6144 = 514 ms/token vs 468 leaving
+                // them on the fused FFN).
+                // Budget: the shared shape must stay CLOSE to the padded hidden size.
+                // The down tiles use only hidden of the TN rows, so an oversized TN
+                // wastes more in padding than it saves in switches. Measured:
+                //   e4b sliding TN=3072 (1.2x hidden 2560) -> 530 to ~470 ms/tok  (WIN)
+                //   e4b global  TN=6144 (2.4x)             -> 514 vs 468 ms/tok   (LOSS)
+                //   12B         TN=8192 (2.0x hidden 4096) -> 1161 vs 1010 ms/tok (LOSS)
+                const int max_tn = (5 * H_padded) / 4;   // 1.25x
+                for (int cand : {2560, 3072, 4096, 5120, 6144, 8192}) {
+                    if (cand > max_tn) break;
                     if (cand >= config.hidden_size && cand >= lw.n_qkv &&
                         reg.has_gemv(cand, qkv_K)) { TN_pick = cand; break; }
                 }
@@ -481,11 +491,16 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             if (TN_pick > 0) {
                 const int TN = TN_pick, TK = qkv_K;
                 const size_t tile_row_bytes = size_t(TK / 32) * 20;
-                const int I_rows = config.intermediate_size;          // 10240
+                // Derive the gate/up row count from the weight itself: it is padded to
+                // I_padded (12B: 16384 rows, vs intermediate_size 15360), while e4b's
+                // happens to equal intermediate_size. Rows past intermediate_size are
+                // zero padding and contribute nothing.
+                const size_t gu_row_bytes = tile_row_bytes;
+                const int I_rows = (gu_row_bytes && w_gate.size() % gu_row_bytes == 0)
+                                 ? int(w_gate.size() / gu_row_bytes) : 0;
                 const int gu_rows = 2 * I_rows;                        // gate ++ up
-                const size_t gu_row_bytes = size_t(config.hidden_size / 32) * 20; // K=2560
 
-                if (gu_row_bytes == tile_row_bytes) {
+                if (I_rows > 0 && I_rows % TK == 0) {
                     for (int base = 0; base < gu_rows; base += TN) {
                         std::vector<uint8_t> tile(size_t(TN) * tile_row_bytes, 0);
                         for (int r = 0; r < TN && base + r < gu_rows; ++r) {

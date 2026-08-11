@@ -594,7 +594,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
         // layer never switches hw context. gate++up in tiles, GELU*up on the host,
         // then the down projection as K-chunks whose partials the host sums.
         const int TN = lw.os_n, TK = lw.os_k;
-        const int I_rows = config_.intermediate_size;
+        const int I_rows = int(lw.os_down.size()) * TK;  // == I_padded (matches the tiles)
         std::vector<bf16> gu(size_t(lw.os_gateup.size()) * TN);
         for (size_t t = 0; t < lw.os_gateup.size(); ++t)
             reg_.run_gemv(TN, TK, lw.os_gateup[t], x_norm2.data(), gu.data() + t * TN);
