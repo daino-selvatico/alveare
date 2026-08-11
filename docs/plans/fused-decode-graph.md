@@ -72,6 +72,19 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **WIN #2 — O reuses the fused-QKV kernel context on e4b** (commit 884fa66).
+  Diagnosis: e4b's fused QKV gemv is (3072,2560) but O was (2560,2048) → different shape
+  → a ~2.6 ms context switch per layer for O (O cost 3.2 ms/layer on e4b vs 0.32 on
+  gemma3, where Q/K/V and O happen to share a shape). Fix: zero-pad O in both dims to
+  (n_qkv, K_q) so it runs in the SAME context (zero Q4_0 blocks contribute nothing; only
+  the first hidden_size outputs are read), guarded by `has_gemv`.
+  Measured e4b: **O 133 → ~86 ms, decode 620 → ~530 ms/token (1.62 → 1.89 tok/s)**,
+  output coherent. gemma3 unchanged (265 ms, guard doesn't fire).
+  **Night total on e4b: 832 → 530 ms/token = 1.20 → 1.89 tok/s (+57%).**
+  (The win was ~47 ms not ~110: the shared kernel does more MACs — 3072×2560 vs
+  2560×2048 — so O didn't drop to gemma3's 0.32 ms/layer. Still net positive.)
+  New e4b split @530 ms: **ffn 268 (51%)** / qkv 133 / o 86 / lm_head ~40 / host ~40.
+  => NEXT BOTTLENECK IS THE FFN (weight-read + dequant) — the same wall as the FLM gap.
 - 2026-08-12 **🏆 BIGGEST WIN SO FAR — the runtime was built at -O0.**
   `CMAKE_BUILD_TYPE` was empty in `runtime/cpp/CMakeLists.txt`, so the whole C++ runtime
   compiled unoptimized. Fixed by defaulting to Release (-O3) (commit 061a1dc).
