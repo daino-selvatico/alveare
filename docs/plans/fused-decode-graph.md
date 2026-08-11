@@ -72,6 +72,23 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **ONESHAPE MERGED into feat/rc-2.0 (PR #27, rc @ 2170241) — awaiting the
+  user's manual test before any release tag.** Final rule: the tiling only engages when
+  the shared shape stays within **1.25x the padded hidden size**, derived from three
+  measurements (e4b sliding 3072/2560 = 1.2x -> WIN 530->470; e4b global 6144/2560 = 2.4x
+  -> LOSS 468->514; 12B 8192/4096 = 2.0x -> LOSS 1010->1161, its ffn went 559->846 on
+  padding waste). Confirmed at merge time: e4b engages (7+4 tiles of 3072x2560, coherent,
+  NPU ~456-466 ms) and the 12B correctly does NOT engage (0 oneshape lines, 1029 ms,
+  coherent) — so the flag is safe on every model.
+  Also fixed while getting there: the shared-shape dims are now derived from the WEIGHTS,
+  not the config (the 12B's gate has I_padded=16384 rows vs intermediate_size 15360,
+  which silently disabled the path there).
+  **Cumulative on e4b: 832 -> ~470 ms/token, 1.20 -> 2.13 tok/s (+78%), no quality cost.**
+  NEXT (agreed with the user): a gemv kernel with a **runtime N** (and ideally a
+  K-accumulating mode). Today N is compile-time, which forces the padding-vs-call-count
+  trade-off that caps this approach: with one shape a layer pays 13 calls x 0.155 ms
+  (~84 ms/token) of fixed per-call overhead, and bigger tiles only shift the cost into
+  padding waste. A runtime-N kernel removes BOTH at once and would also unlock the 12B.
 - 2026-08-12 **WIN #3 — ALVEARE_ONESHAPE: the FFN as gemv tiles on the QKV shape.**
   Since a context switch is a fixed ~2.5 ms and decode pays 2-3 per layer, run every
   matmul of a layer on ONE kernel shape: gate++up split into ceil(2I/N) tiles, GELU*up on
