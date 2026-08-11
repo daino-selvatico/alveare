@@ -72,6 +72,20 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **🏆 BIGGEST WIN SO FAR — the runtime was built at -O0.**
+  `CMAKE_BUILD_TYPE` was empty in `runtime/cpp/CMakeLists.txt`, so the whole C++ runtime
+  compiled unoptimized. Fixed by defaulting to Release (-O3) (commit 061a1dc).
+  Measured (ALVEARE_PROFILE_DECODE=1):
+  - **e4b: 832 → ~620 ms/token (1.20 → 1.62 tok/s, +35%)**; the per-layer PLE injection
+    collapsed **200 ms → ~27 ms (7.4×)**; host is now only ~7% of decode.
+  - gemma3: ~276 → ~270 ms/tok (unchanged — it was already NPU-bound, host ~7 ms).
+  - Outputs stay coherent on both (greedy "Paris").
+  **Implication: every earlier CPU-side measurement/decision was taken at -O0 and may be
+  wrong** — notably "OpenMP on the per-layer PLE loops is slower" ([[cpp-runtime-decode-ceiling]])
+  and the host-vs-NPU split. Re-validate CPU-side conclusions before relying on them.
+  e4b profile now: NPU 534 ms (ffn 264 / qkv 137 / o 133) + lm_head ~40 + host ~40.
+  => The remaining e4b gap vs FLM (12.6 tok/s) is now almost ENTIRELY the NPU path:
+  FFN weight-read/dequant + the 2 context switches/layer. Fusion + dequant are next.
 - 2026-08-08: branch created from feat/rc-2.0 (853014a, = v2.0.0-alpha.2). Plan written.
 - 2026-08-08 **step A DONE — key finding**: gemma3 decode ~276 ms/tok, NPU ~95%
   (`ffn=137 · qkv=97 · o=8 · lm_head=33`; host attn+rest ~7 ms). ANOMALY: **qkv (97 ms)
