@@ -577,7 +577,31 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     std::vector<bf16> down(H_padded, bf16(0.0f));
     std::string act_type = (config_.model_type == "gemma3" || config_.is_gemma4()) ? "gelu" : "silu";
     auto t_ffn = pclock::now();
-    if (lw.w_ffn_fused != kInvalidWeight) {
+    if (!lw.os_gateup.empty() && !lw.os_down.empty()) {
+        // ALVEARE_ONESHAPE: FFN as gemv tiles on the fused-QKV kernel shape, so the
+        // layer never switches hw context. gate++up in tiles, GELU*up on the host,
+        // then the down projection as K-chunks whose partials the host sums.
+        const int TN = lw.os_n, TK = lw.os_k;
+        const int I_rows = config_.intermediate_size;
+        std::vector<bf16> gu(size_t(lw.os_gateup.size()) * TN);
+        for (size_t t = 0; t < lw.os_gateup.size(); ++t)
+            reg_.run_gemv(TN, TK, lw.os_gateup[t], x_norm2.data(), gu.data() + t * TN);
+
+        std::vector<bf16> act(size_t(lw.os_down.size()) * TK, bf16(0.0f));
+        for (int i = 0; i < I_rows; ++i) {
+            float g = gu[i].to_float();
+            float u = gu[size_t(I_rows) + i].to_float();
+            act[i] = bf16(0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f)) * u);
+        }
+
+        std::vector<float> acc(K, 0.0f);
+        std::vector<bf16> part(TN);
+        for (size_t c = 0; c < lw.os_down.size(); ++c) {
+            reg_.run_gemv(TN, TK, lw.os_down[c], act.data() + c * TK, part.data());
+            for (int i = 0; i < K; ++i) acc[i] += part[i].to_float();
+        }
+        for (int i = 0; i < K; ++i) down[i] = bf16(acc[i]);
+    } else if (lw.w_ffn_fused != kInvalidWeight) {
         reg_.run_ffn_fused(H_padded, I_padded, act_type, lw.w_ffn_fused, x_norm2.data(), down.data());
     } else {
         int gate_stride = (K_padded / 32) * 20;

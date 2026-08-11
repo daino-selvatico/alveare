@@ -448,6 +448,60 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 lw.w_ffn_fused = kInvalidWeight;
             }
 
+            // ALVEARE_ONESHAPE: additionally register the FFN as gemv tiles that reuse
+            // the fused-QKV kernel shape (lw.n_qkv, qkv_K), so the whole layer runs in
+            // ONE hw context. A context switch is a fixed ~2.5 ms and decode pays two
+            // per layer; on e4b that is ~210 ms/token (40%). Gate and up are
+            // concatenated along the output dim and split into ceil(2I/N) tiles; the
+            // down projection is split along its INPUT dim into K/qkv_K chunks whose
+            // partial results the host sums.
+            static const bool os_on = (std::getenv("ALVEARE_ONESHAPE") != nullptr);
+            // NB: the down tiles need hidden_size output rows, so the shared tile N must
+            // be >= hidden_size. On e4b the KV-sharing layers (24-41) fuse only Q
+            // (n_qkv = 2048 < hidden 2560) and are skipped here — they keep the fused FFN.
+            if (os_on && lw.n_qkv >= config.hidden_size && qkv_K > 0 &&
+                reg.has_gemv(lw.n_qkv, qkv_K)) {
+                const int TN = lw.n_qkv, TK = qkv_K;
+                const size_t tile_row_bytes = size_t(TK / 32) * 20;
+                const int I_rows = config.intermediate_size;          // 10240
+                const int gu_rows = 2 * I_rows;                        // gate ++ up
+                const size_t gu_row_bytes = size_t(config.hidden_size / 32) * 20; // K=2560
+
+                if (gu_row_bytes == tile_row_bytes) {
+                    for (int base = 0; base < gu_rows; base += TN) {
+                        std::vector<uint8_t> tile(size_t(TN) * tile_row_bytes, 0);
+                        for (int r = 0; r < TN && base + r < gu_rows; ++r) {
+                            int gr = base + r;
+                            const std::vector<uint8_t>& src = (gr < I_rows) ? w_gate : w_up;
+                            size_t off = size_t(gr < I_rows ? gr : gr - I_rows) * gu_row_bytes;
+                            if (off + gu_row_bytes <= src.size())
+                                std::memcpy(tile.data() + size_t(r) * tile_row_bytes,
+                                            src.data() + off, gu_row_bytes);
+                        }
+                        lw.os_gateup.push_back(reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                    }
+                    // down: (hidden, I) packed row-major; slice its columns into
+                    // I/TK chunks of tile_row_bytes each, pad rows hidden -> TN.
+                    const size_t down_row_bytes = size_t(I_padded / 32) * 20;
+                    const int n_chunks = I_rows / TK;
+                    for (int c = 0; c < n_chunks; ++c) {
+                        std::vector<uint8_t> tile(size_t(TN) * tile_row_bytes, 0);
+                        for (int r = 0; r < config.hidden_size; ++r) {
+                            size_t off = size_t(r) * down_row_bytes + size_t(c) * tile_row_bytes;
+                            if (off + tile_row_bytes <= w_down.size())
+                                std::memcpy(tile.data() + size_t(r) * tile_row_bytes,
+                                            w_down.data() + off, tile_row_bytes);
+                        }
+                        lw.os_down.push_back(reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                    }
+                    lw.os_n = TN;
+                    lw.os_k = TK;
+                    if (l == 0)
+                        std::cout << "[oneshape] FFN as " << lw.os_gateup.size() << "+"
+                                  << lw.os_down.size() << " gemv tiles of (" << TN << "," << TK << ")\n";
+                }
+            }
+
             lw.ffn_gate_bytes = std::move(w_gate);
             lw.ffn_up_bytes = std::move(w_up);
             lw.ffn_down_bytes = std::move(w_down);
