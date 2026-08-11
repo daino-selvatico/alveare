@@ -72,6 +72,25 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **WIN #3 — ALVEARE_ONESHAPE: the FFN as gemv tiles on the QKV shape.**
+  Since a context switch is a fixed ~2.5 ms and decode pays 2-3 per layer, run every
+  matmul of a layer on ONE kernel shape: gate++up split into ceil(2I/N) tiles, GELU*up on
+  the host, the down projection split along its INPUT dim into I/K chunks whose partials
+  the host sums, and QKV/O zero-padded onto the same shape (separate handles so
+  `lw.n_qkv`, used as a stride by the batched path, is untouched).
+  **Measured on e4b: 530 -> ~470-486 ms/token (1.89 -> ~2.1 tok/s).** Coherent output.
+  Flag is OFF by default; the fused-FFN path is untouched without it.
+  **Night total on e4b: 832 -> ~470 ms/token = 1.20 -> 2.13 tok/s (+78%).**
+  NEGATIVE RESULTS (kept, they were measured):
+  * Converting the GLOBAL layers too (shared shape 6144) is SLOWER: 514 ms vs 468 — the
+    down tiles use only hidden_size (2560) of 6144 rows, so padding waste > switch saving.
+    Tiling only pays when the shared shape is close to hidden_size => candidates {3072,4096}.
+  * A first version crashed at layer 24 (heap overflow): the down tiles are sized on TN
+    but the copy loop runs to hidden_size — TN must be >= hidden_size.
+  REMAINING on e4b (~470 ms): ffn tiles ~280, qkv ~90, o ~82, lm_head ~40, host ~35.
+  The FFN tiles are now the bulk again; going further needs either fewer/cheaper tiles
+  (a gemv kernel with a K-accumulating mode, so `down` doesn't pay N-padding per chunk)
+  or the full fused-layer kernel that also absorbs norms/residual/PLE.
 - 2026-08-12 **XRT ELF/module path investigated and RULED OUT (cheap negative result).**
   XRT here does expose `xrt::elf` / `xrt::module` / `xrt::ext::kernel(ctx, module, name)`
   and mlir-aie's `.compile(elf_path=...)` emits an ELF, which would have allowed running
