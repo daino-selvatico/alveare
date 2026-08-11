@@ -78,4 +78,53 @@ describe('ChatPlayground', () => {
 
     expect(await screen.findByText(/photo\.png/i)).toBeDefined();
   });
+
+  it('polls /api/status during streaming and displays server tok/s without ~', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url.includes('/api/status')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ is_running: true, model: 'gemma4', tok_per_sec: 3.6 })
+        });
+      }
+      if (url.includes('/v1/chat/completions')) {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'));
+            controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":" world"}}]}\n\n'));
+            controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+            controller.close();
+          }
+        });
+        return Promise.resolve({ ok: true, body: stream });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(
+        <I18nProvider>
+          <ChatPlayground
+            apiBase={mockApiBase}
+            status={{ tok_per_sec: 3.6 }}
+            activeModel="gemma4"
+            isServerRunning={true}
+            models={mockModels}
+          />
+        </I18nProvider>
+      );
+    });
+
+    const textarea = screen.getByLabelText('Campo testo messaggio');
+    fireEvent.change(textarea, { target: { value: 'Test prompt' } });
+
+    const sendBtn = screen.getByRole('button', { name: 'Send' });
+    await act(async () => {
+      fireEvent.click(sendBtn);
+    });
+
+    // Should display exact server rate 3.6 tok/s (not approximate with ~)
+    expect(await screen.findByText(/3\.6 tok\/s/)).toBeDefined();
+    expect(screen.queryByText(/~3\.6 tok\/s/)).toBeNull();
+  });
 });
