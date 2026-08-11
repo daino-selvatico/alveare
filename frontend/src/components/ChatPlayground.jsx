@@ -45,6 +45,7 @@ import {
 } from '../utils/chatStorage';
 import { useTranslation } from '../i18n/I18nContext';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import { SlidingWindowTpsCalculator } from '../utils/tpsCalculator';
 
 
 function parseThinking(content) {
@@ -199,14 +200,15 @@ export default function ChatPlayground({
   const [genSettings, setGenSettings] = useState(() => getGlobalSettings());
   const [showSettings, setShowSettings] = useState(false);
 
-  const [metrics, setMetrics] = useState({ tokens: 0, elapsed: 0, tps: 0 });
+  const [metrics, setMetrics] = useState({ tokens: 0, elapsed: 0, tps: 0, isApprox: false });
   const firstTokenTimeRef = useRef(null);
-  const [serverTps, setServerTps] = useState(0);
+  const serverTpsRef = useRef(0);
+  const tpsCalcRef = useRef(new SlidingWindowTpsCalculator(2000));
 
   // Poll status endpoint during generation to align tok/s with backend & BenchmarksView
   useEffect(() => {
     if (!isGenerating) {
-      setServerTps(0);
+      serverTpsRef.current = 0;
       return;
     }
     const fetchStatusMetrics = async () => {
@@ -215,7 +217,13 @@ export default function ChatPlayground({
         if (res.ok) {
           const data = await res.json();
           if (data.tok_per_sec !== undefined && Number(data.tok_per_sec) > 0) {
-            setServerTps(Number(data.tok_per_sec));
+            const val = Number(data.tok_per_sec);
+            serverTpsRef.current = val;
+            setMetrics(prev => ({
+              ...prev,
+              tps: val,
+              isApprox: false
+            }));
           }
         }
       } catch {
@@ -229,18 +237,17 @@ export default function ChatPlayground({
 
   useEffect(() => {
     if (status?.tok_per_sec !== undefined && Number(status.tok_per_sec) > 0) {
-      setServerTps(Number(status.tok_per_sec));
+      const val = Number(status.tok_per_sec);
+      serverTpsRef.current = val;
+      if (isGenerating) {
+        setMetrics(prev => ({
+          ...prev,
+          tps: val,
+          isApprox: false
+        }));
+      }
     }
-  }, [status]);
-
-  useEffect(() => {
-    if (isGenerating && serverTps > 0) {
-      setMetrics(prev => ({
-        ...prev,
-        tps: serverTps
-      }));
-    }
-  }, [serverTps, isGenerating]);
+  }, [status, isGenerating]);
 
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
@@ -373,7 +380,7 @@ export default function ChatPlayground({
       setActiveConversationId(conv.id);
       setMessages(conv.messages || []);
       applyConvSettings(conv);
-      setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+      setMetrics({ tokens: 0, elapsed: 0, tps: 0, isApprox: false });
       setExpandedThinking({});
       setAttachments([]);
       setGenerationError(null);
@@ -393,7 +400,7 @@ export default function ChatPlayground({
     setActiveConvIdState(newConv.id);
     setMessages([]);
     setGenSettings(currentGlobal);
-    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0, isApprox: false });
     setExpandedThinking({});
     setAttachments([]);
     setGenerationError(null);
@@ -434,7 +441,7 @@ export default function ChatPlayground({
     setConversations([]);
     setActiveConvIdState(null);
     setMessages([]);
-    setMetrics({ tokens: 0, elapsed: 0, tps: 0 });
+    setMetrics({ tokens: 0, elapsed: 0, tps: 0, isApprox: false });
     setExpandedThinking({});
     setAttachments([]);
     setGenerationError(null);
@@ -620,6 +627,8 @@ export default function ChatPlayground({
     abortControllerRef.current = abortController;
 
     firstTokenTimeRef.current = null;
+    serverTpsRef.current = 0;
+    tpsCalcRef.current.reset();
     let accumulatedContent = '';
 
     try {
@@ -667,8 +676,9 @@ export default function ChatPlayground({
               const data = JSON.parse(jsonStr);
               const delta = data.choices?.[0]?.delta?.content || '';
               if (delta) {
+                const now = Date.now();
                 if (!firstTokenTimeRef.current) {
-                  firstTokenTimeRef.current = Date.now();
+                  firstTokenTimeRef.current = now;
                 }
                 accumulatedContent += delta;
                 
@@ -683,14 +693,21 @@ export default function ChatPlayground({
                   return updated;
                 });
 
-                const decodeElapsedSec = (Date.now() - firstTokenTimeRef.current) / 1000;
+                const decodeElapsedSec = (now - firstTokenTimeRef.current) / 1000;
                 const approxTokens = Math.max(1, Math.round(accumulatedContent.length / 4));
-                const clientTps = decodeElapsedSec >= 0.3 ? Math.round((approxTokens / decodeElapsedSec) * 10) / 10 : 0;
+
+                tpsCalcRef.current.addSample(now, approxTokens);
+                const clientTps = tpsCalcRef.current.getTps(now);
+
+                const currentServerTps = serverTpsRef.current;
+                const effectiveTps = currentServerTps > 0 ? currentServerTps : clientTps;
+                const isApprox = currentServerTps <= 0;
 
                 setMetrics({
                   tokens: approxTokens,
                   elapsed: Math.round(decodeElapsedSec * 10) / 10,
-                  tps: serverTps > 0 ? serverTps : clientTps
+                  tps: effectiveTps,
+                  isApprox
                 });
               }
             } catch {
@@ -723,7 +740,8 @@ export default function ChatPlayground({
           const data = await res.json();
           if (data.tok_per_sec !== undefined && Number(data.tok_per_sec) > 0) {
             const finalTps = Number(data.tok_per_sec);
-            setMetrics(prev => ({ ...prev, tps: finalTps }));
+            serverTpsRef.current = finalTps;
+            setMetrics(prev => ({ ...prev, tps: finalTps, isApprox: false }));
           }
         }
       } catch {
@@ -862,7 +880,7 @@ export default function ChatPlayground({
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {metrics.tps > 0 && (
               <span className="badge" style={{ background: 'rgba(6, 182, 212, 0.15)', color: 'var(--accent-cyan)', border: '1px solid rgba(6, 182, 212, 0.3)' }}>
-                <Zap size={14} /> {t('chat.tokPerSec', { tps: metrics.tps, tokens: metrics.tokens, elapsed: metrics.elapsed })}
+                <Zap size={14} /> {t('chat.tokPerSec', { tps: metrics.isApprox ? `~${metrics.tps}` : metrics.tps, tokens: metrics.tokens, elapsed: metrics.elapsed })}
               </span>
             )}
             
