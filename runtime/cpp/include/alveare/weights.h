@@ -31,6 +31,9 @@ struct LayerWeights {
     // layer). 0 means "use the natural output width" (no padding). The real
     // output slice is the first hidden_size (padded) rows.
     int o_gemv_n = 0;
+    // When >0, the O projection was zero-padded in its INPUT dim to this K so it
+    // reuses the fused-QKV kernel's (N,K) context (no per-layer context switch).
+    int o_gemv_k = 0;
 
     std::vector<float> attn_norm;
     std::vector<float> ffn_norm;

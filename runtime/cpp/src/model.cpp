@@ -542,7 +542,9 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     // 7. Output Projection
     int N_out_padded = config_.get_padded_hidden_size();
     int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : N_out_padded;
-    int N_q_padded = (config_.model_type == "gemma3") ? 2048 : N_q;
+    // o_gemv_k > 0 means O was zero-padded to share the fused-QKV kernel context.
+    int N_q_padded = lw.o_gemv_k > 0 ? lw.o_gemv_k
+                                     : ((config_.model_type == "gemma3") ? 2048 : N_q);
     std::vector<bf16> attn_out_padded(N_q_padded, bf16(0.0f));
     std::memcpy(attn_out_padded.data(), attn_out.data(), size_t(N_q) * sizeof(bf16));
 
