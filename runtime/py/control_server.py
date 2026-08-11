@@ -90,37 +90,14 @@ def parse_file_upload(file_name: str, content: bytes, mime_type: Optional[str] =
     ]:
         file_type = "document"
 
+    if file_type in ("image", "audio"):
+        raise ValueError(f"Input vision/audio non ancora supportato: '{file_name}' è un file {file_type}. Il runtime C++ è esclusivamente testuale.")
+
     preview_url = ""
     extracted_text = ""
     metadata = {}
 
-    if file_type == "image":
-        b64_str = base64.b64encode(content).decode("utf-8")
-        preview_url = f"data:{mime_type};base64,{b64_str}"
-        try:
-            from PIL import Image
-            img = Image.open(io.BytesIO(content))
-            metadata["width"] = img.width
-            metadata["height"] = img.height
-            metadata["format"] = img.format
-            extracted_text = f"[Allegato Immagine: '{file_name}' ({img.width}x{img.height} px, {size_str})]"
-        except Exception:
-            extracted_text = f"[Allegato Immagine: '{file_name}' ({size_str})]"
-
-    elif file_type == "audio":
-        b64_str = base64.b64encode(content).decode("utf-8")
-        preview_url = f"data:{mime_type};base64,{b64_str}"
-        try:
-            import wave
-            with wave.open(io.BytesIO(content), "rb") as wf:
-                duration = round(wf.getnframes() / float(wf.getframerate()), 1)
-                metadata["duration_seconds"] = duration
-                metadata["channels"] = wf.getnchannels()
-                extracted_text = f"[Allegato Audio: '{file_name}' (Durata: {duration}s, {size_str})]"
-        except Exception:
-            extracted_text = f"[Allegato Audio: '{file_name}' ({size_str})]"
-
-    elif file_type == "document":
+    if file_type == "document":
         full_text = extract_document_text(content, file_name)
         truncated_text = full_text[:12000]
         if len(full_text) > 12000:
@@ -790,6 +767,8 @@ async def upload_files(req: FileUploadRequest):
             content = base64.b64decode(item.content_b64)
             parsed = parse_file_upload(item.filename, content, item.mime_type)
             results.append(parsed)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Errore decodifica file '{item.filename}': {e}")
     return {"files": results}

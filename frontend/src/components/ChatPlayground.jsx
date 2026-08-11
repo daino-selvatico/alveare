@@ -164,6 +164,7 @@ function CodeBlock({ _node, inline, className, children, ...props }) {
 
 export default function ChatPlayground({
   apiBase,
+  status,
   activeModel,
   isServerRunning,
   models = [],
@@ -199,6 +200,47 @@ export default function ChatPlayground({
   const [showSettings, setShowSettings] = useState(false);
 
   const [metrics, setMetrics] = useState({ tokens: 0, elapsed: 0, tps: 0 });
+  const firstTokenTimeRef = useRef(null);
+  const [serverTps, setServerTps] = useState(0);
+
+  // Poll status endpoint during generation to align tok/s with backend & BenchmarksView
+  useEffect(() => {
+    if (!isGenerating) {
+      setServerTps(0);
+      return;
+    }
+    const fetchStatusMetrics = async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.tok_per_sec !== undefined && Number(data.tok_per_sec) > 0) {
+            setServerTps(Number(data.tok_per_sec));
+          }
+        }
+      } catch {
+        // ignore status polling errors during streaming
+      }
+    };
+    fetchStatusMetrics();
+    const interval = setInterval(fetchStatusMetrics, 500);
+    return () => clearInterval(interval);
+  }, [isGenerating, apiBase]);
+
+  useEffect(() => {
+    if (status?.tok_per_sec !== undefined && Number(status.tok_per_sec) > 0) {
+      setServerTps(Number(status.tok_per_sec));
+    }
+  }, [status]);
+
+  useEffect(() => {
+    if (isGenerating && serverTps > 0) {
+      setMetrics(prev => ({
+        ...prev,
+        tps: serverTps
+      }));
+    }
+  }, [serverTps, isGenerating]);
 
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
@@ -410,10 +452,11 @@ export default function ChatPlayground({
   };
 
   const handleOpenUpload = (filterType) => {
+    if (filterType === 'image' || filterType === 'audio') {
+      return;
+    }
     let accept = '*/*';
-    if (filterType === 'image') accept = 'image/*';
-    else if (filterType === 'audio') accept = 'audio/*';
-    else if (filterType === 'document') accept = '.pdf,.txt,.md,.csv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.cpp,.h,.c,.rs,.go,.yaml,.yml,.sh,.log';
+    if (filterType === 'document') accept = '.pdf,.txt,.md,.csv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.cpp,.h,.c,.rs,.go,.yaml,.yml,.sh,.log';
     
     setAcceptFilter(accept);
     setShowUploadMenu(false);
@@ -430,8 +473,13 @@ export default function ChatPlayground({
     for (const file of Array.from(fileList)) {
       const fileId = `att_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       let category = 'document';
-      if (file.type.startsWith('image/')) category = 'image';
-      else if (file.type.startsWith('audio/')) category = 'audio';
+      if (file.type.startsWith('image/') || file.name.match(/\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i)) category = 'image';
+      else if (file.type.startsWith('audio/') || file.name.match(/\.(mp3|wav|ogg|flac|m4a|aac)$/i)) category = 'audio';
+
+      if (category === 'image' || category === 'audio') {
+        setGenerationError(t('chat.unsupportedFileTypeError', { name: file.name }));
+        continue;
+      }
 
       const item = {
         id: fileId,
@@ -442,10 +490,6 @@ export default function ChatPlayground({
         url: null,
         textData: null
       };
-
-      if (category === 'image') {
-        item.url = URL.createObjectURL(file);
-      }
 
       if (category === 'document' || file.name.match(/\.(txt|md|csv|json|py|js|ts|jsx|tsx|html|css|cpp|h|c|rs|go|yaml|yml|sh|log)$/i)) {
         try {
@@ -575,8 +619,7 @@ export default function ChatPlayground({
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    const startTime = Date.now();
-    let tokenCount = 0;
+    firstTokenTimeRef.current = null;
     let accumulatedContent = '';
 
     try {
@@ -624,7 +667,9 @@ export default function ChatPlayground({
               const data = JSON.parse(jsonStr);
               const delta = data.choices?.[0]?.delta?.content || '';
               if (delta) {
-                tokenCount++;
+                if (!firstTokenTimeRef.current) {
+                  firstTokenTimeRef.current = Date.now();
+                }
                 accumulatedContent += delta;
                 
                 setMessages(prev => {
@@ -638,11 +683,14 @@ export default function ChatPlayground({
                   return updated;
                 });
 
-                const elapsedSec = (Date.now() - startTime) / 1000;
+                const decodeElapsedSec = (Date.now() - firstTokenTimeRef.current) / 1000;
+                const approxTokens = Math.max(1, Math.round(accumulatedContent.length / 4));
+                const clientTps = decodeElapsedSec >= 0.3 ? Math.round((approxTokens / decodeElapsedSec) * 10) / 10 : 0;
+
                 setMetrics({
-                  tokens: tokenCount,
-                  elapsed: Math.round(elapsedSec * 10) / 10,
-                  tps: elapsedSec > 0 ? Math.round((tokenCount / elapsedSec) * 10) / 10 : 0
+                  tokens: approxTokens,
+                  elapsed: Math.round(decodeElapsedSec * 10) / 10,
+                  tps: serverTps > 0 ? serverTps : clientTps
                 });
               }
             } catch {
@@ -669,6 +717,18 @@ export default function ChatPlayground({
     } finally {
       setIsGenerating(false);
       abortControllerRef.current = null;
+      try {
+        const res = await fetch(`${apiBase}/api/status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.tok_per_sec !== undefined && Number(data.tok_per_sec) > 0) {
+            const finalTps = Number(data.tok_per_sec);
+            setMetrics(prev => ({ ...prev, tps: finalTps }));
+          }
+        }
+      } catch {
+        // ignore final status fetch error
+      }
 
       setMessages(latestMessages => {
         saveConversation({
@@ -1150,8 +1210,8 @@ export default function ChatPlayground({
             })
           )}
 
-          {/* Resilient Error Retry Banner for failed generation */}
-          {generationError && lastUserPrompt && !isGenerating && (
+          {/* Resilient Error Banner */}
+          {generationError && !isGenerating && (
             <div style={{
               alignSelf: 'center',
               maxWidth: '600px',
@@ -1168,16 +1228,18 @@ export default function ChatPlayground({
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: '#fca5a5', fontSize: '0.85rem' }}>
                 <AlertTriangle size={18} style={{ flexShrink: 0 }} />
-                <span>{t('chat.generationInterrupted')}</span>
+                <span>{generationError}</span>
               </div>
-              <button
-                className="btn-secondary"
-                onClick={() => handleSend(lastUserPrompt)}
-                style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', color: '#fca5a5', borderColor: 'rgba(239, 68, 68, 0.4)' }}
-                aria-label={t('chat.retry')}
-              >
-                <RefreshCw size={14} /> {t('chat.retry')}
-              </button>
+              {lastUserPrompt && (
+                <button
+                  className="btn-secondary"
+                  onClick={() => handleSend(lastUserPrompt)}
+                  style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', color: '#fca5a5', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+                  aria-label={t('chat.retry')}
+                >
+                  <RefreshCw size={14} /> {t('chat.retry')}
+                </button>
+              )}
             </div>
           )}
 
@@ -1270,27 +1332,67 @@ export default function ChatPlayground({
                     flexDirection: 'column',
                     gap: '0.2rem',
                     zIndex: 100,
-                    width: '170px'
+                    width: '190px'
                   }}
                 >
                   <button
-                    onClick={() => handleOpenUpload('image')}
+                    disabled
                     role="menuitem"
-                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
+                    title={t('chat.comingSoonTooltip')}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      padding: '0.5rem 0.75rem',
+                      borderRadius: '6px',
+                      cursor: 'not-allowed',
+                      opacity: 0.5,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '0.5rem',
+                      fontSize: '0.85rem',
+                      width: '100%'
+                    }}
                   >
-                    <ImageIcon size={16} color="var(--accent-purple)" /> {t('chat.image')}
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <ImageIcon size={16} color="var(--text-muted)" /> {t('chat.image')}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', padding: '0.1rem 0.35rem', background: 'var(--bg-tertiary)', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+                      {t('chat.comingSoon')}
+                    </span>
                   </button>
                   <button
-                    onClick={() => handleOpenUpload('audio')}
+                    disabled
                     role="menuitem"
-                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
+                    title={t('chat.comingSoonTooltip')}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      padding: '0.5rem 0.75rem',
+                      borderRadius: '6px',
+                      cursor: 'not-allowed',
+                      opacity: 0.5,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '0.5rem',
+                      fontSize: '0.85rem',
+                      width: '100%'
+                    }}
                   >
-                    <Music size={16} color="var(--accent-cyan)" /> {t('chat.audio')}
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Music size={16} color="var(--text-muted)" /> {t('chat.audio')}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', padding: '0.1rem 0.35rem', background: 'var(--bg-tertiary)', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+                      {t('chat.comingSoon')}
+                    </span>
                   </button>
                   <button
                     onClick={() => handleOpenUpload('document')}
                     role="menuitem"
-                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left' }}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left', width: '100%' }}
                   >
                     <FileText size={16} color="var(--accent-green)" /> {t('chat.document')}
                   </button>
