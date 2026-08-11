@@ -5,6 +5,18 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Changed
+- **Gemma-4-E4B decode ~15% faster: the O projection now reuses the fused-QKV kernel
+  context.** E4B's fused QKV gemv is `(3072, 2560)` while O was `(2560, 2048)` — a
+  different shape, so every layer paid a ~2.6 ms NPU context switch for O. O is now
+  zero-padded in both dims to the QKV kernel's `(n_qkv, K_q)` and runs in the same
+  context (padded Q4_0 blocks have scale 0 and contribute nothing; only the first
+  `hidden_size` outputs are read). Measured: **O 133 → ~86 ms, decode ~620 → ~530
+  ms/token (1.62 → 1.89 tok/s)**. Gemma-3 and the 12B are unchanged (the path is guarded
+  by `has_gemv`), all three still decode coherently.
+  Together with the `-O3` build fix below, **E4B went 832 → 530 ms/token (1.20 → 1.89
+  tok/s, +57%)** with no quality cost.
+
 ### Fixed
 - **The native runtime was being built at `-O0` — now defaults to Release (`-O3`).**
   `runtime/cpp/CMakeLists.txt` never set `CMAKE_BUILD_TYPE`, so CMake passed no
