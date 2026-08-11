@@ -72,6 +72,24 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **XRT ELF/module path investigated and RULED OUT (cheap negative result).**
+  XRT here does expose `xrt::elf` / `xrt::module` / `xrt::ext::kernel(ctx, module, name)`
+  and mlir-aie's `.compile(elf_path=...)` emits an ELF, which would have allowed running
+  several instruction streams inside ONE hw_context (no 2.5 ms swap). But the emitted ELF
+  is **instructions only**: `readelf -S` shows a single `.ctrltext` of 0x968 = 2408 bytes,
+  exactly the size of the `.insts` file, while the per-core programs live in the xclbin
+  (`*.prj/main_core_*.elf`, ~5 KB each). Two different designs therefore still need two
+  xclbins => two hw_contexts => the switch stands. Not pursued further.
+  **Cost model (all measured, e4b shapes):** per gemv call `t ≈ 0.155 ms + MACs/21 GMAC/s`;
+  hw-context switch = 2.5 ms fixed; fused FFN does 78.6 MMAC in 3.60 ms (21.8 GMAC/s);
+  gemv(4096,2560) = 0.676 ms, (5120,2560) = 0.827, (6144,2560) = 0.920, (3072,2560) = 0.531.
+  **=> Path A "single-shape layer" is the remaining tractable win, and it is quantified:**
+  with one shape (4096,2560) a layer needs 11 calls (qkv 1, o 1, gate+up 5, down 4 K-chunks)
+  = **7.44 ms/layer vs today's 9.84** (4.84 compute + 5.0 switch) => e4b **~430 ms/token
+  (2.33 tok/s, +23%)**. Trade-off: gives up the fused FFN's better GMAC/s and adds host
+  GELU + host accumulation of the 4 down partials (both cheap at -O3).
+  Bigger win (~320 ms/token) still needs the full fused-layer kernel absorbing the host
+  norms/residual/PLE — multi-day, not attempted autonomously.
 - 2026-08-12 **DECISIVE: the 2.5 ms switch is a FIXED driver/context cost.**
   Extended `bench_switch.cpp` to also alternate two *gemv* contexts:
   `gemv(3072x2560) <-> gemv(2048x2048)` costs **2.574 ms per switch** — the same as
