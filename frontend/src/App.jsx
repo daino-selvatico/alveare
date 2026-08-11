@@ -358,6 +358,7 @@ export default function App() {
           <div id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
             <ChatPlayground
               apiBase={apiBase}
+              status={status}
               activeModel={status?.model || (models.length > 0 ? models[0].id : t('nav.noModelsBadge'))}
               isServerRunning={status?.is_running || false}
               models={models}
