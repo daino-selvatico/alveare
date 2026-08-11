@@ -4,6 +4,15 @@ project(alveare_runtime CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Default to an optimized build. Without this CMAKE_BUILD_TYPE is empty, i.e. the
+# whole runtime compiled at -O0 — which mattered a lot: the host-side Q4 dot products
+# (Gemma-4-E4B's per-layer PLE injection is ~200 ms/token, ~26% of decode) are scalar
+# C++ and were left unvectorized/uninlined.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE not set — defaulting to Release (-O3)")
+endif()
+
 # Locate XRT. Prefer the packaged CMake config (e.g. /opt/xilinx/xrt on a
 # Xilinx-style install); fall back to a system install that ships only the
 # headers + libs (Ubuntu XRT packages put them under /usr, with no XRTConfig).

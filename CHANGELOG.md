@@ -5,6 +5,18 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Fixed
+- **The native runtime was being built at `-O0` — now defaults to Release (`-O3`).**
+  `runtime/cpp/CMakeLists.txt` never set `CMAKE_BUILD_TYPE`, so CMake passed no
+  optimization flags and every host-side Q4 dot product was left uninlined and
+  unvectorized. Measured with `ALVEARE_PROFILE_DECODE=1`:
+  - **Gemma-4-E4B: ~832 → ~620 ms/token (1.20 → 1.62 tok/s, +35%)** — its per-layer PLE
+    injection collapsed from **200 ms to ~27 ms/token (7.4×)** and the host share of
+    decode fell from 31% to ~7%.
+  - Gemma-3 (~270 ms/tok) and the 12B (~1.0 s/tok) are unchanged — both were already
+    NPU-bound — and all three still decode coherently (greedy "Paris"). No quality cost.
+- The decode profiler now reports the PLE cost separately from `cpu_rest`.
+
 ## [2.0.0-alpha.2] — 2026-08-08
 
 _Progress since alpha.1, toward the 2.0 release. Gemma-3 now runs on the fast NPU

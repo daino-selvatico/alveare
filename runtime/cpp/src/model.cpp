@@ -12,7 +12,7 @@
 // layer. Coarse split: NPU dispatch (qkv/o/ffn gemv) vs host attention vs the
 // remaining CPU work (rmsnorm/rope/residual/kv), to locate the 1 tok/s bottleneck.
 namespace {
-struct DecodeProf { double npu_qkv=0, npu_o=0, npu_ffn=0, attn=0, layer=0; int nl=0; };
+struct DecodeProf { double npu_qkv=0, npu_o=0, npu_ffn=0, attn=0, layer=0, ple=0; int nl=0; };
 static DecodeProf g_prof;
 // Batched-verify profiler: gemm(qkv+o resident) vs ffn(gate/up/down streamed:
 // upload+repack+compute) vs host attention vs the rest (rmsnorm/rope/geglu/kv).
@@ -619,6 +619,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     }
 
     // 12. PLE Injection (Gemma-4-E4B)
+    auto t_ple = pclock::now();
     if (config_.per_layer_input > 0 && inp_per_layer && !lw.inp_gate_bytes.empty()) {
         int n_ple = config_.per_layer_input; // 256
         const float* h_l = inp_per_layer + static_cast<size_t>(layer) * n_ple;
@@ -656,6 +657,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
         }
     }
 
+    g_prof.ple += ms_since(t_ple);
+
     // 13. Layer output scale
     float oscale = (config_.is_gemma4()) ? lw.output_scale : 1.0f;
     for (int i = 0; i < K; ++i) {
@@ -675,7 +678,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
                 << " | NPU=" << npu << " (qkv=" << g_prof.npu_qkv
                 << " o=" << g_prof.npu_o << " ffn=" << g_prof.npu_ffn << ")"
                 << " | attn(cpu)=" << g_prof.attn
-                << " | cpu_rest=" << cpu_rest << "\n" << std::flush;
+                << " | ple(cpu)=" << g_prof.ple
+                << " | cpu_rest=" << (cpu_rest - g_prof.ple) << "\n" << std::flush;
             g_prof = DecodeProf();
         }
     }
