@@ -296,6 +296,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         // launch and one kernel-shape context, avoiding ~2.6 ms of per-shape
         // context-switch overhead per extra call. The packed layout is row-major
         // (N, K/32*20), so concatenating along N is just concatenating bytes.
+        int qkv_K = 0;   // K of the fused-QKV kernel (for O context sharing below)
         if (config.is_gemma4()) {
             NpyArray q_arr = load_npy(q_path);
             lw.n_q = l_N_q;
@@ -305,6 +306,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             int K_q = (l_N_q > 0 && q_arr.data_size % l_N_q == 0)
                     ? static_cast<int>((q_arr.data_size / l_N_q / 20) * 32)
                     : K_attn_padded;
+            qkv_K = K_q;
 
             if (!has_kv) {
                 // Layers 24-41 (shared KV) only have Q projection
@@ -356,7 +358,26 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         if (config.is_gemma4()) {
             int target_N = 4096;
             int row_bytes = o_arr.data_size / l_N_out;
-            if (row_bytes > 0 && reg.has_gemv(target_N, l_N_q)) {
+            int K_o = (row_bytes / 20) * 32;   // O's real input dim (= N_q)
+
+            // BEST CASE: zero-pad O in BOTH dims to the fused-QKV kernel's (n_qkv, K_q)
+            // so O runs in the SAME kernel context as QKV — removing one ~2.6 ms
+            // context switch per layer. Padded weight rows/cols are zero (a zero Q4_0
+            // block has scale 0 → contributes nothing), and only the first
+            // hidden_size outputs are read back. On e4b's sliding layers this turns
+            // O from (2560,2048) into QKV's (3072,2560).
+            if (row_bytes > 0 && lw.n_qkv >= l_N_out && qkv_K > K_o &&
+                reg.has_gemv(lw.n_qkv, qkv_K)) {
+                const int new_row_bytes = (qkv_K / 32) * 20;
+                std::vector<uint8_t> o_pad(size_t(lw.n_qkv) * new_row_bytes, 0);
+                const uint8_t* src = static_cast<const uint8_t*>(o_arr.data);
+                for (int r = 0; r < l_N_out; ++r)
+                    std::memcpy(o_pad.data() + size_t(r) * new_row_bytes,
+                                src + size_t(r) * row_bytes, row_bytes);
+                lw.o_gemv_n = lw.n_qkv;
+                lw.o_gemv_k = qkv_K;
+                lw.w_o = reg.create_gemv_weight(lw.n_qkv, qkv_K, o_pad.data(), o_pad.size());
+            } else if (row_bytes > 0 && reg.has_gemv(target_N, l_N_q)) {
                 lw.o_gemv_n = target_N;
                 std::vector<uint8_t> o_pad(size_t(target_N) * row_bytes, 0);
                 std::memcpy(o_pad.data(), o_arr.data, o_arr.data_size);
