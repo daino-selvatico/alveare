@@ -5,6 +5,25 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Added
+- **`ALVEARE_ONESHAPE` (opt-in): ~13% faster decode on Gemma-4-E4B.** An NPU
+  hardware-context switch costs a **fixed ~2.5 ms** (measured with the new
+  `bench_switch` micro-benchmark: `gemv↔gemv` 2.57 ms, `ffn↔gemv` 2.62 ms — independent
+  of design size), and decode alternates kernel shapes every layer, so E4B was spending
+  **~210 ms/token (40%)** on switches alone. With the flag, every matmul of a layer runs
+  on ONE kernel shape — `gate++up` as tiles, `GELU(gate)*up` on the host, the `down`
+  projection split along its input dim with the partials summed on the host, and QKV/O
+  zero-padded onto the same shape — so those layers never switch context.
+  **E4B: ~530 → ~470 ms/token (1.89 → 2.13 tok/s).** Default OFF; enable with
+  `ALVEARE_ONESHAPE=1`.
+  The path is self-gating: it only engages when the shared shape stays within 1.25x the
+  padded hidden size, because the `down` tiles use only `hidden` of those rows. Measured
+  counter-examples that the gate now excludes: E4B's global layers (shape 6144, 2.4x)
+  cost 514 vs 468 ms/token, and the 12B (8192, 2.0x) 1161 vs 1010 — so the 12B and
+  Gemma-3 are simply left on the fused-FFN path and are unchanged.
+- **`bench_switch`** micro-benchmark (`runtime/cpp/test/`) measuring NPU context-switch
+  and per-call overhead, plus a decode profiler split for the PLE cost.
+
 ### Changed
 - **Gemma-4-E4B decode ~15% faster: the O projection now reuses the fused-QKV kernel
   context.** E4B's fused QKV gemv is `(3072, 2560)` while O was `(2560, 2048)` — a
