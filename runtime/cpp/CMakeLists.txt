@@ -76,3 +76,8 @@ target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEAR
 add_executable(e4b_test test/e4b_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(e4b_test PRIVATE ${XRT_INCLUDE_DIRS})
 target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
+
+# Micro-benchmark: NPU kernel context-switch cost (see test/bench_switch.cpp)
+add_executable(bench_switch test/bench_switch.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(bench_switch PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(bench_switch PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})

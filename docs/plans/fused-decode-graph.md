@@ -72,6 +72,26 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **MEASURED: the context switch costs 2.50 ms — and there is a tractable fix.**
+  New micro-benchmark `runtime/cpp/test/bench_switch.cpp` (dummy weights, e4b shapes):
+  ```
+  ffn  same-context :  3.698 ms/call     gemv same-context : 0.572 ms/call
+  alternating pair  :  9.263 ms          no-switch pair    : 4.270 ms
+  => 2.496 ms per hw-context switch
+  ```
+  On e4b decode that is **42 layers x 2 switches x 2.5 ms = ~210 ms/token = 40% of the
+  530 ms**. Real compute is only ffn 3.7 + qkv 0.57 + o 0.57 = 4.84 ms/layer (~203 ms) +
+  lm_head/host ~80 => a switch-free decode would be **~320 ms/token (~3.1 tok/s)**.
+  This also explains the earlier "GB/s improves with model size" illusion: t = 2.6 ms +
+  bytes/(~13 GB/s) fits gemma3/e4b/12B — fixed overhead amortized over more work.
+  **KEY INSIGHT — no on-NPU attention needed to win.** In a layer the order is
+  `qkv -> [host attention] -> o -> ffn -> qkv(next layer)`. The host only sits between
+  qkv and o, so **`o + ffn + qkv(next)` are ADJACENT with no host work in between**.
+  One kernel doing [O + FFN + QKV-next] in a single hw_context removes BOTH switches per
+  layer — a plain dataflow design (same class as the existing ffn_fused), far more
+  tractable than an attention kernel.
+  NEXT: design/prototype that fused [O+FFN+QKV] kernel for e4b (H=2560, I=10240,
+  o:(2560<-2048), qkv:(3072<-2560)); validate numerics vs the current path, then measure.
 - 2026-08-12 **WIN #2 — O reuses the fused-QKV kernel context on e4b** (commit 884fa66).
   Diagnosis: e4b's fused QKV gemv is (3072,2560) but O was (2560,2048) → different shape
   → a ~2.6 ms context switch per layer for O (O cost 3.2 ms/layer on e4b vs 0.32 on
