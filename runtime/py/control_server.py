@@ -1058,9 +1058,24 @@ async def websocket_chat(websocket: WebSocket):
     except Exception as e:
         print(f"[WebSocket] Exception: {e}")
 
-# Serve built frontend static files if available
+# Serve built frontend static files if available.
+#
+# index.html MUST NOT be cached: the bundle filenames are content-hashed, so a rebuilt
+# UI is only picked up if the browser re-reads index.html to learn the new hashes.
+# Serving it cacheable is why a rebuilt frontend can keep showing the old UI until a
+# hard refresh. The hashed assets themselves stay cacheable (they never change content).
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
 if FRONTEND_DIST.exists():
+    # A middleware (not a route) because the StaticFiles mount below also answers "/",
+    # and it wins regardless of registration order.
+    @app.middleware("http")
+    async def _no_cache_html(request, call_next):
+        response = await call_next(request)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
 
 if __name__ == "__main__":
