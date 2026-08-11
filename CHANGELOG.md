@@ -5,6 +5,19 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+## [2.0.0-alpha.3] — 2026-08-11
+
+### Fixed (UI)
+- **Chat tok/s now mirrors the server-measured rate** (same value as the Models &
+  Benchmarks view). It used to fall back to a cumulative client estimate, which ramps up
+  from a low value instead of showing the real decode rate; the fallback is now a sliding
+  window and is labelled approximate.
+- **Image/audio upload is gated as "Coming soon"** in both the menu and drag-and-drop, and
+  rejected by the backend: the runtime is text-only (no vision/audio encoder), so those
+  files never reached the model. Document upload (text extraction) still works.
+- **`index.html` is served with `no-cache`**, so a rebuilt frontend is actually picked up
+  instead of the browser silently keeping the previous bundle.
+
 ### Added
 - **`ALVEARE_ONESHAPE` (opt-in): ~13% faster decode on Gemma-4-E4B.** An NPU
   hardware-context switch costs a **fixed ~2.5 ms** (measured with the new
