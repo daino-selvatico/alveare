@@ -74,6 +74,33 @@ int main(int argc, char** argv) {
         std::printf("no-switch pair    : %7.3f ms\n", ffn_same + gemv_same);
         std::printf("=> switch overhead: %7.3f ms per pair (%.3f ms per switch)\n",
                     alt_pair - (ffn_same + gemv_same), (alt_pair - (ffn_same + gemv_same)) / 2.0);
+
+        // Is the switch cost FIXED (driver/context) or proportional to design size?
+        // Alternate between two *small* gemv contexts (8-core designs) and compare.
+        const int g2N = argc > 7 ? std::atoi(argv[7]) : 0;
+        const int g2K = argc > 8 ? std::atoi(argv[8]) : 0;
+        if (g2N && g2K && reg.has_gemv(g2N, g2K)) {
+            std::vector<uint8_t> g2_w(size_t(g2N) * (g2K / 32) * 20, 0);
+            WeightHandle hg2 = reg.create_gemv_weight(g2N, g2K, g2_w.data(), g2_w.size());
+            std::vector<bf16> x2(g2K, bf16(0.01f)), y2(g2N);
+            reg.run_gemv(g2N, g2K, hg2, x2.data(), y2.data());
+
+            t0 = clk::now();
+            for (int i = 0; i < iters; ++i) reg.run_gemv(g2N, g2K, hg2, x2.data(), y2.data());
+            double g2_same = ms_since(t0) / iters;
+
+            t0 = clk::now();
+            for (int i = 0; i < iters; ++i) {
+                reg.run_gemv(gN, gK, hg, x_gv.data(), y_gv.data());
+                reg.run_gemv(g2N, g2K, hg2, x2.data(), y2.data());
+            }
+            double g_alt = ms_since(t0) / iters;
+            std::printf("\ngemv2 (%dx%d) same-context: %7.3f ms/call\n", g2N, g2K, g2_same);
+            std::printf("gemv<->gemv alternating   : %7.3f ms  (no-switch: %7.3f)\n",
+                        g_alt, gemv_same + g2_same);
+            std::printf("=> gemv-gemv switch       : %7.3f ms per switch\n",
+                        (g_alt - (gemv_same + g2_same)) / 2.0);
+        }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Error: %s\n", e.what());
         return 1;

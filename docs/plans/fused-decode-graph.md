@@ -72,6 +72,32 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **DECISIVE: the 2.5 ms switch is a FIXED driver/context cost.**
+  Extended `bench_switch.cpp` to also alternate two *gemv* contexts:
+  `gemv(3072x2560) <-> gemv(2048x2048)` costs **2.574 ms per switch** — the same as
+  `ffn <-> gemv` (2.62 ms), despite both being small 8-core designs. So the cost is per
+  hw-context swap, INDEPENDENT of design size. Shrinking/co-placing designs won't help;
+  the only lever is **fewer distinct kernel contexts per layer**.
+  ALSO CORRECTED: my earlier "o -> ffn -> qkv are adjacent" claim was WRONG — `run_layer`
+  does host work between them (post-attn norm + residual, pre-FFN norm, post-FFN norm,
+  PLE, output scale). A single fused kernel would have to absorb those too (big).
+  **NEW PLAN — "one kernel shape for the whole layer" (uses EXISTING kernel designs):**
+  make every matmul in a layer run on ONE gemv shape (e.g. `(2048, 2560)`), by
+  * tiling the output dim N (call the same kernel k times with per-tile weight handles):
+    qkv 3072 -> 2 calls, o -> 2, gate+up 20480 -> 10;
+  * chunking the input dim K for the down projection (K=10240 -> 5 chunks of 2560) and
+    summing the partial results on the host (2560 floats, negligible at -O3).
+  Then a layer issues N calls but ZERO context switches.
+  Arithmetic (e4b): ~91.7 M MAC/layer at the measured ~13.7 GMAC/s = **6.7 ms/layer** vs
+  today's 9.84 ms/layer (4.84 compute + 5.0 switch) => **~400 ms/token (~2.5 tok/s)**,
+  i.e. +32% on top of the current 530 ms. Trade-off: the fused-FFN kernel is more
+  efficient per MAC (21 GMAC/s vs gemv 13.7), so we give up some FFN efficiency to erase
+  the switches — the measured numbers still favour it.
+  RISK: this is a runtime restructuring (no new kernel code), so it is testable
+  incrementally behind an env flag; validate numerics against the current path.
+  NEXT: prototype behind `ALVEARE_ONESHAPE=1` on e4b — start by routing ONLY qkv+o
+  through the tiled single-shape path (cheap, isolates the mechanism), measure, then move
+  the FFN over.
 - 2026-08-12 **MEASURED: the context switch costs 2.50 ms — and there is a tractable fix.**
   New micro-benchmark `runtime/cpp/test/bench_switch.cpp` (dummy weights, e4b shapes):
   ```
