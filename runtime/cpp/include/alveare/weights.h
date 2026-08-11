@@ -35,6 +35,8 @@ struct LayerWeights {
     // ~2.5 ms, and decode pays two per layer). Empty unless the flag is on.
     std::vector<WeightHandle> os_gateup;  // 7 tiles of (os_n, os_k): gate rows ++ up rows
     std::vector<WeightHandle> os_down;    // 4 K-chunks of (os_n, os_k)
+    WeightHandle os_qkv = kInvalidWeight; // QKV zero-padded to (os_n, os_k)
+    WeightHandle os_o = kInvalidWeight;   // O   zero-padded to (os_n, os_k)
     int os_n = 0;                         // tile output rows (== fused-QKV N)
     int os_k = 0;                         // tile input dim  (== fused-QKV K)
 

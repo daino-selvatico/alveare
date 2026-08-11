@@ -426,8 +426,12 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     auto t_qkv = pclock::now();
     if (has_kv) {
         if (lw.w_qkv != kInvalidWeight) {
-            std::vector<bf16> qkv(lw.n_qkv);
-            reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
+            // ALVEARE_ONESHAPE: use the QKV copy padded onto the shared tile shape so
+            // this call reuses the same hw context as O and the FFN tiles.
+            const bool os_q = (lw.os_qkv != kInvalidWeight && lw.os_n > 0);
+            std::vector<bf16> qkv(os_q ? lw.os_n : lw.n_qkv);
+            if (os_q) reg_.run_gemv(lw.os_n, lw.os_k, lw.os_qkv, x_norm.data(), qkv.data());
+            else      reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
             std::memcpy(q.data(), qkv.data(), size_t(N_q) * sizeof(bf16));
             std::memcpy(k.data(), qkv.data() + N_q, size_t(N_kv) * sizeof(bf16));
             if (is_sliding || config_.model_type == "gemma4-e4b")
@@ -457,8 +461,12 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     } else {
         // Layers 24-41 (shared KV) only project Q
         if (lw.w_qkv != kInvalidWeight) {
-            std::vector<bf16> qkv(lw.n_qkv);
-            reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
+            // ALVEARE_ONESHAPE: use the QKV copy padded onto the shared tile shape so
+            // this call reuses the same hw context as O and the FFN tiles.
+            const bool os_q = (lw.os_qkv != kInvalidWeight && lw.os_n > 0);
+            std::vector<bf16> qkv(os_q ? lw.os_n : lw.n_qkv);
+            if (os_q) reg_.run_gemv(lw.os_n, lw.os_k, lw.os_qkv, x_norm.data(), qkv.data());
+            else      reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
             std::memcpy(q.data(), qkv.data(), size_t(N_q) * sizeof(bf16));
         } else {
             int N_q_padded = config_.model_type == "gemma3" ? 2048 : N_q;
@@ -548,9 +556,13 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     std::vector<bf16> attn_out_padded(N_q_padded, bf16(0.0f));
     std::memcpy(attn_out_padded.data(), attn_out.data(), size_t(N_q) * sizeof(bf16));
 
+    const bool os_o_on = (lw.os_o != kInvalidWeight && lw.os_n > 0);
+    if (os_o_on) { o_n = lw.os_n; N_q_padded = lw.os_k; attn_out_padded.assign(N_q_padded, bf16(0.0f));
+                   std::memcpy(attn_out_padded.data(), attn_out.data(), size_t(N_q) * sizeof(bf16)); }
     std::vector<bf16> attn_proj(o_n, bf16(0.0f));
     auto t_o = pclock::now();
-    reg_.run_gemv(o_n, N_q_padded, lw.w_o, attn_out_padded.data(), attn_proj.data());
+    if (os_o_on) reg_.run_gemv(lw.os_n, lw.os_k, lw.os_o, attn_out_padded.data(), attn_proj.data());
+    else         reg_.run_gemv(o_n, N_q_padded, lw.w_o, attn_out_padded.data(), attn_proj.data());
     g_prof.npu_o += ms_since(t_o);
 
     // 8. Post-attention norm and residual
