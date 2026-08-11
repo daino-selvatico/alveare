@@ -30,6 +30,16 @@ struct LayerWeights {
     // back-to-back with no kernel context switch between them (~2.6 ms saved per
     // layer). 0 means "use the natural output width" (no padding). The real
     // output slice is the first hidden_size (padded) rows.
+    // ALVEARE_ONESHAPE: run the FFN as gemv tiles on the SAME (N,K) as the fused QKV,
+    // so a whole layer uses ONE kernel context (a hw-context switch costs a fixed
+    // ~2.5 ms, and decode pays two per layer). Empty unless the flag is on.
+    std::vector<WeightHandle> os_gateup;  // 7 tiles of (os_n, os_k): gate rows ++ up rows
+    std::vector<WeightHandle> os_down;    // 4 K-chunks of (os_n, os_k)
+    WeightHandle os_qkv = kInvalidWeight; // QKV zero-padded to (os_n, os_k)
+    WeightHandle os_o = kInvalidWeight;   // O   zero-padded to (os_n, os_k)
+    int os_n = 0;                         // tile output rows (== fused-QKV N)
+    int os_k = 0;                         // tile input dim  (== fused-QKV K)
+
     int o_gemv_n = 0;
     // When >0, the O projection was zero-padded in its INPUT dim to this K so it
     // reuses the fused-QKV kernel's (N,K) context (no per-layer context switch).

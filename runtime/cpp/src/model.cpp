@@ -426,8 +426,12 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     auto t_qkv = pclock::now();
     if (has_kv) {
         if (lw.w_qkv != kInvalidWeight) {
-            std::vector<bf16> qkv(lw.n_qkv);
-            reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
+            // ALVEARE_ONESHAPE: use the QKV copy padded onto the shared tile shape so
+            // this call reuses the same hw context as O and the FFN tiles.
+            const bool os_q = (lw.os_qkv != kInvalidWeight && lw.os_n > 0);
+            std::vector<bf16> qkv(os_q ? lw.os_n : lw.n_qkv);
+            if (os_q) reg_.run_gemv(lw.os_n, lw.os_k, lw.os_qkv, x_norm.data(), qkv.data());
+            else      reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
             std::memcpy(q.data(), qkv.data(), size_t(N_q) * sizeof(bf16));
             std::memcpy(k.data(), qkv.data() + N_q, size_t(N_kv) * sizeof(bf16));
             if (is_sliding || config_.model_type == "gemma4-e4b")
@@ -457,8 +461,12 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     } else {
         // Layers 24-41 (shared KV) only project Q
         if (lw.w_qkv != kInvalidWeight) {
-            std::vector<bf16> qkv(lw.n_qkv);
-            reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
+            // ALVEARE_ONESHAPE: use the QKV copy padded onto the shared tile shape so
+            // this call reuses the same hw context as O and the FFN tiles.
+            const bool os_q = (lw.os_qkv != kInvalidWeight && lw.os_n > 0);
+            std::vector<bf16> qkv(os_q ? lw.os_n : lw.n_qkv);
+            if (os_q) reg_.run_gemv(lw.os_n, lw.os_k, lw.os_qkv, x_norm.data(), qkv.data());
+            else      reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, x_norm.data(), qkv.data());
             std::memcpy(q.data(), qkv.data(), size_t(N_q) * sizeof(bf16));
         } else {
             int N_q_padded = config_.model_type == "gemma3" ? 2048 : N_q;
@@ -548,9 +556,13 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     std::vector<bf16> attn_out_padded(N_q_padded, bf16(0.0f));
     std::memcpy(attn_out_padded.data(), attn_out.data(), size_t(N_q) * sizeof(bf16));
 
+    const bool os_o_on = (lw.os_o != kInvalidWeight && lw.os_n > 0);
+    if (os_o_on) { o_n = lw.os_n; N_q_padded = lw.os_k; attn_out_padded.assign(N_q_padded, bf16(0.0f));
+                   std::memcpy(attn_out_padded.data(), attn_out.data(), size_t(N_q) * sizeof(bf16)); }
     std::vector<bf16> attn_proj(o_n, bf16(0.0f));
     auto t_o = pclock::now();
-    reg_.run_gemv(o_n, N_q_padded, lw.w_o, attn_out_padded.data(), attn_proj.data());
+    if (os_o_on) reg_.run_gemv(lw.os_n, lw.os_k, lw.os_o, attn_out_padded.data(), attn_proj.data());
+    else         reg_.run_gemv(o_n, N_q_padded, lw.w_o, attn_out_padded.data(), attn_proj.data());
     g_prof.npu_o += ms_since(t_o);
 
     // 8. Post-attention norm and residual
@@ -577,7 +589,31 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     std::vector<bf16> down(H_padded, bf16(0.0f));
     std::string act_type = (config_.model_type == "gemma3" || config_.is_gemma4()) ? "gelu" : "silu";
     auto t_ffn = pclock::now();
-    if (lw.w_ffn_fused != kInvalidWeight) {
+    if (!lw.os_gateup.empty() && !lw.os_down.empty()) {
+        // ALVEARE_ONESHAPE: FFN as gemv tiles on the fused-QKV kernel shape, so the
+        // layer never switches hw context. gate++up in tiles, GELU*up on the host,
+        // then the down projection as K-chunks whose partials the host sums.
+        const int TN = lw.os_n, TK = lw.os_k;
+        const int I_rows = int(lw.os_down.size()) * TK;  // == I_padded (matches the tiles)
+        std::vector<bf16> gu(size_t(lw.os_gateup.size()) * TN);
+        for (size_t t = 0; t < lw.os_gateup.size(); ++t)
+            reg_.run_gemv(TN, TK, lw.os_gateup[t], x_norm2.data(), gu.data() + t * TN);
+
+        std::vector<bf16> act(size_t(lw.os_down.size()) * TK, bf16(0.0f));
+        for (int i = 0; i < I_rows; ++i) {
+            float g = gu[i].to_float();
+            float u = gu[size_t(I_rows) + i].to_float();
+            act[i] = bf16(0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f)) * u);
+        }
+
+        std::vector<float> acc(K, 0.0f);
+        std::vector<bf16> part(TN);
+        for (size_t c = 0; c < lw.os_down.size(); ++c) {
+            reg_.run_gemv(TN, TK, lw.os_down[c], act.data() + c * TK, part.data());
+            for (int i = 0; i < K; ++i) acc[i] += part[i].to_float();
+        }
+        for (int i = 0; i < K; ++i) down[i] = bf16(acc[i]);
+    } else if (lw.w_ffn_fused != kInvalidWeight) {
         reg_.run_ffn_fused(H_padded, I_padded, act_type, lw.w_ffn_fused, x_norm2.data(), down.data());
     } else {
         int gate_stride = (K_padded / 32) * 20;
