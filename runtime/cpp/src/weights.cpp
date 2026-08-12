@@ -481,11 +481,17 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 //   e4b sliding TN=3072 (1.2x hidden 2560) -> 530 to ~470 ms/tok  (WIN)
                 //   e4b global  TN=6144 (2.4x)             -> 514 vs 468 ms/tok   (LOSS)
                 //   12B         TN=8192 (2.0x hidden 4096) -> 1161 vs 1010 ms/tok (LOSS)
-                const int max_tn = (5 * H_padded) / 4;   // 1.25x
+                // Now that QKV/O are TILED (not padded), TN no longer has to cover
+                // n_qkv — only the down tiles' hidden_size rows. Prefer the smallest
+                // shape >= padded hidden: on the 12B that is exactly H_padded=4096, and
+                // every dim (qkv 8192, gate+up 32768, down chunks) is a multiple of it,
+                // so there is zero padding waste.
+                const int max_tn = (5 * H_padded) / 4;   // 1.25x: keep tiles near hidden
                 for (int cand : {2560, 3072, 4096, 5120, 6144, 8192}) {
                     if (cand > max_tn) break;
-                    if (cand >= config.hidden_size && cand >= lw.n_qkv &&
-                        reg.has_gemv(cand, qkv_K)) { TN_pick = cand; break; }
+                    if (cand >= config.hidden_size && reg.has_gemv(cand, qkv_K)) {
+                        TN_pick = cand; break;
+                    }
                 }
             }
             if (TN_pick > 0) {
@@ -528,22 +534,36 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                         lw.os_down.push_back(reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
                     }
                     const size_t trb = size_t(TK / 32) * 20;
-                    // QKV padded to (TN,TK): q/k/v are sliced from the START of the
-                    // output, so zero rows appended at the end are harmless.
-                    if (!os_qkv_src.empty() && os_qkv_src.size() <= size_t(TN) * trb) {
-                        std::vector<uint8_t> pad(size_t(TN) * trb, 0);
-                        std::memcpy(pad.data(), os_qkv_src.data(), os_qkv_src.size());
-                        lw.os_qkv = reg.create_gemv_weight(TN, TK, pad.data(), pad.size());
+                    // Split QKV into ceil(n_qkv/TN) tiles of (TN,TK) instead of padding
+                    // it up to a bigger shape. q/k/v are sliced from the START of the
+                    // concatenated output, so emitting the tiles in order is equivalent.
+                    // (Padding QKV up was what made the 12B slower: it forced TN=8192,
+                    // and the down tiles then used only 4096 of those 8192 rows.)
+                    if (!os_qkv_src.empty() && os_qkv_src.size() % trb == 0) {
+                        const int rows = int(os_qkv_src.size() / trb);
+                        for (int base = 0; base < rows; base += TN) {
+                            std::vector<uint8_t> tile(size_t(TN) * trb, 0);
+                            const int n = std::min(TN, rows - base);
+                            std::memcpy(tile.data(), os_qkv_src.data() + size_t(base) * trb,
+                                        size_t(n) * trb);
+                            lw.os_qkv_tiles.push_back(
+                                reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                        }
                     }
-                    // O padded to (TN,TK): rows hidden->TN, input cols N_q->TK.
+                    // O: rows hidden->TN (one tile when TN == padded hidden), input cols
+                    // widened to TK (the attention output is zero-padded to match).
                     if (!os_o_src.empty() && os_o_rows > 0) {
                         const size_t orb = os_o_src.size() / os_o_rows;
-                        if (orb <= trb && os_o_rows <= TN) {
-                            std::vector<uint8_t> pad(size_t(TN) * trb, 0);
-                            for (int r = 0; r < os_o_rows; ++r)
-                                std::memcpy(pad.data() + size_t(r) * trb,
-                                            os_o_src.data() + size_t(r) * orb, orb);
-                            lw.os_o = reg.create_gemv_weight(TN, TK, pad.data(), pad.size());
+                        if (orb <= trb) {
+                            for (int base = 0; base < os_o_rows; base += TN) {
+                                std::vector<uint8_t> tile(size_t(TN) * trb, 0);
+                                const int n = std::min(TN, os_o_rows - base);
+                                for (int r = 0; r < n; ++r)
+                                    std::memcpy(tile.data() + size_t(r) * trb,
+                                                os_o_src.data() + size_t(base + r) * orb, orb);
+                                lw.os_o_tiles.push_back(
+                                    reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                            }
                         }
                     }
                     lw.os_n = TN;
