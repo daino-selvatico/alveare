@@ -72,6 +72,27 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-13 **Bandwidth ceiling characterised (~13 GB/s) — and it is not easily liftable.**
+  With the reliable harness, three independent probes of the streaming path:
+    * inner-loop rewrite (hoisted reduction / cached deinterleave): **0%** (inside band)
+    * larger DMA tiles (k_tile 256 -> 512, same shape): **+3%** (NPU min 515 -> 499 us)
+    * 4x the cores (8-core gemv vs 32-core fused FFN): **+30%** (10-12 -> 13.8 GB/s)
+  Effective Q4 weight streaming therefore sits at **~10-14 GB/s regardless of shape,
+  tile size or core count**, while the MAC rate is ~2% of the AIE peak => the limit is a
+  SHARED path upstream of the cores (shim/memtile DMA or the NPU's DDR allocation), not
+  compute, not the dequant loop.
+  **Numbers that follow from it (e4b, 2.4 GB of Q4 weights per token):**
+    floor at 13 GB/s ~= **185 ms/token (5.4 tok/s)**; we are at ~470 ms = 2.5x above it,
+    so ~285 ms/token is per-call/dispatch + non-overlapped host work — that is what a
+    fused-layer kernel can attack (realistic landing zone ~250-300 ms = 3.3-4 tok/s).
+    Matching FLM's 12.6 tok/s (~79 ms/token) would need ~30 GB/s, i.e. **2.3x more
+    streaming bandwidth than ANY configuration here reaches** — an open question, not a
+    scheduling problem.
+  **NEXT candidate before the big kernel: DMA/compute overlap.** If the design serialises
+  "fetch weight tile -> compute -> fetch next", we would see roughly half the achievable
+  bandwidth, which is consistent with the numbers. Check the ObjectFifo depths and whether
+  the weight fetch is actually double-buffered; that is cheap to test and, unlike the
+  fused kernel, it would lift the ceiling for every model and every op at once.
 - 2026-08-13 **Phase B (gemv inner-loop micro-optimisation): INCONCLUSIVE — reverted.**
   Tried two rewrites of `kernels/gemv_q/gemv_q.cc`:
   (1) hoist the per-block `reduce_add` into a row-wide 16-lane accumulator AND cache the
