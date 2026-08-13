@@ -72,6 +72,28 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-13 **Phase B (gemv inner-loop micro-optimisation): INCONCLUSIVE — reverted.**
+  Tried two rewrites of `kernels/gemv_q/gemv_q.cc`:
+  (1) hoist the per-block `reduce_add` into a row-wide 16-lane accumulator AND cache the
+      deinterleaved x in local arrays; (2) hoist the accumulator only.
+  Both self-verified correct (max_diff 1.25 vs the CPU reference, expected ~2-3 for Q4).
+  Measured on gemv(3072,2560) through `bench_switch`: **variant 1 = 0.580 ms, variant 2 =
+  0.550 ms, original = 0.531 / 0.556 / 0.572 ms across runs.**
+  => The run-to-run spread of the ORIGINAL kernel (~±5%) is as large as the effect being
+  chased, so nothing can be concluded; reverted to the original source and restored the
+  backed-up xclbins. **Lesson: this bench needs repeated runs + statistics before it can
+  resolve <10% kernel changes.**
+  One analysis error worth recording: the kernel is invoked per **k_tile = 256**, i.e. 8
+  Q4 blocks per call — not the full K (80 blocks). So "80 reductions saved per row" was
+  wrong by 10x, and caching x in local arrays (a spill) cannot pay off at that size.
+  **Implication for the plan:** inner-loop micro-optimisation is not where the remaining
+  gain is. The measured facts still stand: ~2.4 GB of Q4 weights are read per e4b token at
+  ~5.3 GB/s effective vs FLM's ~30 GB/s, the kernels themselves sustain ~13 GB/s
+  (21 GMAC/s), and the gap between those two numbers is per-call/dispatch overhead
+  (546 calls/token). That points at STRUCTURAL changes only:
+    (a) a fused-layer kernel (fewer, bigger dispatches; KV/activations on-chip), or
+    (b) a weight layout that removes the per-block deinterleave (host-side repack), which
+        should be measured with a proper statistical harness first.
 - 2026-08-12 **Runtime-N gemv kernel: INVESTIGATED and DEFERRED (cheap negative).** IRON
   does expose `ScratchpadParameter` (a named runtime value the cores can read), but the
   DMA transfers stay static — `rt.fill/drain` take compile-time `TensorAccessPattern`s;
