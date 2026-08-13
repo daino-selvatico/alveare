@@ -72,6 +72,21 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-13 **Streaming bandwidth: every external knob tested, ceiling holds at ~13 GB/s.**
+  Reliable-harness A/B on gemv(3072,2560), baseline median 0.4648 ms (band ~1%):
+    * inner-loop rewrite (hoisted reduction, cached deinterleave) -> 0.4683 ms = **0%**
+    * weight-fifo depth 2 -> 4 (the fused FFN uses 4) -> 0.4640 ms = **0%**
+    * k_tile 256 -> 512 (design's own bench, NPU min) -> 515 -> 499 us = **+3%**
+    * 8 cores (gemv) vs 32 cores (fused FFN) -> 10.6 vs 13.8 GB/s = **+30%**
+  So the ~13 GB/s Q4 streaming rate is NOT set by the dequant loop, the DMA depth or the
+  tile size. It is a property of this design family / the NPU's DDR path for a
+  stream-once-no-reuse access pattern. **Stop optimising the streaming from outside.**
+  **Where that leaves e4b:** 2.4 GB/token / ~13 GB/s = **~185 ms/token floor (5.4 tok/s)**;
+  measured ~470 ms => ~285 ms/token is dispatch + non-overlapped host work. The ONLY
+  remaining lever with real upside is the **fused-layer kernel** (fewer, bigger dispatches;
+  KV/activations on-chip), realistic landing zone **250-300 ms/token = 3.3-4 tok/s**.
+  FLM's 12.6 tok/s implies ~30 GB/s, i.e. 2.3x a ceiling nothing here could move — treat
+  it as an open research question, not a scheduling gap.
 - 2026-08-13 **Bandwidth ceiling characterised (~13 GB/s) — and it is not easily liftable.**
   With the reliable harness, three independent probes of the streaming path:
     * inner-loop rewrite (hoisted reduction / cached deinterleave): **0%** (inside band)
