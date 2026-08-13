@@ -72,6 +72,25 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-13 **The real gap is a per-call IN-SITU penalty (~0.3 ms), not bandwidth.**
+  A gemv(3072,2560) costs **0.467 ms** in the harness under EVERY condition tested:
+  hot single buffer 0.457, 32 distinct buffers 0.458, 200 buffers / ~1 GB working set
+  0.467, and with up to 200 us of host busy-wait injected between calls 0.479 (+2%).
+  In real e4b decode the same call effectively costs **~0.8 ms** (454 ms of layer NPU
+  time over 562 dispatches). Predicted from isolated numbers: 35 sliding layers x 13
+  tiles x 0.457 + 7 global layers ~10 ms = ~278 ms, measured 454 ms => **~176 ms/token
+  unexplained**, i.e. ~0.3 ms per dispatch that only appears in situ.
+  Ruled out: weight-buffer reuse, working-set size, CPU-only host work between calls,
+  dequant inner loop, DMA fifo depth, tile size.
+  **NEXT HYPOTHESIS (cheap to test, cheap to fix): host MEMORY traffic.** `run_layer`
+  allocates and fills many std::vectors per layer (x_norm, q, k, v, qkv, act, acc,
+  part...) and memcpys activations into the BOs; that malloc/free + memory traffic
+  competes with the NPU's DMA for DDR bandwidth — which a CPU busy-wait does NOT
+  reproduce. Test: extend bench_stat's host work to allocate/fill buffers of the same
+  size as run_layer's, and see if the per-call time approaches 0.8 ms. If it does, the
+  fix is mechanical (hoist the allocations into reusable scratch buffers) and would
+  apply to every model — much cheaper than the fused-layer kernel, and it should be done
+  BEFORE it, since the fused kernel's payoff depends on this number.
 - 2026-08-13 **Streaming bandwidth: every external knob tested, ceiling holds at ~13 GB/s.**
   Reliable-harness A/B on gemv(3072,2560), baseline median 0.4648 ms (band ~1%):
     * inner-loop rewrite (hoisted reduction, cached deinterleave) -> 0.4683 ms = **0%**

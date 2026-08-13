@@ -44,15 +44,39 @@ int main(int argc, char** argv) {
 
         if (kind == "gemv") {
             if (!reg.has_gemv(A, B)) { std::fprintf(stderr, "no gemv %dx%d\n", A, B); return 1; }
+            // nbuf > 1 rotates through DISTINCT resident weights, the way decode does:
+            // every weight is touched once per token, so reusing one hot buffer (nbuf=1)
+            // can report a bandwidth the real decode never sees.
+            const int nbuf = argc > 7 ? std::atoi(argv[7]) : 1;
             std::vector<uint8_t> w(size_t(A) * (B / 32) * 20, 0);
-            WeightHandle h = reg.create_gemv_weight(A, B, w.data(), w.size());
+            std::vector<WeightHandle> hs;
+            for (int i = 0; i < nbuf; ++i) {
+                w[(size_t(i) * 977) % w.size()] = uint8_t(i + 1);   // keep buffers distinct
+                hs.push_back(reg.create_gemv_weight(A, B, w.data(), w.size()));
+            }
             std::vector<bf16> x(B, bf16(0.01f)), y(A);
-            for (int i = 0; i < 20; ++i) reg.run_gemv(A, B, h, x.data(), y.data());  // warm up
+            for (int i = 0; i < 20; ++i) reg.run_gemv(A, B, hs[i % nbuf], x.data(), y.data());
+            // hostwork_us simulates decode: real layers do norms/attention/GELU on the
+            // host BETWEEN dispatches, so the NPU goes idle instead of being hammered
+            // back-to-back. If a dispatch is more expensive after an idle gap, a tight
+            // loop under-reports what decode actually pays.
+            const int hostwork_us = argc > 8 ? std::atoi(argv[8]) : 0;
+            long call = 0;
+            volatile double sink = 0.0;
             for (int b = 0; b < batches; ++b) {
                 auto t0 = clk::now();
-                for (int i = 0; i < iters; ++i) reg.run_gemv(A, B, h, x.data(), y.data());
-                means.push_back(std::chrono::duration<double, std::milli>(clk::now() - t0).count() / iters);
+                for (int i = 0; i < iters; ++i) {
+                    reg.run_gemv(A, B, hs[call++ % nbuf], x.data(), y.data());
+                    if (hostwork_us > 0) {
+                        auto hw = clk::now();
+                        while (std::chrono::duration<double, std::micro>(clk::now() - hw).count() < hostwork_us)
+                            sink += 1.0;
+                    }
+                }
+                double el = std::chrono::duration<double, std::milli>(clk::now() - t0).count() / iters;
+                means.push_back(el - hostwork_us / 1000.0);   // subtract the injected host time
             }
+            std::printf("  (nbuf=%d distinct weight buffers)\n", nbuf);
         } else if (kind == "ffn") {
             if (!reg.has_ffn_fused(A, B, "gelu")) { std::fprintf(stderr, "no ffn %dx%d\n", A, B); return 1; }
             std::vector<uint8_t> w(size_t(3) * A * B / 32 * 20, 0);
