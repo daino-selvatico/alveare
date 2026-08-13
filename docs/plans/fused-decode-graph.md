@@ -72,6 +72,32 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-12 **Runtime-N gemv kernel: INVESTIGATED and DEFERRED (cheap negative).** IRON
+  does expose `ScratchpadParameter` (a named runtime value the cores can read), but the
+  DMA transfers stay static — `rt.fill/drain` take compile-time `TensorAccessPattern`s;
+  dynamic sizes exist only in the low-level `aiex` dialect. So a runtime-N kernel would
+  still stream N_max rows of weights, and for a memory-bound gemv that is the cost that
+  matters => no win without custom MLIR (days, high risk). Not pursued.
+- 2026-08-12 **WIN #4 — tile QKV/O instead of padding them (unlocks the 12B).**
+  Padding QKV up to the shared shape forced TN=8192 on the 12B and the down tiles then
+  used only 4096 of those rows (measured 1161 vs 1010 ms/tok = LOSS). Splitting QKV/O
+  into tiles drops the `TN >= n_qkv` constraint, so TN can be the padded hidden size:
+  on the 12B every dim is then an exact multiple of 4096 (qkv 8192 = 2 tiles, gate+up
+  32768 = 8, down K=16384 = 4 chunks) — no padding waste, still no context switch.
+  Measured: **12B 1010-1030 -> 957-970 ms/token (~5%)**; e4b unchanged (~485, still picks
+  3072); gemma3 unchanged (never engages — `qkv_K` is only set on the gemma4 path). All
+  three coherent.
+  The gain is far below the +31% I projected: these gemv shapes sustain **~15.5 GMAC/s**
+  (not the fused FFN's 21.8) and the fixed per-call cost is paid **624 times per token**
+  on the 12B. Removing switches just converts them into many small dispatches.
+- 2026-08-12 **NEGATIVE: skipping the activation upload between tiles buys nothing.**
+  With tiling, 8-10 of a layer's 13 calls share the same input, so `run_gemv` gained an
+  `x_unchanged` hint that skips the memcpy + DMA sync. Measured 12B 953-1023 ms vs
+  957-970 without it — no gain. The per-call cost is dominated by kernel dispatch/wait,
+  not by moving 8 KB of activations. **Reverted** (API surface + a correctness footgun
+  for zero benefit).
+  => The remaining per-call overhead is inherent to XRT dispatch. Cutting it further means
+  FEWER, BIGGER dispatches — i.e. the fused-layer kernel — not smarter tiling.
 - 2026-08-12 **ONESHAPE MERGED into feat/rc-2.0 (PR #27, rc @ 2170241) — awaiting the
   user's manual test before any release tag.** Final rule: the tiling only engages when
   the shared shape stays within **1.25x the padded hidden size**, derived from three

@@ -5,6 +5,14 @@ AMD Ryzen AI (XDNA2) NPU on Linux.
 
 ## [Unreleased]
 
+### Changed
+- **`ALVEARE_ONESHAPE` now works on Gemma-4-12B too (~5% faster decode).** QKV and O are
+  split into tiles of the shared kernel shape instead of being zero-padded up to a bigger
+  one, which lets the shared shape be the padded hidden size — on the 12B every dimension
+  is then an exact multiple of 4096, so there is no padding waste and still no per-layer
+  context switch. Measured **1010-1030 → 957-970 ms/token**; E4B (~485 ms) and Gemma-3
+  are unchanged. Still opt-in (`ALVEARE_ONESHAPE=1`).
+
 ## [2.0.0-alpha.3] — 2026-08-11
 
 ### Fixed (UI)
