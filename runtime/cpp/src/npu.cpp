@@ -1,6 +1,8 @@
 #include "alveare/npu.h"
 
 #include <chrono>
+#include <iostream>
+#include <string>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +23,35 @@
 #include <xrt/xrt_kernel.h>
 
 namespace alveare {
+
+// --- gated gemv sub-profiler (ALVEARE_PROFILE_GEMV=1) ---------------------------
+namespace {
+struct GemvProf { double up = 0, run = 0, down = 0; long n = 0; };
+GemvProf g_gemv_prof;
+// Real hw-context switches: a dispatch whose shape differs from the previous one
+// pays a ~2.5 ms reconfiguration. Counted here to see how many decode really does.
+std::string g_last_key;
+long g_switches = 0;
+}
+bool npu_gemv_prof_on() {
+    static const bool on = (std::getenv("ALVEARE_PROFILE_GEMV") != nullptr);
+    return on;
+}
+void npu_gemv_prof_add(double up, double run, double down) {
+    g_gemv_prof.up += up; g_gemv_prof.run += run; g_gemv_prof.down += down; ++g_gemv_prof.n;
+}
+void npu_gemv_prof_report() {
+    if (!g_gemv_prof.n) return;
+    std::cerr << "[gemv-prof] switches=" << g_switches << " calls=" << g_gemv_prof.n
+              << " upload=" << g_gemv_prof.up << "ms"
+              << " dispatch+wait=" << g_gemv_prof.run << "ms"
+              << " download=" << g_gemv_prof.down << "ms"
+              << "  (per call: " << (g_gemv_prof.up + g_gemv_prof.run + g_gemv_prof.down) / g_gemv_prof.n
+              << "ms)\n" << std::flush;
+    g_gemv_prof = GemvProf();
+    g_switches = 0;
+}
+
 
 // Lightweight profiling counters (single decode thread): wall time and call
 // count spent inside NPU kernel launches. Read via NpuRegistry::npu_seconds().
@@ -133,6 +164,12 @@ struct NpuRegistry::Impl {
 
     LoadedKernel& ensure_loaded(const std::string& kind, int N, int K, int B, int H = 0, int I = 0, const std::string& act = "") {
         const std::string key = shape_key(kind, N, K, B, H, I, act);
+        if (key != g_last_key) {
+            ++g_switches;
+            if (npu_gemv_prof_on() && g_switches < 30)
+                std::cerr << "[switch " << g_switches << "] " << g_last_key << " -> " << key << "\n";
+            g_last_key = key;
+        }
         auto it = loaded.find(key);
         if (it != loaded.end()) {
             it->second.last_used = ++tick;
@@ -283,15 +320,33 @@ void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
 
     LoadedKernel& lk = impl_->ensure_loaded("gemv", N, K, 0);
 
+    // Gated sub-timers: a gemv that measures 0.467 ms in bench_stat effectively costs
+    // ~0.8 ms inside decode, and the gap is INSIDE this function (the profiler's host
+    // buckets only account for ~30 ms/token). Split upload / dispatch+wait / download to
+    // find out which part it is.
+    using gclk = std::chrono::steady_clock;
+    const bool gp = npu_gemv_prof_on();
+    auto t0 = gp ? gclk::now() : gclk::time_point{};
+
     std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(K) * sizeof(uint16_t));
     lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
+    auto t1 = gp ? gclk::now() : gclk::time_point{};
     auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo,
                          lk.y_bo);
     run.wait();
+    auto t2 = gp ? gclk::now() : gclk::time_point{};
 
     lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     std::memcpy(y_bf16, lk.y_bo.map<void*>(), size_t(N) * sizeof(uint16_t));
+
+    if (gp) {
+        auto t3 = gclk::now();
+        auto ms = [](gclk::time_point a, gclk::time_point b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        npu_gemv_prof_add(ms(t0, t1), ms(t1, t2), ms(t2, t3));
+    }
 }
 
 void NpuRegistry::run_gemm(int B, int N, int K, WeightHandle w, const void* x_bf16,

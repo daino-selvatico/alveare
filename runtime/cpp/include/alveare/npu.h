@@ -8,6 +8,13 @@
 
 namespace alveare {
 
+// Gated gemv sub-profiler (ALVEARE_PROFILE_GEMV=1): splits a gemv call into activation
+// upload, kernel dispatch+wait, and result download.
+bool npu_gemv_prof_on();
+void npu_gemv_prof_add(double up_ms, double run_ms, double down_ms);
+void npu_gemv_prof_report();
+
+
 // One AOT-compiled kernel as harvested by tools/build_kernels.py, mirrored from
 // kernels/build/manifest.json. A gemv entry has B == 0; a gemm entry has B > 0.
 struct KernelSpec {

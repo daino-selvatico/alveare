@@ -737,6 +737,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
                 << " | ple(cpu)=" << g_prof.ple
                 << " | cpu_rest=" << (cpu_rest - g_prof.ple) << "\n" << std::flush;
             g_prof = DecodeProf();
+            npu_gemv_prof_report();
         }
     }
 }

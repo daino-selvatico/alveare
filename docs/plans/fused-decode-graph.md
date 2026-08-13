@@ -72,6 +72,28 @@ vs FLM 12.6). Then build the fused attention-block on gemma3 (probe existing
 attention/rope/rmsnorm kernels first), port to e4b, measure.
 
 ## Progress Log
+- 2026-08-13 **THE BUDGET FINALLY CLOSES — and it says the fused-layer kernel is NOT needed.**
+  Instrumented `run_gemv` (`ALVEARE_PROFILE_GEMV=1`) and added a hw-context switch counter.
+  On e4b with ONESHAPE, per token: **562 dispatches, 68 context switches, upload 0.2 ms,
+  dispatch+wait 478 ms, download 0.4 ms.**
+    * host<->BO traffic is IRRELEVANT (0.6 ms of 470) — the allocation/memory-traffic
+      hypothesis is dead;
+    * **68 switches x 2.5 ms = 170 ms (36% of decode)**; 562 calls x 0.467 ms (isolated
+      cost) = 262 ms; 170 + 262 = 432 ms vs 478 ms measured => the budget closes to ~90%.
+  **So the ~176 ms that were unexplained are context switches, not kernel inefficiency,
+  not bandwidth, not host work.** Removing them is a RUNTIME change (make every layer use
+  one kernel shape), not a new fused-layer kernel: same ~2x target (e4b ~470 -> ~300 ms,
+  3.3 tok/s) at a fraction of the cost and risk. **Fused-layer kernel: deprioritised.**
+  Switch log (`[switch N] from -> to`) shows what actually breaks uniformity:
+    * `ffn_fused(2560,10240) -> gemv(3072,2560)` repeating ~5 times per 6 layers => most
+      SLIDING layers are still running the fused FFN instead of the ONESHAPE tiles, even
+      with the flag on and even though layer 0 logs "FFN as 7+4 gemv tiles". **Find why
+      ONESHAPE engages on layer 0 but not on the others — that alone is ~55 of the 68
+      switches.**
+    * `gemv(6144,2560) -> gemv(4096,4096)` on the 7 global layers (qkv 6144 rows, o with
+      K=4096): now that QKV/O are TILED, these could also be expressed as 3072x2560 tiles.
+  NEXT: (1) print TN_pick per layer to find the engagement bug; (2) make all 42 layers
+  share (3072,2560); (3) re-measure switches (target <5) and end-to-end.
 - 2026-08-13 **The real gap is a per-call IN-SITU penalty (~0.3 ms), not bandwidth.**
   A gemv(3072,2560) costs **0.467 ms** in the harness under EVERY condition tested:
   hot single buffer 0.457, 32 distinct buffers 0.458, 200 buffers / ~1 GB working set
