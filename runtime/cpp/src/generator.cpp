@@ -192,7 +192,12 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
     }
 }
 
-GenerationStats Generator::generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token) {
+GenerationStats Generator::generate(
+    const std::string& prompt,
+    const GenerationParams& params,
+    std::function<bool(const std::string&)> on_token,
+    const std::vector<std::vector<float>>& visual_embeddings
+) {
     GenerationStats stats;
     std::lock_guard<std::mutex> gen_lock(gen_mutex_);
     // Reseed once per request for reproducible sampling with a fixed seed; when
@@ -216,6 +221,17 @@ GenerationStats Generator::generate(const std::string& prompt, const GenerationP
         return stats;
     }
 
+    std::unordered_map<int, const float*> custom_emb_map;
+    if (!visual_embeddings.empty()) {
+        size_t v_idx = 0;
+        for (size_t i = 0; i < input_tokens.size(); ++i) {
+            if ((input_tokens[i] == 258880 || input_tokens[i] == 255999) && v_idx < visual_embeddings.size()) {
+                custom_emb_map[static_cast<int>(i)] = visual_embeddings[v_idx++].data();
+            }
+        }
+        tag() << "Injected " << v_idx << " visual token embeddings into prompt sequence\n" << std::flush;
+    }
+
     std::cout << "[input_tokens]";
     for (int t : input_tokens) std::cout << " " << t;
     std::cout << "\n" << std::flush;
@@ -226,7 +242,7 @@ GenerationStats Generator::generate(const std::string& prompt, const GenerationP
     // the whole conversation history. We never need the last prompt token in the
     // reused prefix (the decode loop processes it), so cap at num_prompt-1.
     int reuse = 0;
-    {
+    if (visual_embeddings.empty()) {
         int maxP = std::min(static_cast<int>(cached_tokens_.size()), num_prompt_tokens - 1);
         while (reuse < maxP && input_tokens[reuse] == cached_tokens_[reuse]) ++reuse;
     }
@@ -243,7 +259,8 @@ GenerationStats Generator::generate(const std::string& prompt, const GenerationP
     // want_logits is set, also apply the final norm and LM head into `logits_`.
     auto forward = [&](int token, int pos, bool want_logits) {
         float* inpL_ptr = inpL_f_.data();
-        const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
+        auto it = custom_emb_map.find(pos);
+        const float* emb_ptr = (it != custom_emb_map.end()) ? it->second : &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
         for (int i = 0; i < hidden_size; ++i) {
             float val = emb_ptr[i] * embed_scale;
             cur_x[i] = bf16(val);
@@ -306,8 +323,10 @@ GenerationStats Generator::generate(const std::string& prompt, const GenerationP
             int nrows = std::min(PB, prefill_count - start);
             std::fill(xb.begin(), xb.end(), bf16(0.0f));
             for (int b = 0; b < nrows; ++b) {
-                int token = input_tokens[start + b];
-                const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
+                int pos = start + b;
+                int token = input_tokens[pos];
+                auto it = custom_emb_map.find(pos);
+                const float* emb_ptr = (it != custom_emb_map.end()) ? it->second : &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
                 for (int i = 0; i < hidden_size; ++i) {
                     float val = emb_ptr[i] * embed_scale;
                     xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);

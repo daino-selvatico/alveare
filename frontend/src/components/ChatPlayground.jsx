@@ -691,10 +691,34 @@ export default function ChatPlayground({
     }
     for (const msg of updatedMessagesWithUser) {
       if (msg.role && msg.content !== undefined) {
-        chatMessagesPayload.push({
-          role: msg.role,
-          content: msg.content
-        });
+        if (msg.attachments && msg.attachments.length > 0 && msg.role === 'user') {
+          const parts = [];
+          if (msg.displayText) {
+            parts.push({ type: 'text', text: msg.displayText });
+          }
+          for (const att of msg.attachments) {
+            if (att.category === 'image' && att.url) {
+              parts.push({
+                type: 'image_url',
+                image_url: { url: att.url }
+              });
+            } else if (att.textData) {
+              parts.push({
+                type: 'text',
+                text: `\n\n--- [Allegato: ${att.name}] ---\n${att.textData}\n--- [Fine ${att.name}] ---`
+              });
+            }
+          }
+          chatMessagesPayload.push({
+            role: msg.role,
+            content: parts.length > 0 ? parts : msg.content
+          });
+        } else {
+          chatMessagesPayload.push({
+            role: msg.role,
+            content: msg.content
+          });
+        }
       }
     }
 

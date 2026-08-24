@@ -13,6 +13,7 @@
 #include "alveare/model.h"
 #include "alveare/tokenizer.h"
 #include "alveare/generator.h"
+#include "alveare/vision_embedder.h"
 #include "alveare/server.h"
 
 using namespace alveare;
@@ -319,7 +320,13 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        ApiServer server(generator);
+        VisionEmbedder vision_embedder;
+        std::string vision_dir = model_dir + "/vision";
+        if (vision_embedder.load(vision_dir)) {
+            std::cout << "[alveare_runtime] VisionEmbedder active for multimodal input\n" << std::flush;
+        }
+
+        ApiServer server(generator, vision_embedder.is_loaded() ? &vision_embedder : nullptr);
         server.start(port);
         
     } catch (const std::exception& e) {

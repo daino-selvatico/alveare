@@ -31,8 +31,14 @@ public:
 
     // Generates text and calls the callback for each new token generated.
     // Callback should return true to continue, false to stop.
+    // Accepts optional visual_embeddings to replace <|image|> placeholder tokens.
     // Returns generation statistics.
-    GenerationStats generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token);
+    GenerationStats generate(
+        const std::string& prompt,
+        const GenerationParams& params,
+        std::function<bool(const std::string&)> on_token,
+        const std::vector<std::vector<float>>& visual_embeddings = {}
+    );
 
     // Resets both the underlying model KV cache and the generator's cached_tokens_ tracker.
     void reset_cache();

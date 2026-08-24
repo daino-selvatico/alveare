@@ -1,4 +1,5 @@
 #include "alveare/server.h"
+#include "alveare/vision_embedder.h"
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 #include <iostream>
@@ -26,7 +27,8 @@ static void handle_server_signal(int sig) {
     }).detach();
 }
 
-ApiServer::ApiServer(Generator& generator) : generator_(generator) {}
+ApiServer::ApiServer(Generator& generator, VisionEmbedder* vision_embedder)
+    : generator_(generator), vision_embedder_(vision_embedder) {}
 
 void ApiServer::stop() {
     if (svr_ptr_) {
@@ -111,7 +113,9 @@ void ApiServer::start(int port) {
             bool is_gemma4 = generator_.config().is_gemma4();
             bool is_gemma3 = (model_type == "gemma3");
 
-            auto get_msg_content = [](const nlohmann::json& msg) -> std::string {
+            std::vector<std::vector<float>> all_visual_embeddings;
+
+            auto get_msg_content = [&](const nlohmann::json& msg) -> std::string {
                 if (!msg.contains("content")) return "";
                 if (msg["content"].is_string()) return msg["content"].get<std::string>();
                 if (msg["content"].is_array()) {
@@ -122,8 +126,27 @@ void ApiServer::start(int port) {
                                 if (!res.empty()) res += "\n";
                                 res += part["text"].get<std::string>();
                             } else if (part.value("type", "") == "image_url") {
-                                if (!res.empty()) res += "\n";
-                                res += "[Immagine Allegata]";
+                                std::string url = "";
+                                if (part.contains("image_url")) {
+                                    if (part["image_url"].is_string()) url = part["image_url"].get<std::string>();
+                                    else if (part["image_url"].is_object() && part["image_url"].contains("url")) url = part["image_url"]["url"].get<std::string>();
+                                }
+                                if (vision_embedder_ && vision_embedder_->is_loaded() && !url.empty()) {
+                                    auto emb = vision_embedder_->encode_image_base64(url);
+                                    if (!emb.empty()) {
+                                        std::string img_tag = "";
+                                        for (size_t i = 0; i < emb.size(); ++i) img_tag += "<|image|>";
+                                        if (!res.empty()) res += "\n";
+                                        res += img_tag;
+                                        all_visual_embeddings.insert(all_visual_embeddings.end(), emb.begin(), emb.end());
+                                    } else {
+                                        if (!res.empty()) res += "\n";
+                                        res += "[Immagine Allegata]";
+                                    }
+                                } else {
+                                    if (!res.empty()) res += "\n";
+                                    res += "[Immagine Allegata]";
+                                }
                             } else if (part.value("type", "") == "input_audio") {
                                 if (!res.empty()) res += "\n";
                                 res += "[Audio Allegato]";
@@ -206,7 +229,7 @@ void ApiServer::start(int port) {
 
             if (stream) {
                 res.set_chunked_content_provider("text/event-stream",
-                    [this, prompt, params, model_name, is_gemma4, enable_thinking](size_t offset, httplib::DataSink& sink) {
+                    [this, prompt, params, model_name, is_gemma4, enable_thinking, all_visual_embeddings](size_t offset, httplib::DataSink& sink) {
                         auto req_id = "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                         int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                         std::string prefix = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"";
@@ -229,7 +252,7 @@ void ApiServer::start(int port) {
                             sse_buf += suffix;
                             sink.write(sse_buf.c_str(), sse_buf.size());
                             return true; // continue
-                        });
+                        }, all_visual_embeddings);
 
                         std::string stop_chunk = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
                         sink.write(stop_chunk.c_str(), stop_chunk.size());
@@ -247,7 +270,7 @@ void ApiServer::start(int port) {
                 GenerationStats stats = generator_.generate(prompt, params, [&](const std::string& token) {
                     full_response += token;
                     return true;
-                });
+                }, all_visual_embeddings);
                 
                 json resp = {
                     {"id", "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count())},
