@@ -461,7 +461,48 @@ void Model::run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, int num_
 
     const bf16* cos_ptr = cos_sin;
     const bf16* sin_ptr = cos_sin + dim / 2;
+    int half_dim = dim / 2;
 
+#ifdef __AVX2__
+    for (int h = 0; h < num_heads; ++h) {
+        const bf16* x_h1 = x + h * dim;
+        const bf16* x_h2 = x + h * dim + half_dim;
+        bf16* out_h1 = out + h * dim;
+        bf16* out_h2 = out + h * dim + half_dim;
+
+        int i = 0;
+        for (; i + 7 < half_dim; i += 8) {
+            __m128i in_x1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(x_h1 + i));
+            __m128i in_x2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(x_h2 + i));
+            __m128i in_c  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cos_ptr + i));
+            __m128i in_s  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(sin_ptr + i));
+
+            __m256 x1 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(in_x1), 16));
+            __m256 x2 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(in_x2), 16));
+            __m256 c  = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(in_c), 16));
+            __m256 s  = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(in_s), 16));
+
+            __m256 o1 = _mm256_fmsub_ps(x1, c, _mm256_mul_ps(x2, s));
+            __m256 o2 = _mm256_fmadd_ps(x2, c, _mm256_mul_ps(x1, s));
+
+            __m256i sh1 = _mm256_srli_epi32(_mm256_castps_si256(o1), 16);
+            __m128i p1 = _mm_packus_epi32(_mm256_castsi256_si128(sh1), _mm256_extractf128_si256(sh1, 1));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out_h1 + i), p1);
+
+            __m256i sh2 = _mm256_srli_epi32(_mm256_castps_si256(o2), 16);
+            __m128i p2 = _mm_packus_epi32(_mm256_castsi256_si128(sh2), _mm256_extractf128_si256(sh2, 1));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out_h2 + i), p2);
+        }
+        for (; i < half_dim; ++i) {
+            float x1_s = x_h1[i].to_float();
+            float x2_s = x_h2[i].to_float();
+            float c_s  = cos_ptr[i].to_float();
+            float s_s  = sin_ptr[i].to_float();
+            out_h1[i] = bf16(x1_s * c_s - x2_s * s_s);
+            out_h2[i] = bf16(x2_s * c_s + x1_s * s_s);
+        }
+    }
+#else
     for (int h = 0; h < num_heads; ++h) {
         for (int i = 0; i < dim / 2; ++i) {
             float x1 = x[h * dim + i].to_float();
@@ -473,6 +514,7 @@ void Model::run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, int num_
             out[h * dim + dim / 2 + i] = bf16(x2 * c + x1 * s);
         }
     }
+#endif
 }
 
 void Model::run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out) {
