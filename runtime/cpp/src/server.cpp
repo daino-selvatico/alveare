@@ -34,6 +34,29 @@ void ApiServer::stop() {
     }
 }
 
+static inline void append_escaped_json(std::string& out, const std::string& s) {
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+}
+
 void ApiServer::start(int port) {
     httplib::Server svr;
     svr_ptr_ = &svr;
@@ -42,6 +65,30 @@ void ApiServer::start(int port) {
     std::signal(SIGINT, handle_server_signal);
     std::signal(SIGTERM, handle_server_signal);
     std::signal(SIGHUP, handle_server_signal);
+
+    const std::string& model_type = generator_.config().model_type;
+    const std::string model_name = model_type.empty() ? "alveare-model" : model_type;
+
+    svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("{\"status\":\"ok\"}", "application/json");
+    });
+
+    svr.Get("/v1/health", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("{\"status\":\"ok\"}", "application/json");
+    });
+
+    svr.Get("/v1/models", [&, model_name](const httplib::Request&, httplib::Response& res) {
+        json models_resp = {
+            {"object", "list"},
+            {"data", {{
+                {"id", model_name},
+                {"object", "model"},
+                {"created", 1700000000},
+                {"owned_by", "alveare"}
+            }}}
+        };
+        res.set_content(models_resp.dump(), "application/json");
+    });
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request& req, httplib::Response& res) {
         try {
@@ -61,16 +108,11 @@ void ApiServer::start(int port) {
             // Build the prompt. For Gemma we apply the model's chat template with
             // its special turn/channel tokens (the tokenizer matches them atomically);
             // other models just concatenate message contents.
-            const std::string& model_type = generator_.config().model_type;
             bool is_gemma4 = generator_.config().is_gemma4();
             bool is_gemma3 = (model_type == "gemma3");
 
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
                 if (is_gemma3) {
-                    // Gemma-3 uses the CLASSIC turn format (no channels, no thinking):
-                    //   <bos><start_of_turn>role\n{content}<end_of_turn>\n<start_of_turn>model\n
-                    // (Gemma-4's <|turn>/<|channel> tokens don't exist in Gemma-3, so
-                    // applying that template split them into garbage -> word-salad output.)
                     prompt = "<bos>";
                     for (const auto& msg : j_req["messages"]) {
                         if (!msg.contains("content") || !msg["content"].is_string()) continue;
@@ -82,19 +124,11 @@ void ApiServer::start(int port) {
                     prompt += "<start_of_turn>model\n";
                 } else if (is_gemma4) {
                     prompt = "<bos>";
-                    // Per the Gemma-4 chat template: an EMPTY "<|channel>thought\n<channel|>"
-                    // block after "<|turn>model\n" tells the model the thought is empty =>
-                    // SKIP thinking. It is appended only when thinking is DISABLED. When
-                    // thinking is ENABLED the generation prompt ends at "<|turn>model\n" and
-                    // the model opens its own thought channel. (This was inverted before, so
-                    // enabling the toggle actually suppressed thinking.)
                     std::string think_suppress = enable_thinking ? "" : "<|channel>thought\n<channel|>";
                     for (const auto& msg : j_req["messages"]) {
                         if (!msg.contains("content") || !msg["content"].is_string()) continue;
                         std::string role = msg.value("role", "user");
                         if (role == "assistant") role = "model";
-                        // Completed turns are replayed as their content only; the ephemeral
-                        // thought channel is not re-fed (the template strips it too).
                         prompt += "<|turn>" + role + "\n";
                         prompt += msg["content"].get<std::string>() + "<turn|>\n";
                     }
@@ -114,7 +148,6 @@ void ApiServer::start(int port) {
             if (j_req.contains("max_tokens") && j_req["max_tokens"].is_number_integer()) {
                 params.max_tokens = j_req["max_tokens"].get<int>();
             }
-            // Sampling controls (OpenAI-style). temperature<=0 keeps greedy decoding.
             if (j_req.contains("temperature") && j_req["temperature"].is_number()) {
                 params.temperature = j_req["temperature"].get<float>();
             }
@@ -127,31 +160,41 @@ void ApiServer::start(int port) {
             if (j_req.contains("seed") && j_req["seed"].is_number_integer()) {
                 params.seed = static_cast<unsigned>(j_req["seed"].get<long>());
             }
+            if (j_req.contains("stop")) {
+                if (j_req["stop"].is_string()) {
+                    params.stop.push_back(j_req["stop"].get<std::string>());
+                } else if (j_req["stop"].is_array()) {
+                    for (const auto& s : j_req["stop"]) {
+                        if (s.is_string()) params.stop.push_back(s.get<std::string>());
+                    }
+                }
+            }
 
             std::string full_response = "";
 
             if (stream) {
                 res.set_chunked_content_provider("text/event-stream",
-                    [this, prompt, params](size_t offset, httplib::DataSink& sink) {
+                    [this, prompt, params, model_name](size_t offset, httplib::DataSink& sink) {
+                        auto req_id = "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                        int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                        std::string prefix = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"";
+                        std::string suffix = "\"},\"finish_reason\":null}]}\n\n";
+
+                        std::string sse_buf;
+                        sse_buf.reserve(512);
+
                         generator_.generate(prompt, params, [&](const std::string& token) {
-                            json delta = {{"content", token}};
-                            json chunk = {
-                                {"id", "chatcmpl-123"},
-                                {"object", "chat.completion.chunk"},
-                                {"created", std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
-                                {"model", "alveare-model"},
-                                {"choices", {{
-                                    {"index", 0},
-                                    {"delta", delta},
-                                    {"finish_reason", nullptr}
-                                }}}
-                            };
-                            std::string sse = "data: " + chunk.dump() + "\n\n";
-                            sink.write(sse.c_str(), sse.size());
+                            sse_buf.clear();
+                            sse_buf += prefix;
+                            append_escaped_json(sse_buf, token);
+                            sse_buf += suffix;
+                            sink.write(sse_buf.c_str(), sse_buf.size());
                             return true; // continue
                         });
-                        
-                        // Done
+
+                        std::string stop_chunk = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+                        sink.write(stop_chunk.c_str(), stop_chunk.size());
+
                         std::string done_msg = "data: [DONE]\n\n";
                         sink.write(done_msg.c_str(), done_msg.size());
                         sink.done();
@@ -159,16 +202,16 @@ void ApiServer::start(int port) {
                     }
                 );
             } else {
-                generator_.generate(prompt, params, [&](const std::string& token) {
+                GenerationStats stats = generator_.generate(prompt, params, [&](const std::string& token) {
                     full_response += token;
                     return true;
                 });
                 
                 json resp = {
-                    {"id", "chatcmpl-123"},
+                    {"id", "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count())},
                     {"object", "chat.completion"},
                     {"created", std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
-                    {"model", "alveare-model"},
+                    {"model", model_name},
                     {"choices", {{
                         {"index", 0},
                         {"message", {
@@ -178,9 +221,9 @@ void ApiServer::start(int port) {
                         {"finish_reason", "stop"}
                     }}},
                     {"usage", {
-                        {"prompt_tokens", 0},
-                        {"completion_tokens", 0},
-                        {"total_tokens", 0}
+                        {"prompt_tokens", stats.prompt_tokens},
+                        {"completion_tokens", stats.completion_tokens},
+                        {"total_tokens", stats.prompt_tokens + stats.completion_tokens}
                     }}
                 };
 
@@ -200,3 +243,4 @@ void ApiServer::start(int port) {
 }
 
 } // namespace alveare
+

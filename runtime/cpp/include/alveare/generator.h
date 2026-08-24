@@ -15,6 +15,14 @@ struct GenerationParams {
     float top_p = 1.0f;       // nucleus sampling; 1.0 = disabled
     int top_k = 0;            // keep only the k highest-logit tokens; 0 = disabled
     unsigned seed = 0;        // RNG seed; 0 = nondeterministic (random_device)
+    std::vector<std::string> stop; // custom stop sequences
+};
+
+struct GenerationStats {
+    int prompt_tokens = 0;
+    int completion_tokens = 0;
+    double prefill_time_ms = 0.0;
+    double decode_time_ms = 0.0;
 };
 
 class Generator {
@@ -23,7 +31,8 @@ public:
 
     // Generates text and calls the callback for each new token generated.
     // Callback should return true to continue, false to stop.
-    void generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token);
+    // Returns generation statistics.
+    GenerationStats generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token);
 
     // Resets both the underlying model KV cache and the generator's cached_tokens_ tracker.
     void reset_cache();

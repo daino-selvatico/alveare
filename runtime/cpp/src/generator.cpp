@@ -192,7 +192,8 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
     }
 }
 
-void Generator::generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token) {
+GenerationStats Generator::generate(const std::string& prompt, const GenerationParams& params, std::function<bool(const std::string&)> on_token) {
+    GenerationStats stats;
     std::lock_guard<std::mutex> gen_lock(gen_mutex_);
     // Reseed once per request for reproducible sampling with a fixed seed; when
     // seed==0 leave rng_ advancing so repeated requests stay nondeterministic.
@@ -209,9 +210,10 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
     std::vector<int> input_tokens = tokenizer_.encode(prompt);
     int num_prompt_tokens = static_cast<int>(input_tokens.size());
+    stats.prompt_tokens = num_prompt_tokens;
     if (num_prompt_tokens == 0) {
         tag() << "empty prompt, nothing to generate\n" << std::flush;
-        return;
+        return stats;
     }
 
     std::cout << "[input_tokens]";
@@ -319,6 +321,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
         }
     }
     double prefill_s = std::chrono::duration<double>(clock::now() - t0_prefill).count();
+    stats.prefill_time_ms = prefill_s * 1000.0;
     tag() << "Prefill completed in " << std::fixed << std::setprecision(2) << prefill_s << "s\n" << std::flush;
 
     // 2. Decode: the last prompt token produces the first generated token.
@@ -334,6 +337,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     // text); the per-step log prints draft/accepted so the trade-off is visible.
     bool use_spec = cfg.is_gemma4() && std::getenv("ALVEARE_SPECULATIVE");
     if (use_spec) {
+        auto t0_decode = clock::now();
         const int K_draft = 7;                 // max draft length (fills the B=16 pad)
         const int max_seq_len = model_.get_config().max_position_embeddings;
         std::vector<int> seq = input_tokens;  // committed sequence (drafter context)
@@ -341,7 +345,11 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
         auto emit = [&](int t) -> bool {  // returns false to stop
             if (tokenizer_.is_stop_token(t)) return false;
-            if (!on_token(tokenizer_.decode(t))) return false;
+            std::string text = tokenizer_.decode(t);
+            for (const auto& s : params.stop) {
+                if (!s.empty() && text.find(s) != std::string::npos) return false;
+            }
+            if (!on_token(text)) return false;
             seq.push_back(t);
             ++generated;
             return true;
@@ -443,9 +451,12 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
         // KV is in the cache for positions [0, pos); current_token (seq.back()) has
         // not been forwarded yet. Record only the cached tokens for cross-request reuse.
         cached_tokens_.assign(seq.begin(), seq.begin() + std::min<size_t>(pos, seq.size()));
-        return;
+        stats.completion_tokens = generated;
+        stats.decode_time_ms = std::chrono::duration<double, std::milli>(clock::now() - t0_decode).count();
+        return stats;
     }
 
+    auto t0_decode = clock::now();
     for (int i = 0; i < params.max_tokens; ++i) {
         double npu_s0 = model_.registry().npu_seconds();
         double ffn_s0 = model_.registry().ffn_seconds();
@@ -470,11 +481,23 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
               << " (id=" << next_token << ")\n" << std::flush;
 
         if (tokenizer_.is_stop_token(next_token)) break;
-        if (!on_token(tokenizer_.decode(next_token))) break;
+        std::string token_str = tokenizer_.decode(next_token);
+        bool user_stop = false;
+        for (const auto& s : params.stop) {
+            if (!s.empty() && token_str.find(s) != std::string::npos) {
+                user_stop = true; break;
+            }
+        }
+        if (user_stop) break;
+        if (!on_token(token_str)) break;
+        stats.completion_tokens++;
 
         current_token = next_token;
         ++pos;
     }
+    stats.decode_time_ms = std::chrono::duration<double, std::milli>(clock::now() - t0_decode).count();
+    return stats;
 }
 
 } // namespace alveare
+
