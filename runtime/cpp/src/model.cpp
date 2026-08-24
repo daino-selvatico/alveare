@@ -358,13 +358,13 @@ void Model::precompute_rope() {
         // Gemma-4 applies FULL RoPE to every head dim (n_rot == head_dim): llama.cpp
         // sets n_rot_full = rope.dimension_count = 512 and ASSERTS it equals the head
         // dim (llama-model.cpp ~L816-822). FULL RoPE is required for all Gemma-4 models.
-        const bool full_rope = true;
         auto precompute = [&](float base, int dim, std::vector<bf16>& table) {
             for (int pos = 0; pos < max_seq_len; ++pos) {
                 for (int i = 0; i < dim / 2; ++i) {
                     float inv_freq = 0.0f;
-                    if (!full_rope && dim == config_.head_dim_global) {
-                        int rope_angles = static_cast<int>(0.25f * dim / 2.0f);
+                    if (dim == config_.head_dim_global && config_.model_type != "gemma4-e4b") {
+                        // Gemma-4 12B global layers rotate only 25% of dimensions (64 angles = 128 elements)
+                        int rope_angles = 64;
                         if (i < rope_angles) inv_freq = 1.0f / std::pow(base, float(i * 2) / dim);
                     } else {
                         inv_freq = 1.0f / std::pow(base, float(i * 2) / dim);
@@ -1240,11 +1240,10 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
         g_bprof.ffn_cmp += ms_since(t_bgu);
 
         std::vector<bf16> geglu(size_t(B) * I, bf16(0.0f));
-        const float kGeluC = std::sqrt(2.0f / static_cast<float>(M_PI));
         for (int b = 0; b < nrows; ++b) {
             for (int i = 0; i < I_real; ++i) {
                 float g = gate[size_t(b) * I + i].to_float();
-                float gelu = 0.5f * g * (1.0f + std::tanh(kGeluC * (g + 0.044715f * g * g * g)));
+                float gelu = 0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f));
                 geglu[size_t(b) * I + i] = bf16(gelu * up[size_t(b) * I + i].to_float());
             }
         }

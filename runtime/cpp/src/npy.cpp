@@ -68,6 +68,42 @@ void free_npy(NpyArray& arr) {
     }
 }
 
+#if defined(__F16C__) || defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
+static inline float fp16_to_fp32_fallback(uint16_t h) {
+    uint32_t sign = (h & 0x8000) << 16;
+    uint32_t exp = (h & 0x7C00) >> 10;
+    uint32_t mant = (h & 0x03FF);
+
+    if (exp == 0) {
+        if (mant == 0) {
+            float f = 0.0f;
+            uint32_t u = sign;
+            std::memcpy(&f, &u, sizeof(f));
+            return f;
+        }
+        while ((mant & 0x0400) == 0) {
+            mant <<= 1;
+            exp--;
+        }
+        exp++;
+        mant &= 0x03FF;
+    } else if (exp == 31) {
+        uint32_t u = sign | 0x7F800000 | (mant << 13);
+        float f;
+        std::memcpy(&f, &u, sizeof(f));
+        return f;
+    }
+
+    exp = exp + (127 - 15);
+    uint32_t u = sign | (exp << 23) | (mant << 13);
+    float f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
 std::vector<float> load_float_npy(const std::string& path) {
     NpyArray arr;
     try {
@@ -78,14 +114,18 @@ std::vector<float> load_float_npy(const std::string& path) {
     if (!arr.data) {
         return {};
     }
-    size_t num_elements = 1;
-    for (size_t d : arr.shape) num_elements *= d;
     
     std::vector<float> vec;
     bool is_f16 = (arr.dtype == "<f2" || arr.dtype == "float16" || arr.dtype == "|f2");
     bool is_bf16 = (arr.dtype == "<bfloat16" || arr.dtype == "bfloat16");
-    bool two_byte = (num_elements > 0 && arr.data_size / num_elements == 2);
-    if (is_f16 || is_bf16 || two_byte) {
+    if (is_f16) {
+        size_t expected_elements = arr.data_size / 2;
+        vec.resize(expected_elements);
+        const uint16_t* ptr = reinterpret_cast<const uint16_t*>(arr.data);
+        for (size_t i = 0; i < expected_elements; ++i) {
+            vec[i] = fp16_to_fp32_fallback(ptr[i]);
+        }
+    } else if (is_bf16) {
         size_t expected_elements = arr.data_size / 2;
         vec.resize(expected_elements);
         const uint16_t* ptr = reinterpret_cast<const uint16_t*>(arr.data);

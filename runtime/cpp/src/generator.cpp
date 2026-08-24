@@ -225,7 +225,7 @@ GenerationStats Generator::generate(
     if (!visual_embeddings.empty()) {
         size_t v_idx = 0;
         for (size_t i = 0; i < input_tokens.size(); ++i) {
-            if ((input_tokens[i] == 258880 || input_tokens[i] == 255999) && v_idx < visual_embeddings.size()) {
+            if (input_tokens[i] == 258880 && v_idx < visual_embeddings.size()) {
                 custom_emb_map[static_cast<int>(i)] = visual_embeddings[v_idx++].data();
             }
         }
@@ -246,8 +246,9 @@ GenerationStats Generator::generate(
         int maxP = std::min(static_cast<int>(cached_tokens_.size()), num_prompt_tokens - 1);
         while (reuse < maxP && input_tokens[reuse] == cached_tokens_[reuse]) ++reuse;
     }
-    // Rebuild the cached sequence for this request; the decode loop appends the
-    // fed-back generated tokens as their KV is written.
+    if (reuse == 0) {
+        model_.reset_caches();
+    }
     cached_tokens_ = input_tokens;
 
     bf16* cur_x = x_.data();
@@ -263,7 +264,7 @@ GenerationStats Generator::generate(
         if (it != custom_emb_map.end()) {
             const float* emb_ptr = it->second;
             for (int i = 0; i < hidden_size; ++i) {
-                float val = emb_ptr[i]; // Visual embeddings are already in unscaled activation space
+                float val = emb_ptr[i];
                 cur_x[i] = bf16(val);
                 inpL_ptr[i] = val;
             }
@@ -317,8 +318,8 @@ GenerationStats Generator::generate(
     auto t0_prefill = clock::now();
     // Batched (B=16 GEMM) prefill uses the resident ONESHAPE GEMM tiles (zero weight streaming)
     // and achieves 4.35x faster prompt prefill (~60-96ms/tok vs ~350-420ms/tok).
-    // Enabled by default for all Gemma-4 models when prefill length >= 4 tokens.
-    bool use_batched = cfg.is_gemma4() && (prefill_count - reuse >= 4) && (std::getenv("ALVEARE_NO_BATCH_PREFILL") == nullptr);
+    // Enabled by default for all Gemma-4 models when prefill length >= 4 tokens and no custom embeddings.
+    bool use_batched = cfg.is_gemma4() && visual_embeddings.empty() && (prefill_count - reuse >= 4) && (std::getenv("ALVEARE_NO_BATCH_PREFILL") == nullptr);
     if (use_batched) {
         const int PB = 16;
         std::vector<bf16> xb(static_cast<size_t>(PB) * hidden_size, bf16(0.0f));
@@ -335,20 +336,12 @@ GenerationStats Generator::generate(
                 int pos = start + b;
                 int token = input_tokens[pos];
                 auto it = custom_emb_map.find(pos);
-                if (it != custom_emb_map.end()) {
-                    const float* emb_ptr = it->second;
-                    for (int i = 0; i < hidden_size; ++i) {
-                        float val = emb_ptr[i]; // Do not scale visual embeddings
-                        xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
-                        inpL_tmp[i] = val;
-                    }
-                } else {
-                    const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
-                    for (int i = 0; i < hidden_size; ++i) {
-                        float val = emb_ptr[i] * embed_scale;
-                        xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
-                        inpL_tmp[i] = val;
-                    }
+                float cur_scale = (it != custom_emb_map.end()) ? 1.0f : embed_scale;
+                const float* emb_ptr = (it != custom_emb_map.end()) ? it->second : &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
+                for (int i = 0; i < hidden_size; ++i) {
+                    float val = emb_ptr[i] * cur_scale;
+                    xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
+                    inpL_tmp[i] = val;
                 }
                 static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
                 if (cfg.per_layer_input > 0 && !no_ple) {

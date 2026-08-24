@@ -134,8 +134,9 @@ void ApiServer::start(int port) {
                                 if (vision_embedder_ && vision_embedder_->is_loaded() && !url.empty()) {
                                     auto emb = vision_embedder_->encode_image_base64(url);
                                     if (!emb.empty()) {
-                                        std::string img_tag = "";
+                                        std::string img_tag = "<|image>";
                                         for (size_t i = 0; i < emb.size(); ++i) img_tag += "<|image|>";
+                                        img_tag += "<image|>";
                                         if (!res.empty()) res += "\n";
                                         res += img_tag;
                                         all_visual_embeddings.insert(all_visual_embeddings.end(), emb.begin(), emb.end());

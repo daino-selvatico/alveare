@@ -145,18 +145,18 @@ std::vector<std::vector<float>> VisionEmbedder::encode_image_base64(const std::s
 
 #include <dlfcn.h>
 
-static uint8_t* decode_webp_rgb(const uint8_t* data, size_t len, int* w, int* h) {
+static uint8_t* decode_webp_rgba(const uint8_t* data, size_t len, int* w, int* h) {
     static void* handle = nullptr;
-    static uint8_t* (*p_WebPDecodeRGB)(const uint8_t*, size_t, int*, int*) = nullptr;
+    static uint8_t* (*p_WebPDecodeRGBA)(const uint8_t*, size_t, int*, int*) = nullptr;
     if (!handle) {
         handle = dlopen("libwebp.so.7", RTLD_LAZY);
         if (!handle) handle = dlopen("libwebp.so", RTLD_LAZY);
         if (handle) {
-            p_WebPDecodeRGB = (uint8_t* (*)(const uint8_t*, size_t, int*, int*))dlsym(handle, "WebPDecodeRGB");
+            p_WebPDecodeRGBA = (uint8_t* (*)(const uint8_t*, size_t, int*, int*))dlsym(handle, "WebPDecodeRGBA");
         }
     }
-    if (p_WebPDecodeRGB) {
-        return p_WebPDecodeRGB(data, len, w, h);
+    if (p_WebPDecodeRGBA) {
+        return p_WebPDecodeRGBA(data, len, w, h);
     }
     return nullptr;
 }
@@ -166,11 +166,11 @@ std::vector<std::vector<float>> VisionEmbedder::encode_image_bytes(const uint8_t
 
     int width = 0, height = 0, channels = 0;
     bool is_webp = false;
-    uint8_t* rgb_data = stbi_load_from_memory(image_bytes, static_cast<int>(len), &width, &height, &channels, 3);
-    if (!rgb_data) {
+    uint8_t* rgba_data = stbi_load_from_memory(image_bytes, static_cast<int>(len), &width, &height, &channels, 4);
+    if (!rgba_data) {
         // Fallback to WebP decoder
-        rgb_data = decode_webp_rgb(image_bytes, len, &width, &height);
-        if (rgb_data) {
+        rgba_data = decode_webp_rgba(image_bytes, len, &width, &height);
+        if (rgba_data) {
             is_webp = true;
         } else {
             std::cerr << "[VisionEmbedder] Failed to decode image format (STB and WebP)" << std::endl;
@@ -178,13 +178,22 @@ std::vector<std::vector<float>> VisionEmbedder::encode_image_bytes(const uint8_t
         }
     }
 
-    auto result = encode_rgb(rgb_data, width, height);
-    if (is_webp) {
-        free(rgb_data);
-    } else {
-        stbi_image_free(rgb_data);
+    // Composite RGBA onto white background into RGB (3 channels)
+    std::vector<uint8_t> rgb_data(width * height * 3);
+    for (int i = 0; i < width * height; ++i) {
+        float a = rgba_data[i * 4 + 3] / 255.0f;
+        rgb_data[i * 3 + 0] = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, std::round(rgba_data[i * 4 + 0] * a + 255.0f * (1.0f - a)))));
+        rgb_data[i * 3 + 1] = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, std::round(rgba_data[i * 4 + 1] * a + 255.0f * (1.0f - a)))));
+        rgb_data[i * 3 + 2] = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, std::round(rgba_data[i * 4 + 2] * a + 255.0f * (1.0f - a)))));
     }
-    return result;
+
+    if (is_webp) {
+        free(rgba_data);
+    } else {
+        stbi_image_free(rgba_data);
+    }
+
+    return encode_rgb(rgb_data.data(), width, height);
 }
 
 std::vector<std::vector<float>> VisionEmbedder::encode_rgb(const uint8_t* rgb_data, int width, int height) {
@@ -260,9 +269,18 @@ std::vector<std::vector<float>> VisionEmbedder::encode_rgb(const uint8_t* rgb_da
             layernorm(emb_buf.data(), hidden_size_, patch_norm3_w_.data(), patch_norm3_b_.data());
 
             // Multimodal projection: mm_proj_w (3840 x 3840) * emb_buf (3840)
+            float sum_sq = 0.0f;
             for (int h = 0; h < hidden_size_; ++h) {
                 const float* w_row = &mm_proj_w_[h * hidden_size_];
-                output_tokens[patch_idx][h] = avx2_dot_product(w_row, emb_buf.data(), hidden_size_);
+                float val = avx2_dot_product(w_row, emb_buf.data(), hidden_size_);
+                output_tokens[patch_idx][h] = val;
+                sum_sq += val * val;
+            }
+
+            // Embedding post projection norm (RMSNorm)
+            float inv_rms = 1.0f / std::sqrt(sum_sq / hidden_size_ + 1e-6f);
+            for (int h = 0; h < hidden_size_; ++h) {
+                output_tokens[patch_idx][h] *= inv_rms;
             }
 
             patch_idx++;
