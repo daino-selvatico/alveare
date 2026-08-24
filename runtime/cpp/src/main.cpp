@@ -256,22 +256,36 @@ int main(int argc, char** argv) {
                 std::cout << "KERNEL gemv " << label << " " << N << " " << K << " "
                           << ms << " " << gmacs << "\n" << std::flush;
             };
-            // Distinct decode gemv shapes (sliding=layer0, global=layer5). Q/K/V
-            // are fused into one w_qkv gemv (8192 sliding / 10240 global).
-            bench_gemv("qkv_sliding", mw.layers[0].n_qkv, 4096, mw.layers[0].w_qkv);
-            bench_gemv("o_sliding", mw.layers[0].o_gemv_n, 4096, mw.layers[0].w_o);
-            bench_gemv("qkv_global", mw.layers[5].n_qkv, 4096, mw.layers[5].w_qkv);
-            bench_gemv("o_global", 4096, 8192, mw.layers[5].w_o);
+            int K_padded = config.get_padded_hidden_size();
+            if (!mw.layers.empty()) {
+                const auto& l0 = mw.layers[0];
+                if (l0.os_n > 0 && !l0.os_qkv_tiles.empty()) {
+                    bench_gemv("qkv_tile", l0.os_n, l0.os_k, l0.os_qkv_tiles[0]);
+                } else if (l0.w_qkv != kInvalidWeight) {
+                    bench_gemv("qkv_fused", l0.n_qkv, K_padded, l0.w_qkv);
+                } else if (l0.w_q != kInvalidWeight) {
+                    bench_gemv("q", config.model_type == "gemma3" ? 2048 : (config.num_attention_heads * config.head_dim), K_padded, l0.w_q);
+                }
+                if (l0.os_n > 0 && !l0.os_o_tiles.empty()) {
+                    bench_gemv("o_tile", l0.os_n, l0.os_k, l0.os_o_tiles[0]);
+                } else if (l0.w_o != kInvalidWeight) {
+                    int o_n = l0.o_gemv_n > 0 ? l0.o_gemv_n : K_padded;
+                    int o_k = l0.o_gemv_k > 0 ? l0.o_gemv_k : (config.model_type == "gemma3" ? 2048 : (config.num_attention_heads * config.head_dim));
+                    bench_gemv("o", o_n, o_k, l0.w_o);
+                }
+            }
             if (!mw.lm_head_chunks.empty())
                 bench_gemv("lm_head", mw.lm_head_chunk_N, mw.lm_head_K, mw.lm_head_chunks[0]);
 
-            {   // fused FFN
-                int H = 4096, I = 16384;
-                std::vector<bf16> x(H, bf16(0.02f)), y(H);
-                reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, x.data(), y.data());
+            if (!mw.layers.empty() && mw.layers[0].w_ffn_fused != kInvalidWeight) {
+                int H = config.get_padded_hidden_size();
+                int I = config.get_padded_intermediate_size();
+                std::string act = (config.model_type == "gemma3" || config.is_gemma4()) ? "gelu" : "silu";
+                std::vector<bf16> xh(H, bf16(0.02f)), yh(H);
+                reg.run_ffn_fused(H, I, act, mw.layers[0].w_ffn_fused, xh.data(), yh.data());
                 auto t0 = clk::now();
                 for (int i = 0; i < IT; ++i)
-                    reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, x.data(), y.data());
+                    reg.run_ffn_fused(H, I, act, mw.layers[0].w_ffn_fused, xh.data(), yh.data());
                 double ms = avg_ms(t0, clk::now(), IT);
                 double gmacs = 3.0 * H * I / (ms / 1000.0) / 1e9;
                 std::cout << "KERNEL ffn_fused ffn " << H << " " << I << " " << ms
