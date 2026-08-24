@@ -124,7 +124,6 @@ void ApiServer::start(int port) {
                     prompt += "<start_of_turn>model\n";
                 } else if (is_gemma4) {
                     prompt = "<bos>";
-                    std::string think_suppress = enable_thinking ? "" : "<|channel>thought\n<channel|>";
                     for (const auto& msg : j_req["messages"]) {
                         if (!msg.contains("content") || !msg["content"].is_string()) continue;
                         std::string role = msg.value("role", "user");
@@ -132,7 +131,11 @@ void ApiServer::start(int port) {
                         prompt += "<|turn>" + role + "\n";
                         prompt += msg["content"].get<std::string>() + "<turn|>\n";
                     }
-                    prompt += "<|turn>model\n" + think_suppress;
+                    if (enable_thinking) {
+                        prompt += "<|turn>model\n<|channel>thought\n";
+                    } else {
+                        prompt += "<|turn>model\n<|channel>thought\n<channel|>";
+                    }
                 } else {
                     for (const auto& msg : j_req["messages"]) {
                         if (msg.contains("content") && msg["content"].is_string()) {
@@ -174,7 +177,7 @@ void ApiServer::start(int port) {
 
             if (stream) {
                 res.set_chunked_content_provider("text/event-stream",
-                    [this, prompt, params, model_name](size_t offset, httplib::DataSink& sink) {
+                    [this, prompt, params, model_name, is_gemma4, enable_thinking](size_t offset, httplib::DataSink& sink) {
                         auto req_id = "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                         int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                         std::string prefix = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"";
@@ -182,6 +185,13 @@ void ApiServer::start(int port) {
 
                         std::string sse_buf;
                         sse_buf.reserve(512);
+
+                        if (is_gemma4 && enable_thinking) {
+                            sse_buf = prefix;
+                            append_escaped_json(sse_buf, "<|channel>thought\n");
+                            sse_buf += suffix;
+                            sink.write(sse_buf.c_str(), sse_buf.size());
+                        }
 
                         generator_.generate(prompt, params, [&](const std::string& token) {
                             sse_buf.clear();
@@ -202,6 +212,9 @@ void ApiServer::start(int port) {
                     }
                 );
             } else {
+                if (is_gemma4 && enable_thinking) {
+                    full_response = "<|channel>thought\n";
+                }
                 GenerationStats stats = generator_.generate(prompt, params, [&](const std::string& token) {
                     full_response += token;
                     return true;
