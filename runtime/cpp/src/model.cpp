@@ -357,12 +357,8 @@ void Model::precompute_rope() {
         
         // Gemma-4 applies FULL RoPE to every head dim (n_rot == head_dim): llama.cpp
         // sets n_rot_full = rope.dimension_count = 512 and ASSERTS it equals the head
-        // dim (llama-model.cpp ~L816-822). The `0.25 * dim/2` partial-RoPE on global
-        // layers is a bug vs that reference. FULL RoPE is used for e4b; the 12B keeps
-        // the old partial path for now (released v1.5.0 behavior — same latent bug,
-        // needs a proper llama.cpp revalidation before changing). NOTE: fixing this did
-        // NOT resolve the e4b echo (partial vs full is negligible at small positions).
-        const bool full_rope = (config_.model_type == "gemma4-e4b");
+        // dim (llama-model.cpp ~L816-822). FULL RoPE is required for all Gemma-4 models.
+        const bool full_rope = true;
         auto precompute = [&](float base, int dim, std::vector<bf16>& table) {
             for (int pos = 0; pos < max_seq_len; ++pos) {
                 for (int i = 0; i < dim / 2; ++i) {
