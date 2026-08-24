@@ -222,17 +222,17 @@ std::vector<std::vector<float>> VisionEmbedder::encode_rgb(const uint8_t* rgb_da
     int patch_idx = 0;
     for (int py = 0; py < num_patches_y; ++py) {
         for (int px = 0; px < num_patches_x; ++px) {
-            // Extract 48x48x3 patch and normalize to [0, 1]
-            int buf_i = 0;
-            for (int dy = 0; dy < kPatchSize; ++dy) {
-                int img_y = py * kPatchSize + dy;
-                for (int dx = 0; dx < kPatchSize; ++dx) {
-                    int img_x = px * kPatchSize + dx;
-                    int img_idx = (img_y * target_w + img_x) * 3;
-                    patch_buf[buf_i + 0] = resized_rgb[img_idx + 0] / 255.0f;
-                    patch_buf[buf_i + 1] = resized_rgb[img_idx + 1] / 255.0f;
-                    patch_buf[buf_i + 2] = resized_rgb[img_idx + 2] / 255.0f;
-                    buf_i += 3;
+            // Extract planar 3x48x48 patch normalized to [-1.0, 1.0]
+            for (int c = 0; c < 3; ++c) {
+                int c_offset = c * (kPatchSize * kPatchSize);
+                for (int dy = 0; dy < kPatchSize; ++dy) {
+                    int img_y = py * kPatchSize + dy;
+                    for (int dx = 0; dx < kPatchSize; ++dx) {
+                        int img_x = px * kPatchSize + dx;
+                        int img_idx = (img_y * target_w + img_x) * 3 + c;
+                        float pixel_val = static_cast<float>(resized_rgb[img_idx]) / 255.0f;
+                        patch_buf[c_offset + dy * kPatchSize + dx] = pixel_val * 2.0f - 1.0f;
+                    }
                 }
             }
 
