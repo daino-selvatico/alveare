@@ -524,6 +524,46 @@ void Model::run_rope_cpu_gemma(const bf16* x, int pos, float base_freq, int num_
 #endif
 }
 
+#if defined(__AVX2__) && defined(__FMA__)
+static inline float bf16_dot_product_avx2(const bf16* a, const bf16* b, int n) {
+    __m256 sum = _mm256_setzero_ps();
+    int i = 0;
+    for (; i <= n - 8; i += 8) {
+        __m128i raw_a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
+        __m128i raw_b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
+        __m256i wide_a = _mm256_slli_epi32(_mm256_cvtepu16_epi32(raw_a), 16);
+        __m256i wide_b = _mm256_slli_epi32(_mm256_cvtepu16_epi32(raw_b), 16);
+        __m256 fa = _mm256_castsi256_ps(wide_a);
+        __m256 fb = _mm256_castsi256_ps(wide_b);
+        sum = _mm256_fmadd_ps(fa, fb, sum);
+    }
+    __m128 hsum = _mm_add_ps(_mm256_castps256_ps128(sum), _mm256_extractf128_ps(sum, 1));
+    hsum = _mm_add_ps(hsum, _mm_movehl_ps(hsum, hsum));
+    hsum = _mm_add_ss(hsum, _mm_shuffle_ps(hsum, hsum, 1));
+    float total = _mm_cvtss_f32(hsum);
+    for (; i < n; ++i) {
+        total += a[i].to_float() * b[i].to_float();
+    }
+    return total;
+}
+
+static inline void bf16_axpy_avx2(float alpha, const bf16* v, float* out, int n) {
+    __m256 valpha = _mm256_set1_ps(alpha);
+    int i = 0;
+    for (; i <= n - 8; i += 8) {
+        __m128i raw_v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(v + i));
+        __m256i wide_v = _mm256_slli_epi32(_mm256_cvtepu16_epi32(raw_v), 16);
+        __m256 fv = _mm256_castsi256_ps(wide_v);
+        __m256 fo = _mm256_loadu_ps(out + i);
+        fo = _mm256_fmadd_ps(valpha, fv, fo);
+        _mm256_storeu_ps(out + i, fo);
+    }
+    for (; i < n; ++i) {
+        out[i] += alpha * v[i].to_float();
+    }
+}
+#endif
+
 void Model::run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out) {
     int num_heads = config_.num_attention_heads;
     int num_kv_heads = config_.num_key_value_heads;
@@ -559,44 +599,51 @@ void Model::run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out
         target_layer = is_sliding ? (n_kv_start - 2) : (n_kv_start - 1);
     }
 
+    float scores_buf[2048];
+    float out_f[512];
+
     for (int h = 0; h < num_heads; ++h) {
         int kv_h = h / group_ratio;
-
-        std::vector<float> scores(W, 0.0f);
         float max_score = -1e9f;
-
         const bf16* q_ptr = &q_rope[h * dim];
 
         for (int w = 0; w < W; ++w) {
             int cache_pos = start_pos + w;
             int kv_idx = (kv_h * max_seq_len + cache_pos) * dim;
-            
-            float dot = 0.0f;
             const bf16* k_ptr = &k_caches_[target_layer][kv_idx];
+#if defined(__AVX2__) && defined(__FMA__)
+            float dot = bf16_dot_product_avx2(q_ptr, k_ptr, dim) * scale;
+#else
+            float dot = 0.0f;
             for (int i = 0; i < dim; ++i) {
                 dot += q_ptr[i].to_float() * k_ptr[i].to_float();
             }
             dot *= scale;
-            scores[w] = dot;
+#endif
+            scores_buf[w] = dot;
             if (dot > max_score) max_score = dot;
         }
 
         float sum_exp = 0.0f;
         for (int w = 0; w < W; ++w) {
-            scores[w] = std::exp(scores[w] - max_score);
-            sum_exp += scores[w];
+            scores_buf[w] = std::exp(scores_buf[w] - max_score);
+            sum_exp += scores_buf[w];
         }
 
-        std::vector<float> out_f(dim, 0.0f);
+        float inv_sum = 1.0f / sum_exp;
+        std::memset(out_f, 0, size_t(dim) * sizeof(float));
         for (int w = 0; w < W; ++w) {
-            float prob = scores[w] / sum_exp;
+            float prob = scores_buf[w] * inv_sum;
             int cache_pos = start_pos + w;
             int kv_idx = (kv_h * max_seq_len + cache_pos) * dim;
             const bf16* v_ptr = &v_caches_[target_layer][kv_idx];
-            
+#if defined(__AVX2__) && defined(__FMA__)
+            bf16_axpy_avx2(prob, v_ptr, out_f, dim);
+#else
             for (int i = 0; i < dim; ++i) {
                 out_f[i] += prob * v_ptr[i].to_float();
             }
+#endif
         }
 
         for (int i = 0; i < dim; ++i) {

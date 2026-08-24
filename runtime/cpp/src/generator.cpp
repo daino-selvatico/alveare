@@ -347,7 +347,7 @@ GenerationStats Generator::generate(const std::string& prompt, const GenerationP
     // default path. The batched forward pays a fixed B=16 GEMM cost, so it only
     // wins when a draft is found AND partly accepted (repetitive / structured
     // text); the per-step log prints draft/accepted so the trade-off is visible.
-    bool use_spec = cfg.is_gemma4() && std::getenv("ALVEARE_SPECULATIVE");
+    bool use_spec = cfg.is_gemma4() && (std::getenv("ALVEARE_NO_SPECULATIVE") == nullptr);
     if (use_spec) {
         auto t0_decode = clock::now();
         const int K_draft = 7;                 // max draft length (fills the B=16 pad)
