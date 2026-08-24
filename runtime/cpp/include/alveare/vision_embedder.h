@@ -7,17 +7,32 @@
 
 namespace alveare {
 
+enum class VisionArch {
+    GEMMA4_UV, // Linear patch embedder (Gemma-4 12B)
+    GEMMA4_V,  // Multi-layer ViT (Gemma-4 E4B)
+    QWEN_VL,   // Multi-layer ViT with 2D merger + MLP (Qwen2-VL, Qwen3.5-VL)
+    UNKNOWN
+};
+
+class IVisionEncoder {
+public:
+    virtual ~IVisionEncoder() = default;
+    virtual bool load(const std::string& vision_dir) = 0;
+    virtual std::vector<std::vector<float>> encode_rgb(const uint8_t* rgb_data, int width, int height) = 0;
+    virtual int output_dim() const = 0;
+    virtual VisionArch arch() const = 0;
+};
+
 class VisionEmbedder {
 public:
     VisionEmbedder() = default;
     ~VisionEmbedder() = default;
 
-    // Load vision weights from directory (e.g. quantized_weights_gemma4/vision)
+    // Load vision weights from directory (auto-detects architecture: Gemma-4 12B, Gemma-4 E4B, Qwen)
     bool load(const std::string& vision_dir);
-    bool is_loaded() const { return loaded_; }
+    bool is_loaded() const { return backend_ != nullptr; }
 
     // Encode an image given raw file bytes (PNG, JPG, WebP, etc.)
-    // Returns N embeddings of size hidden_size (3840)
     std::vector<std::vector<float>> encode_image_bytes(const uint8_t* image_bytes, size_t len);
 
     // Encode an image given base64 string (supports data:image/...;base64, prefix)
@@ -26,22 +41,11 @@ public:
     // Encode RGB uint8 image [height x width x 3]
     std::vector<std::vector<float>> encode_rgb(const uint8_t* rgb_data, int width, int height);
 
-private:
-    bool loaded_ = false;
-    int hidden_size_ = 3840;
-    static constexpr int kPatchSize = 48;
-    static constexpr int kPatchDim = 48 * 48 * 3; // 6912
+    int output_dim() const { return backend_ ? backend_->output_dim() : 0; }
+    VisionArch arch() const { return backend_ ? backend_->arch() : VisionArch::UNKNOWN; }
 
-    std::vector<float> patch_norm1_w_;
-    std::vector<float> patch_norm1_b_;
-    std::vector<float> patch_embd_w_; // 3840 x 6912
-    std::vector<float> patch_embd_b_; // 3840
-    std::vector<float> patch_norm2_w_;
-    std::vector<float> patch_norm2_b_;
-    std::vector<float> position_embd_; // 2 x 1120 x 3840
-    std::vector<float> patch_norm3_w_;
-    std::vector<float> patch_norm3_b_;
-    std::vector<float> mm_proj_w_;     // 3840 x 3840
+private:
+    std::unique_ptr<IVisionEncoder> backend_;
 };
 
 } // namespace alveare
