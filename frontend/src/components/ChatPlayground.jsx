@@ -24,7 +24,9 @@ import {
   RefreshCw,
   HardDrive,
   Mic,
-  MicOff
+  MicOff,
+  Play,
+  Volume2
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -619,10 +621,14 @@ export default function ChatPlayground({
       const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
       const audioCtx = new AudioCtxClass();
       audioContextRef.current = audioCtx;
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
 
       const source = audioCtx.createMediaStreamSource(stream);
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       audioProcessorRef.current = processor;
+      window._alveareActiveAudioProc = processor; // Prevent V8 garbage collection
 
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
@@ -1646,7 +1652,22 @@ export default function ChatPlayground({
                     style={{ width: '18px', height: '18px', objectFit: 'cover', borderRadius: '3px' }}
                   />
                 ) : att.category === 'audio' ? (
-                  <Music size={14} color="var(--accent-cyan)" />
+                  <>
+                    <Music size={14} color="var(--accent-cyan)" />
+                    {att.url && (
+                      <button
+                        onClick={() => {
+                          const a = new Audio(att.url);
+                          a.play().catch(e => console.error("Audio play error:", e));
+                        }}
+                        style={{ background: 'none', border: 'none', color: 'var(--accent-cyan)', cursor: 'pointer', padding: '0 2px', display: 'flex', alignItems: 'center' }}
+                        title="Ascolta anteprima registrata"
+                        aria-label="Ascolta anteprima"
+                      >
+                        <Play size={11} />
+                      </button>
+                    )}
+                  </>
                 ) : (
                   <FileText size={14} color="var(--accent-green)" />
                 )}
