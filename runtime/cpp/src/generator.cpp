@@ -260,11 +260,20 @@ GenerationStats Generator::generate(
     auto forward = [&](int token, int pos, bool want_logits) {
         float* inpL_ptr = inpL_f_.data();
         auto it = custom_emb_map.find(pos);
-        const float* emb_ptr = (it != custom_emb_map.end()) ? it->second : &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
-        for (int i = 0; i < hidden_size; ++i) {
-            float val = emb_ptr[i] * embed_scale;
-            cur_x[i] = bf16(val);
-            inpL_ptr[i] = val;
+        if (it != custom_emb_map.end()) {
+            const float* emb_ptr = it->second;
+            for (int i = 0; i < hidden_size; ++i) {
+                float val = emb_ptr[i]; // Visual embeddings are already in unscaled activation space
+                cur_x[i] = bf16(val);
+                inpL_ptr[i] = val;
+            }
+        } else {
+            const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
+            for (int i = 0; i < hidden_size; ++i) {
+                float val = emb_ptr[i] * embed_scale;
+                cur_x[i] = bf16(val);
+                inpL_ptr[i] = val;
+            }
         }
         static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
         if (cfg.per_layer_input > 0 && !no_ple) {
@@ -326,11 +335,20 @@ GenerationStats Generator::generate(
                 int pos = start + b;
                 int token = input_tokens[pos];
                 auto it = custom_emb_map.find(pos);
-                const float* emb_ptr = (it != custom_emb_map.end()) ? it->second : &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
-                for (int i = 0; i < hidden_size; ++i) {
-                    float val = emb_ptr[i] * embed_scale;
-                    xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
-                    inpL_tmp[i] = val;
+                if (it != custom_emb_map.end()) {
+                    const float* emb_ptr = it->second;
+                    for (int i = 0; i < hidden_size; ++i) {
+                        float val = emb_ptr[i]; // Do not scale visual embeddings
+                        xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
+                        inpL_tmp[i] = val;
+                    }
+                } else {
+                    const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
+                    for (int i = 0; i < hidden_size; ++i) {
+                        float val = emb_ptr[i] * embed_scale;
+                        xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
+                        inpL_tmp[i] = val;
+                    }
                 }
                 static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
                 if (cfg.per_layer_input > 0 && !no_ple) {
