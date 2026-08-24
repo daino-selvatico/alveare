@@ -8,11 +8,11 @@
 namespace alveare {
 
 struct LayerWeights {
-    WeightHandle w_q;
-    WeightHandle w_k;
-    WeightHandle w_v;
-    WeightHandle w_o;
-    WeightHandle w_ffn_fused;
+    WeightHandle w_q = kInvalidWeight;
+    WeightHandle w_k = kInvalidWeight;
+    WeightHandle w_v = kInvalidWeight;
+    WeightHandle w_o = kInvalidWeight;
+    WeightHandle w_ffn_fused = kInvalidWeight;
 
     // Fused Q/K/V projection (gemma4): w_q, w_k, w_v concatenated along the output
     // dimension into one resident weight so the three projections run as a SINGLE
