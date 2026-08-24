@@ -3,6 +3,7 @@ project(alveare_runtime CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_compile_options(-mavx2 -mfma)
 
 # Default to an optimized build. Without this CMAKE_BUILD_TYPE is empty, i.e. the
 # whole runtime compiled at -O0 — which mattered a lot: the host-side Q4 dot products

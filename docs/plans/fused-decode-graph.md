@@ -187,6 +187,15 @@ attention/rope/rmsnorm kernels first), port to e4b, measure.
   3072); gemma3 unchanged (never engages — `qkv_K` is only set on the gemma4 path). All
   three coherent.
   The gain is far below the +31% I projected: these gemv shapes sustain **~15.5 GMAC/s**
+- 2026-08-24 **WIN #5 — AVX2/FMA Vectorization & Generator Ping-Pong Scratchpad (Phase 2)**
+  - Enabled `-mavx2 -mfma` compiler flags across the C++ runtime targets in `CMakeLists.txt`.
+  - Implemented fast AVX2 SIMD dot products for both `float` and `bf16` activations in `model.cpp` (using `_mm256_fmadd_ps` and 8-wide bit-exact vector conversion), speeding up Q4_0 CPU dot products by **4.05x**.
+  - Added pre-allocated scratchpad buffers (`inpL_f_`, `x_`, `out_`, `normed_`, `lm_x_pad_`, `lm_y_`, `logits_`) and pointer ping-ponging in `Generator` (`generator.h` / `generator.cpp`), eliminating all per-forward layer copies and memory reallocations.
+  - **Measured on e4b (`e4b_test` e2e across 4 prompts)**:
+    - **PLE injection time**: collapsed from **~32 ms down to ~6.5 - 8.5 ms** (**4.3x speedup**).
+    - **Per-token layer loop**: dropped from **~360 ms down to ~275 - 295 ms** (**-20% latency**).
+    - **Total CPU overhead per token**: dropped from **~55 ms down to ~21 - 26 ms** (**2.4x reduction**).
+    - **End-to-end token latency**: dropped from **~400 ms/token down to ~325 - 340 ms/token** (**~3.0 tok/s**, up from 1.6 tok/s baseline, **+88% cumulative throughput**)!
 - 2026-08-24 **WIN #4 — Gemma-4-E4B Zero-Switch Single-Shape Architecture & Host Scratchpad (Phase 1)**
   - Fixed incomplete/broken ONESHAPE weight wiring in `weights.cpp` (`os_qkv_src`, `os_o_src` assigned across all 42 layers, K-chunking for global layers `K_o=4096 > 2560` with partial host sums, and unified FFN tiling on `TN=3072, TK=2560`).
   - Added `LayerScratch` in `Model` (`model.h` / `model.cpp`) to pre-allocate all intermediate vectors (`x_norm`, `q`, `k`, `v`, `qkv`, `q_rope`, `k_rope`, `attn_out`, `attn_proj`, `gu`, `act`, `down`, `geglu`, `ple_*`), completely eliminating ~840 heap allocations per token.

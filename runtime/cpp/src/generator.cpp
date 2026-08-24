@@ -14,7 +14,23 @@
 namespace alveare {
 
 Generator::Generator(Model& model, const ModelWeights& weights, const Tokenizer& tokenizer)
-    : model_(model), weights_(weights), tokenizer_(tokenizer) {}
+    : model_(model), weights_(weights), tokenizer_(tokenizer) {
+    int hidden_size = model_.get_config().hidden_size;
+    int vocab_size = weights_.lm_head_vocab > 0 ? weights_.lm_head_vocab : model_.get_config().vocab_size;
+    int chunk_N = weights_.lm_head_chunk_N > 0 ? weights_.lm_head_chunk_N : 16384;
+    int lm_K = weights_.lm_head_K > 0 ? weights_.lm_head_K : hidden_size;
+
+    inpL_f_.assign(hidden_size, 0.0f);
+    x_.assign(hidden_size, bf16(0.0f));
+    out_.assign(hidden_size, bf16(0.0f));
+    normed_.assign(hidden_size, bf16(0.0f));
+    lm_x_pad_.assign(lm_K, bf16(0.0f));
+    lm_y_.assign(chunk_N, bf16(0.0f));
+    logits_.assign(vocab_size, 0.0f);
+    if (model_.get_config().per_layer_input > 0) {
+        inp_per_layer_.assign(model_.get_config().num_hidden_layers * model_.get_config().per_layer_input, 0.0f);
+    }
+}
 
 void Generator::reset_cache() {
     std::lock_guard<std::mutex> gen_lock(gen_mutex_);
@@ -108,18 +124,19 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
     if (!weights_.lm_head_chunks.empty()) {
         int K = weights_.lm_head_K;
         int chunk_N = weights_.lm_head_chunk_N;
-        logits.resize(weights_.lm_head_vocab);
+        if (logits.size() != static_cast<size_t>(weights_.lm_head_vocab)) {
+            logits.resize(weights_.lm_head_vocab);
+        }
 
-        std::vector<bf16> x_pad(K, bf16(0.0f));
-        for (int i = 0; i < hidden_size && i < K; ++i) x_pad[i] = x[i];
+        std::fill(lm_x_pad_.begin(), lm_x_pad_.end(), bf16(0.0f));
+        for (int i = 0; i < hidden_size && i < K; ++i) lm_x_pad_[i] = x[i];
 
-        std::vector<bf16> y(chunk_N);
         for (size_t c = 0; c < weights_.lm_head_chunks.size(); ++c) {
             model_.registry().run_gemv(chunk_N, K, weights_.lm_head_chunks[c],
-                                       x_pad.data(), y.data());
+                                       lm_x_pad_.data(), lm_y_.data());
             int base = static_cast<int>(c) * chunk_N;
             for (int i = 0; i < chunk_N; ++i) {
-                logits[base + i] = y[i].to_float(); // raw logits (softcap is monotonic; skip for greedy argmax)
+                logits[base + i] = lm_y_[i].to_float(); // raw logits
             }
         }
         return;
@@ -215,48 +232,47 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     // fed-back generated tokens as their KV is written.
     cached_tokens_ = input_tokens;
 
-    std::vector<bf16> x(hidden_size);
-    std::vector<bf16> out(hidden_size);
-    std::vector<float> logits;
+    bf16* cur_x = x_.data();
+    bf16* cur_out = out_.data();
 
     double lm_head_ms = 0.0;  // profiling: last forward's LM-head wall time
 
-    std::vector<float> inp_per_layer;
-
     // Run one token through the embedding + all transformer layers. When
-    // want_logits is set, also apply the final norm and LM head into `logits`.
+    // want_logits is set, also apply the final norm and LM head into `logits_`.
     auto forward = [&](int token, int pos, bool want_logits) {
-        std::vector<float> inpL_f(hidden_size);
+        float* inpL_ptr = inpL_f_.data();
+        const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
         for (int i = 0; i < hidden_size; ++i) {
-            float val = weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale;
-            x[i] = bf16(val);
-            inpL_f[i] = val;
+            float val = emb_ptr[i] * embed_scale;
+            cur_x[i] = bf16(val);
+            inpL_ptr[i] = val;
         }
         static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
         if (cfg.per_layer_input > 0 && !no_ple) {
-            model_.compute_per_layer_inputs(token, inpL_f.data(), inp_per_layer);
+            model_.compute_per_layer_inputs(token, inpL_ptr, inp_per_layer_);
         }
+        const float* ple_ptr = inp_per_layer_.empty() ? nullptr : inp_per_layer_.data();
         for (int l = 0; l < cfg.num_hidden_layers; ++l) {
-            model_.run_layer(x.data(), pos, l, out.data(), inp_per_layer.empty() ? nullptr : inp_per_layer.data());
-            x = out;
+            model_.run_layer(cur_x, pos, l, cur_out, ple_ptr);
+            std::swap(cur_x, cur_out);
         }
         if (!want_logits) return;
 
         float variance = 0.0f;
         for (int i = 0; i < hidden_size; ++i) {
-            float val = x[i].to_float();
+            float val = cur_x[i].to_float();
             variance += val * val;
         }
         variance /= hidden_size;
         float inv_denom = 1.0f / std::sqrt(variance + cfg.rms_norm_eps);
 
-        std::vector<bf16> normed(hidden_size);
+        bf16* normed_ptr = normed_.data();
         for (int i = 0; i < hidden_size; ++i) {
             float w = weights_.output_norm.empty() ? 1.0f : weights_.output_norm[i];
-            normed[i] = bf16(x[i].to_float() * inv_denom * w);
+            normed_ptr[i] = bf16(cur_x[i].to_float() * inv_denom * w);
         }
         auto t_lm = clock::now();
-        run_lm_head(normed.data(), logits);
+        run_lm_head(normed_ptr, logits_);
         lm_head_ms = std::chrono::duration<double, std::milli>(clock::now() - t_lm).count();
     };
 
@@ -354,7 +370,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
                 // Fallback: normal single-token decode (fused FFN, no B=16 penalty).
                 forward(current_token, pos, true);
                 if (pos >= num_prompt_tokens) cached_tokens_.push_back(current_token);
-                int t = sample(logits, params);
+                int t = sample(logits_, params);
                 double ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
                 tag() << "spec " << ++step << ": draft=0 fallback -> 1 tok in "
                       << std::fixed << std::setprecision(1) << ms << "ms (id=" << t << ")\n" << std::flush;
@@ -435,7 +451,7 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
         // [0, num_prompt) are already in cached_tokens_ (== input_tokens); record
         // the fed-back generated tokens that extend the cache beyond the prompt.
         if (pos >= num_prompt_tokens) cached_tokens_.push_back(current_token);
-        int next_token = sample(logits, params);
+        int next_token = sample(logits_, params);
         double step_ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
         double npu_ms = (model_.registry().npu_seconds() - npu_s0) * 1000.0;
         double ffn_ms = (model_.registry().ffn_seconds() - ffn_s0) * 1000.0;

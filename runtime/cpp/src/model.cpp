@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
+#include <immintrin.h>
 
 // Per-token decode profiler (ALVEARE_PROFILE_DECODE=1). Accumulates wall time by
 // phase across all layers of one forward; run_layer prints + resets on the last
@@ -25,6 +26,117 @@ static inline double ms_since(std::chrono::time_point<pclock> t) {
     return std::chrono::duration<double, std::milli>(pclock::now() - t).count();
 }
 
+#ifdef __AVX2__
+static inline float hsum256_ps_avx(__m256 v) {
+    __m128 vlow  = _mm256_castps256_ps128(v);
+    __m128 vhigh = _mm256_extractf128_ps(v, 1);
+    __m128 v128  = _mm_add_ps(vlow, vhigh);
+    __m128 shuf  = _mm_movehdup_ps(v128);
+    __m128 sums  = _mm_add_ps(v128, shuf);
+    shuf         = _mm_movehl_ps(shuf, sums);
+    __m128 res   = _mm_add_ss(sums, shuf);
+    return _mm_cvtss_f32(res);
+}
+
+static inline float q4_0_dot_product(const uint8_t* row, const float* x, int K) {
+    const int K_blocks = K / 32;
+    const int block_bytes = 20;
+    float dot = 0.0f;
+    const __m128i mask_0f = _mm_set1_epi8(0x0F);
+    const __m128i val_7   = _mm_set1_epi8(7);
+    const __m128i val_16  = _mm_set1_epi8(16);
+
+    for (int bk = 0; bk < K_blocks; ++bk) {
+        const uint8_t* blk = row + bk * block_bytes;
+        alveare::bf16 sc;
+        sc.v = static_cast<uint16_t>(blk[16]) | (static_cast<uint16_t>(blk[17]) << 8);
+        const float scale = sc.to_float();
+
+        __m128i raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(blk));
+        __m128i lo = _mm_and_si128(raw, mask_0f);
+        __m128i hi = _mm_and_si128(_mm_srli_epi16(raw, 4), mask_0f);
+
+        __m128i lo_hi_0 = _mm_unpacklo_epi8(lo, hi);
+        __m128i lo_hi_1 = _mm_unpackhi_epi8(lo, hi);
+
+        __m128i sub16_0 = _mm_and_si128(_mm_cmpgt_epi8(lo_hi_0, val_7), val_16);
+        __m128i s8_0 = _mm_sub_epi8(lo_hi_0, sub16_0);
+
+        __m128i sub16_1 = _mm_and_si128(_mm_cmpgt_epi8(lo_hi_1, val_7), val_16);
+        __m128i s8_1 = _mm_sub_epi8(lo_hi_1, sub16_1);
+
+        __m256 q0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(s8_0));
+        __m256 q1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(s8_0, 8)));
+        __m256 q2 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(s8_1));
+        __m256 q3 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(s8_1, 8)));
+
+        const float* xb = &x[bk * 32];
+        __m256 x0 = _mm256_loadu_ps(xb + 0);
+        __m256 x1 = _mm256_loadu_ps(xb + 8);
+        __m256 x2 = _mm256_loadu_ps(xb + 16);
+        __m256 x3 = _mm256_loadu_ps(xb + 24);
+
+        __m256 acc = _mm256_mul_ps(q0, x0);
+        acc = _mm256_fmadd_ps(q1, x1, acc);
+        acc = _mm256_fmadd_ps(q2, x2, acc);
+        acc = _mm256_fmadd_ps(q3, x3, acc);
+
+        float bsum = hsum256_ps_avx(acc);
+        dot += bsum * scale;
+    }
+    return dot;
+}
+
+static inline float q4_0_dot_product(const uint8_t* row, const alveare::bf16* x, int K) {
+    const int K_blocks = K / 32;
+    const int block_bytes = 20;
+    float dot = 0.0f;
+    const __m128i mask_0f = _mm_set1_epi8(0x0F);
+    const __m128i val_7   = _mm_set1_epi8(7);
+    const __m128i val_16  = _mm_set1_epi8(16);
+
+    for (int bk = 0; bk < K_blocks; ++bk) {
+        const uint8_t* blk = row + bk * block_bytes;
+        alveare::bf16 sc;
+        sc.v = static_cast<uint16_t>(blk[16]) | (static_cast<uint16_t>(blk[17]) << 8);
+        const float scale = sc.to_float();
+
+        __m128i raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(blk));
+        __m128i lo = _mm_and_si128(raw, mask_0f);
+        __m128i hi = _mm_and_si128(_mm_srli_epi16(raw, 4), mask_0f);
+
+        __m128i lo_hi_0 = _mm_unpacklo_epi8(lo, hi);
+        __m128i lo_hi_1 = _mm_unpackhi_epi8(lo, hi);
+
+        __m128i sub16_0 = _mm_and_si128(_mm_cmpgt_epi8(lo_hi_0, val_7), val_16);
+        __m128i s8_0 = _mm_sub_epi8(lo_hi_0, sub16_0);
+
+        __m128i sub16_1 = _mm_and_si128(_mm_cmpgt_epi8(lo_hi_1, val_7), val_16);
+        __m128i s8_1 = _mm_sub_epi8(lo_hi_1, sub16_1);
+
+        __m256 q0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(s8_0));
+        __m256 q1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(s8_0, 8)));
+        __m256 q2 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(s8_1));
+        __m256 q3 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(s8_1, 8)));
+
+        const alveare::bf16* xb = &x[bk * 32];
+        const __m128i* x128 = reinterpret_cast<const __m128i*>(xb);
+        __m256 x0 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128(x128 + 0)), 16));
+        __m256 x1 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128(x128 + 1)), 16));
+        __m256 x2 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128(x128 + 2)), 16));
+        __m256 x3 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128(x128 + 3)), 16));
+
+        __m256 acc = _mm256_mul_ps(q0, x0);
+        acc = _mm256_fmadd_ps(q1, x1, acc);
+        acc = _mm256_fmadd_ps(q2, x2, acc);
+        acc = _mm256_fmadd_ps(q3, x3, acc);
+
+        float bsum = hsum256_ps_avx(acc);
+        dot += bsum * scale;
+    }
+    return dot;
+}
+#else
 static inline float q4_0_dot_product(const uint8_t* row, const float* x, int K) {
     const int K_blocks = K / 32;
     const int block_bytes = 20;
@@ -64,6 +176,7 @@ static inline float q4_0_dot_product(const uint8_t* row, const alveare::bf16* x,
     }
     return dot;
 }
+#endif
 }
 
 namespace alveare {
@@ -87,15 +200,13 @@ void Model::compute_per_layer_inputs(int token_id, const float* inpL, std::vecto
     }
 
     // 1. Projection of main token embedding (per_layer_model_proj: 10752 x 2560)
-    std::vector<float> proj_scaled(total_dim);
+    float* proj_scaled = scratch_.proj_scaled.data();
     const float proj_scale_factor = 1.0f / std::sqrt(static_cast<float>(n_embd));
     const uint8_t* proj_base = weights_.per_layer_model_proj_packed.data();
     const int proj_row_bytes = (n_embd / 32) * 20;
 
-    // Parallelize the big per-layer-projection (10752 x 2560 Q4 dots, ~107ms
-    // single-threaded). This runs ONCE per token BEFORE the layer loop, so the NPU
-    // is idle and the OpenMP threads don't contend with NPU dispatch/sync (unlike
-    // the tiny per-layer loops, where fork/join + NPU contention made it slower).
+    // Parallelize the big per-layer-projection (10752 x 2560 Q4 dots).
+    // Uses fast AVX2 dot product across OpenMP threads.
     #pragma omp parallel for schedule(static)
     for (int r = 0; r < total_dim; ++r) {
         const uint8_t* row = proj_base + static_cast<size_t>(r) * proj_row_bytes;
@@ -104,7 +215,7 @@ void Model::compute_per_layer_inputs(int token_id, const float* inpL, std::vecto
     }
 
     // RMSNorm per layer (across 256-dim embedding vector) with eps=1e-6
-    std::vector<float> proj_normed(total_dim);
+    float* proj_normed = scratch_.proj_normed.data();
     for (int l = 0; l < n_layer; ++l) {
         const float* p_in = &proj_scaled[l * n_embd_per_layer];
         float variance = 0.0f;
@@ -201,6 +312,11 @@ void Model::init_scratch() {
     scratch_.ple_x_f.assign(max_N, 0.0f);
     scratch_.ple_p.assign(max_N, bf16(0.0f));
     scratch_.ple_y.assign(max_N, bf16(0.0f));
+    int total_ple_dim = config_.num_hidden_layers * config_.per_layer_input;
+    if (total_ple_dim > 0) {
+        scratch_.proj_scaled.assign(total_ple_dim, 0.0f);
+        scratch_.proj_normed.assign(total_ple_dim, 0.0f);
+    }
 }
 
 void Model::reset_caches() {

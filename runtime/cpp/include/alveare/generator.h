@@ -54,6 +54,16 @@ private:
 
     int sample(const std::vector<float>& logits, const GenerationParams& params);
     void run_lm_head(const bf16* x, std::vector<float>& logits);
+
+    // Pre-allocated scratchpad buffers (avoids malloc per token)
+    std::vector<float> inpL_f_;
+    std::vector<float> inp_per_layer_;
+    std::vector<bf16> x_;
+    std::vector<bf16> out_;
+    std::vector<bf16> normed_;
+    std::vector<bf16> lm_x_pad_;
+    std::vector<bf16> lm_y_;
+    std::vector<float> logits_;
 };
 
 } // namespace alveare
