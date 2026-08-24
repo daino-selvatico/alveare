@@ -7,6 +7,7 @@
 #include <immintrin.h>
 #include <omp.h>
 #include <dlfcn.h>
+#include <fstream>
 #include <memory>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -642,9 +643,24 @@ bool VisionEmbedder::load(const std::string& vision_dir) {
     return false;
 }
 
-std::vector<std::vector<float>> VisionEmbedder::encode_image_base64(const std::string& b64_str) {
-    if (!backend_) return {};
-    std::vector<uint8_t> bytes = base64_decode(b64_str);
+std::vector<std::vector<float>> VisionEmbedder::encode_image_base64(const std::string& b64_or_path) {
+    if (!backend_ || b64_or_path.empty()) return {};
+
+    // 1. Check if input is a local file path
+    std::string path = b64_or_path;
+    if (path.rfind("file://", 0) == 0) {
+        path = path.substr(7);
+    }
+    if (!path.empty() && (path[0] == '/' || path.rfind("./", 0) == 0 || path.rfind("../", 0) == 0)) {
+        std::ifstream file(path, std::ios::binary);
+        if (file) {
+            std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            return encode_image_bytes(bytes.data(), bytes.size());
+        }
+    }
+
+    // 2. Decode as Base64
+    std::vector<uint8_t> bytes = base64_decode(b64_or_path);
     if (bytes.empty()) return {};
     return encode_image_bytes(bytes.data(), bytes.size());
 }
