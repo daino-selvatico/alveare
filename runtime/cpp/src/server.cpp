@@ -115,48 +115,79 @@ void ApiServer::start(int port) {
 
             std::vector<std::vector<float>> all_visual_embeddings;
 
+            auto process_image = [&](const std::string& url_or_b64) -> std::string {
+                if (!vision_embedder_ || !vision_embedder_->is_loaded() || url_or_b64.empty()) {
+                    return "[Immagine Allegata]";
+                }
+                auto emb = vision_embedder_->encode_image_base64(url_or_b64);
+                if (!emb.empty()) {
+                    std::cout << "[server] Successfully encoded image into " << emb.size() 
+                              << " visual tokens (dim=" << (emb.empty() ? 0 : emb[0].size()) << ")\n" << std::flush;
+                    std::string img_tag = "<|image>";
+                    for (size_t i = 0; i < emb.size(); ++i) img_tag += "<|image|>";
+                    img_tag += "<image|>";
+                    all_visual_embeddings.insert(all_visual_embeddings.end(), emb.begin(), emb.end());
+                    return img_tag;
+                }
+                std::cerr << "[server] Failed to decode image payload\n" << std::flush;
+                return "[Immagine Allegata]";
+            };
+
             auto get_msg_content = [&](const nlohmann::json& msg) -> std::string {
-                if (!msg.contains("content")) return "";
-                if (msg["content"].is_string()) return msg["content"].get<std::string>();
-                if (msg["content"].is_array()) {
-                    std::string res = "";
-                    for (const auto& part : msg["content"]) {
-                        if (part.is_object()) {
-                            if (part.value("type", "") == "text" && part.contains("text")) {
-                                if (!res.empty()) res += "\n";
-                                res += part["text"].get<std::string>();
-                            } else if (part.value("type", "") == "image_url") {
-                                std::string url = "";
-                                if (part.contains("image_url")) {
-                                    if (part["image_url"].is_string()) url = part["image_url"].get<std::string>();
-                                    else if (part["image_url"].is_object() && part["image_url"].contains("url")) url = part["image_url"]["url"].get<std::string>();
-                                }
-                                if (vision_embedder_ && vision_embedder_->is_loaded() && !url.empty()) {
-                                    auto emb = vision_embedder_->encode_image_base64(url);
-                                    if (!emb.empty()) {
-                                        std::string img_tag = "<|image>";
-                                        for (size_t i = 0; i < emb.size(); ++i) img_tag += "<|image|>";
-                                        img_tag += "<image|>";
-                                        if (!res.empty()) res += "\n";
-                                        res += img_tag;
-                                        all_visual_embeddings.insert(all_visual_embeddings.end(), emb.begin(), emb.end());
-                                    } else {
-                                        if (!res.empty()) res += "\n";
-                                        res += "[Immagine Allegata]";
-                                    }
-                                } else {
+                std::string res = "";
+
+                // Check for root-level "images" array (Open-WebUI / Ollama / Jan format)
+                if (msg.contains("images") && msg["images"].is_array()) {
+                    for (const auto& img_item : msg["images"]) {
+                        if (img_item.is_string()) {
+                            std::string tag = process_image(img_item.get<std::string>());
+                            if (!res.empty()) res += "\n";
+                            res += tag;
+                        }
+                    }
+                }
+                if (msg.contains("image_url") && msg["image_url"].is_string()) {
+                    std::string tag = process_image(msg["image_url"].get<std::string>());
+                    if (!res.empty()) res += "\n";
+                    res += tag;
+                }
+
+                if (msg.contains("content")) {
+                    if (msg["content"].is_string()) {
+                        std::string text = msg["content"].get<std::string>();
+                        if (!text.empty()) {
+                            if (!res.empty()) res += "\n";
+                            res += text;
+                        }
+                    } else if (msg["content"].is_array()) {
+                        for (const auto& part : msg["content"]) {
+                            if (part.is_object()) {
+                                std::string ptype = part.value("type", "");
+                                if ((ptype == "text" || ptype.empty()) && part.contains("text")) {
                                     if (!res.empty()) res += "\n";
-                                    res += "[Immagine Allegata]";
+                                    res += part["text"].get<std::string>();
+                                } else if (ptype == "image_url" || ptype == "image") {
+                                    std::string url = "";
+                                    if (part.contains("image_url")) {
+                                        if (part["image_url"].is_string()) url = part["image_url"].get<std::string>();
+                                        else if (part["image_url"].is_object() && part["image_url"].contains("url")) url = part["image_url"]["url"].get<std::string>();
+                                    } else if (part.contains("image") && part["image"].is_string()) {
+                                        url = part["image"].get<std::string>();
+                                    } else if (part.contains("url") && part["url"].is_string()) {
+                                        url = part["url"].get<std::string>();
+                                    }
+                                    std::string tag = process_image(url);
+                                    if (!res.empty()) res += "\n";
+                                    res += tag;
+                                } else if (ptype == "input_audio") {
+                                    if (!res.empty()) res += "\n";
+                                    res += "[Audio Allegato]";
                                 }
-                            } else if (part.value("type", "") == "input_audio") {
-                                if (!res.empty()) res += "\n";
-                                res += "[Audio Allegato]";
                             }
                         }
                     }
-                    return res;
                 }
-                return "";
+                return res;
             };
 
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
