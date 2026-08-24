@@ -535,6 +535,76 @@ export default function ChatPlayground({
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
+  const encodePCMToWAV = (samples, sampleRate = 16000) => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+
+    const writeString = (offset, str) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM format
+    view.setUint16(22, 1, true); // Mono channel
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // Byte rate (16-bit mono)
+    view.setUint16(32, 2, true); // Block align
+    view.setUint16(34, 16, true); // Bits per sample
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return new Blob([view], { type: 'audio/wav' });
+  };
+
+  const convertAudioBlobTo16kWav = async (fileOrBlob) => {
+    const arrayBuffer = await fileOrBlob.arrayBuffer();
+    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioCtxClass();
+    const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+    
+    // Mixdown all channels to mono at 16kHz
+    const srcChannels = decoded.numberOfChannels;
+    const srcLen = decoded.length;
+    const srcRate = decoded.sampleRate;
+    const targetLen = Math.floor(srcLen * (16000 / srcRate));
+    
+    const monoSrc = new Float32Array(srcLen);
+    for (let c = 0; c < srcChannels; c++) {
+      const ch = decoded.getChannelData(c);
+      for (let i = 0; i < srcLen; i++) {
+        monoSrc[i] += ch[i] / srcChannels;
+      }
+    }
+
+    // Linear resample to 16kHz
+    const resampled = new Float32Array(targetLen);
+    const ratio = srcRate / 16000;
+    for (let i = 0; i < targetLen; i++) {
+      const srcIdx = i * ratio;
+      const idx0 = Math.floor(srcIdx);
+      const idx1 = Math.min(idx0 + 1, srcLen - 1);
+      const frac = srcIdx - idx0;
+      resampled[i] = monoSrc[idx0] * (1 - frac) + monoSrc[idx1] * frac;
+    }
+
+    await audioCtx.close();
+    return encodePCMToWAV(resampled, 16000);
+  };
+
+  const audioContextRef = useRef(null);
+  const audioProcessorRef = useRef(null);
+
   const handleStartVoiceRecording = async () => {
     setShowUploadMenu(false);
     try {
@@ -546,54 +616,22 @@ export default function ChatPlayground({
       recordingStreamRef.current = stream;
       audioChunksRef.current = [];
 
-      let mimeType = 'audio/webm';
-      if (typeof MediaRecorder !== 'undefined') {
-        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-          mimeType = 'audio/webm;codecs=opus';
-        } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
-          mimeType = 'audio/ogg;codecs=opus';
-        } else if (MediaRecorder.isTypeSupported('audio/wav')) {
-          mimeType = 'audio/wav';
-        }
-      }
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AudioCtxClass();
+      audioContextRef.current = audioCtx;
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = mediaRecorder;
+      const source = audioCtx.createMediaStreamSource(stream);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      audioProcessorRef.current = processor;
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
-        }
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        audioChunksRef.current.push(new Float32Array(inputData));
       };
 
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-        if (audioBlob.size > 0) {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const dataUrl = reader.result;
-            const timestampStr = new Date().toISOString().replace(/[:.]/g, '-').slice(11, 19);
-            const attId = `rec_${Date.now()}`;
-            const newAtt = {
-              id: attId,
-              name: `Registrazione_${timestampStr}.wav`,
-              size: audioBlob.size,
-              type: mimeType,
-              category: 'audio',
-              url: dataUrl
-            };
-            setAttachments(prev => [...prev, newAtt]);
-          };
-          reader.readAsDataURL(audioBlob);
-        }
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
 
-        if (recordingStreamRef.current) {
-          recordingStreamRef.current.getTracks().forEach(track => track.stop());
-          recordingStreamRef.current = null;
-        }
-      };
-
-      mediaRecorder.start(100);
       setIsVoiceRecording(true);
       setRecordingTime(0);
 
@@ -609,14 +647,72 @@ export default function ChatPlayground({
     }
   };
 
-  const handleStopVoiceRecording = () => {
+  const handleStopVoiceRecording = async () => {
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect();
+      audioProcessorRef.current = null;
     }
+    if (audioContextRef.current) {
+      const srcRate = audioContextRef.current.sampleRate || 44100;
+      await audioContextRef.current.close();
+      audioContextRef.current = null;
+
+      // Merge chunks
+      let totalSamples = 0;
+      for (const c of audioChunksRef.current) totalSamples += c.length;
+      const rawMono = new Float32Array(totalSamples);
+      let offset = 0;
+      for (const c of audioChunksRef.current) {
+        rawMono.set(c, offset);
+        offset += c.length;
+      }
+
+      // Resample to 16,000 Hz if needed
+      let finalSamples = rawMono;
+      if (srcRate !== 16000 && rawMono.length > 0) {
+        const targetLen = Math.floor(rawMono.length * (16000 / srcRate));
+        finalSamples = new Float32Array(targetLen);
+        const ratio = srcRate / 16000;
+        for (let i = 0; i < targetLen; i++) {
+          const srcIdx = i * ratio;
+          const idx0 = Math.floor(srcIdx);
+          const idx1 = Math.min(idx0 + 1, rawMono.length - 1);
+          const frac = srcIdx - idx0;
+          finalSamples[i] = rawMono[idx0] * (1 - frac) + rawMono[idx1] * frac;
+        }
+      }
+
+      if (finalSamples.length > 0) {
+        const wavBlob = encodePCMToWAV(finalSamples, 16000);
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result;
+          const timestampStr = new Date().toISOString().replace(/[:.]/g, '-').slice(11, 19);
+          const attId = `rec_${Date.now()}`;
+          const newAtt = {
+            id: attId,
+            name: `Registrazione_${timestampStr}.wav`,
+            size: wavBlob.size,
+            type: 'audio/wav',
+            category: 'audio',
+            url: dataUrl
+          };
+          setAttachments(prev => [...prev, newAtt]);
+        };
+        reader.readAsDataURL(wavBlob);
+      }
+    }
+
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach(track => track.stop());
+      recordingStreamRef.current = null;
+    }
+    audioChunksRef.current = [];
     setIsVoiceRecording(false);
   };
 
@@ -625,14 +721,19 @@ export default function ChatPlayground({
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
-    audioChunksRef.current = [];
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect();
+      audioProcessorRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
     }
     if (recordingStreamRef.current) {
       recordingStreamRef.current.getTracks().forEach(track => track.stop());
       recordingStreamRef.current = null;
     }
+    audioChunksRef.current = [];
     setIsVoiceRecording(false);
   };
 
@@ -670,7 +771,7 @@ export default function ChatPlayground({
         textData: null
       };
 
-      if (category === 'image' || category === 'audio') {
+      if (category === 'image') {
         try {
           const dataUrl = await new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -680,7 +781,29 @@ export default function ChatPlayground({
           });
           item.url = dataUrl;
         } catch (e) {
-          console.error("Error reading media file:", e);
+          console.error("Error reading image file:", e);
+        }
+      } else if (category === 'audio') {
+        try {
+          const wavBlob = await convertAudioBlobTo16kWav(file);
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(wavBlob);
+          });
+          item.url = dataUrl;
+          item.type = 'audio/wav';
+          item.size = wavBlob.size;
+        } catch (e) {
+          console.error("Error transcoding audio to WAV, fallback to raw read:", e);
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+          item.url = dataUrl;
         }
       } else {
         try {
@@ -817,6 +940,8 @@ export default function ChatPlayground({
           }
           if (msg.displayText) {
             parts.push({ type: 'text', text: msg.displayText });
+          } else if (msg.attachments.some(a => a.category === 'audio')) {
+            parts.push({ type: 'text', text: 'Ascolta e trascrivi o rispondi a questo audio.' });
           }
           for (const att of msg.attachments) {
             if (att.textData) {
