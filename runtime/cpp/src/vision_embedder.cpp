@@ -143,18 +143,47 @@ std::vector<std::vector<float>> VisionEmbedder::encode_image_base64(const std::s
     return encode_image_bytes(bytes.data(), bytes.size());
 }
 
+#include <dlfcn.h>
+
+static uint8_t* decode_webp_rgb(const uint8_t* data, size_t len, int* w, int* h) {
+    static void* handle = nullptr;
+    static uint8_t* (*p_WebPDecodeRGB)(const uint8_t*, size_t, int*, int*) = nullptr;
+    if (!handle) {
+        handle = dlopen("libwebp.so.7", RTLD_LAZY);
+        if (!handle) handle = dlopen("libwebp.so", RTLD_LAZY);
+        if (handle) {
+            p_WebPDecodeRGB = (uint8_t* (*)(const uint8_t*, size_t, int*, int*))dlsym(handle, "WebPDecodeRGB");
+        }
+    }
+    if (p_WebPDecodeRGB) {
+        return p_WebPDecodeRGB(data, len, w, h);
+    }
+    return nullptr;
+}
+
 std::vector<std::vector<float>> VisionEmbedder::encode_image_bytes(const uint8_t* image_bytes, size_t len) {
     if (!loaded_ || !image_bytes || len == 0) return {};
 
     int width = 0, height = 0, channels = 0;
+    bool is_webp = false;
     uint8_t* rgb_data = stbi_load_from_memory(image_bytes, static_cast<int>(len), &width, &height, &channels, 3);
     if (!rgb_data) {
-        std::cerr << "[VisionEmbedder] Failed to decode image format" << std::endl;
-        return {};
+        // Fallback to WebP decoder
+        rgb_data = decode_webp_rgb(image_bytes, len, &width, &height);
+        if (rgb_data) {
+            is_webp = true;
+        } else {
+            std::cerr << "[VisionEmbedder] Failed to decode image format (STB and WebP)" << std::endl;
+            return {};
+        }
     }
 
     auto result = encode_rgb(rgb_data, width, height);
-    stbi_image_free(rgb_data);
+    if (is_webp) {
+        free(rgb_data);
+    } else {
+        stbi_image_free(rgb_data);
+    }
     return result;
 }
 
