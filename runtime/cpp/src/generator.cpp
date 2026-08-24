@@ -294,22 +294,36 @@ GenerationStats Generator::generate(const std::string& prompt, const GenerationP
     // (no interpreter overhead to amortize), and batching trades the efficient
     // fused FFN kernel for separate streamed gate/up/down GEMMs. Kept behind a
     // flag for experimentation; default is the per-token path.
-    bool use_batched = (cfg.model_type == "gemma4") && std::getenv("ALVEARE_BATCH_PREFILL");
+    bool use_batched = cfg.is_gemma4() && std::getenv("ALVEARE_BATCH_PREFILL");
     if (use_batched) {
         const int PB = 16;
-        std::vector<bf16> xb, ob;
+        std::vector<bf16> xb(static_cast<size_t>(PB) * hidden_size, bf16(0.0f));
+        std::vector<bf16> ob(static_cast<size_t>(PB) * hidden_size, bf16(0.0f));
+        std::vector<float> batch_ple;
+        std::vector<float> inpL_tmp(hidden_size);
+        if (cfg.per_layer_input > 0) {
+            batch_ple.resize(static_cast<size_t>(PB) * cfg.num_hidden_layers * cfg.per_layer_input);
+        }
         for (int start = reuse; start < prefill_count; start += PB) {
             int nrows = std::min(PB, prefill_count - start);
-            xb.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
-            ob.assign(static_cast<size_t>(nrows) * hidden_size, bf16(0.0f));
+            std::fill(xb.begin(), xb.end(), bf16(0.0f));
             for (int b = 0; b < nrows; ++b) {
                 int token = input_tokens[start + b];
-                for (int i = 0; i < hidden_size; ++i)
-                    xb[static_cast<size_t>(b) * hidden_size + i] =
-                        bf16(weights_.token_embd[static_cast<size_t>(token) * hidden_size + i] * embed_scale);
+                const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(token) * hidden_size];
+                for (int i = 0; i < hidden_size; ++i) {
+                    float val = emb_ptr[i] * embed_scale;
+                    xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
+                    inpL_tmp[i] = val;
+                }
+                static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
+                if (cfg.per_layer_input > 0 && !no_ple) {
+                    float* ple_dst = &batch_ple[static_cast<size_t>(b) * cfg.num_hidden_layers * cfg.per_layer_input];
+                    model_.compute_per_layer_inputs(token, inpL_tmp.data(), ple_dst);
+                }
             }
+            const float* ple_ptr = batch_ple.empty() ? nullptr : batch_ple.data();
             for (int l = 0; l < cfg.num_hidden_layers; ++l) {
-                model_.run_layer_batch(xb.data(), nrows, start, l, ob.data());
+                model_.run_layer_batch(xb.data(), nrows, start, l, ob.data(), ple_ptr);
                 std::swap(xb, ob);
             }
             tag() << "  prefill chunk " << (start / PB + 1) << " ["
