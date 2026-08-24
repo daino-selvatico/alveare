@@ -125,8 +125,8 @@ class MelSpectrogramExtractor {
 public:
     static constexpr int kSampleRate = 16000;
     static constexpr int kFftSize = 512;
-    static constexpr int kWinLength = 400; // 25 ms
-    static constexpr int kHopLength = 160; // 10 ms
+    static constexpr int kWinLength = 320; // 20 ms frame
+    static constexpr int kHopLength = 160; // 10 ms hop
     static constexpr int kNumMelBins = 128;
     static constexpr float kMinFreq = 0.0f;
     static constexpr float kMaxFreq = 8000.0f;
@@ -144,30 +144,30 @@ public:
         std::vector<std::vector<float>> mel_spec(num_frames, std::vector<float>(kNumMelBins, 0.0f));
 
         std::vector<float> frame_fft(kFftSize);
-        std::vector<float> power_spectrum(kFftSize / 2 + 1);
+        std::vector<float> magnitude_spectrum(kFftSize / 2 + 1);
 
         for (int f = 0; f < num_frames; ++f) {
             size_t start = f * kHopLength;
             std::fill(frame_fft.begin(), frame_fft.end(), 0.0f);
 
-            // Apply Hanning window
+            // Apply periodic Hann window
             for (int i = 0; i < kWinLength; ++i) {
                 frame_fft[i] = pcm[start + i] * window_[i];
             }
 
-            // Real FFT & Power spectrum (magnitude squared)
-            compute_power_spectrum(frame_fft.data(), power_spectrum.data());
+            // Real FFT & Magnitude spectrum |FFT|
+            compute_magnitude_spectrum(frame_fft.data(), magnitude_spectrum.data());
 
-            // Apply triangular Mel filterbank
+            // Apply triangular Mel filterbank (HTK scale)
             for (int m = 0; m < kNumMelBins; ++m) {
                 float mel_val = 0.0f;
                 int start_bin = filter_starts_[m];
                 int end_bin = filter_ends_[m];
                 for (int b = start_bin; b <= end_bin; ++b) {
-                    mel_val += power_spectrum[b] * filterbank_[m * (kFftSize / 2 + 1) + b];
+                    mel_val += magnitude_spectrum[b] * filterbank_[m * (kFftSize / 2 + 1) + b];
                 }
-                // Log compression
-                mel_spec[f][m] = std::log(std::max(mel_val, 1e-5f));
+                // Natural log compression with floor 0.001
+                mel_spec[f][m] = std::log(std::max(mel_val, 0.001f));
             }
         }
         return mel_spec;
@@ -182,7 +182,7 @@ private:
     void init_window() {
         window_.resize(kWinLength);
         for (int i = 0; i < kWinLength; ++i) {
-            window_[i] = 0.5f * (1.0f - std::cos(2.0f * M_PI * i / (kWinLength - 1)));
+            window_[i] = 0.5f * (1.0f - std::cos(2.0f * M_PI * i / kWinLength));
         }
     }
 
@@ -223,8 +223,7 @@ private:
         }
     }
 
-    void compute_power_spectrum(const float* in, float* out_power) const {
-        // Discrete Fourier Transform (optimized for 257 output bins)
+    void compute_magnitude_spectrum(const float* in, float* out_mag) const {
         int num_bins = kFftSize / 2 + 1;
         for (int k = 0; k < num_bins; ++k) {
             float real = 0.0f, imag = 0.0f;
@@ -234,7 +233,7 @@ private:
                 real += in[n] * std::cos(angle);
                 imag += in[n] * std::sin(angle);
             }
-            out_power[k] = real * real + imag * imag;
+            out_mag[k] = std::sqrt(real * real + imag * imag);
         }
     }
 };
