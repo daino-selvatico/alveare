@@ -22,7 +22,9 @@ import {
   Sliders,
   AlertTriangle,
   RefreshCw,
-  HardDrive
+  HardDrive,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -458,12 +460,63 @@ export default function ChatPlayground({
     }
   };
 
-  const handleOpenUpload = (filterType) => {
-    if (filterType === 'image' || filterType === 'audio') {
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef(null);
+
+  const toggleRecording = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setGenerationError(t('chat.speechNotSupported') || 'Riconoscimento vocale non supportato dal browser.');
       return;
     }
+
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = navigator.language || 'it-IT';
+
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            transcript += event.results[i][0].transcript;
+          }
+        }
+        if (transcript) {
+          setInput(prev => (prev ? prev + ' ' : '') + transcript.trim());
+        }
+      };
+
+      recognition.onerror = (e) => {
+        console.error("Speech recognition error:", e);
+        setIsRecording(false);
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+      };
+
+      recognition.start();
+      recognitionRef.current = recognition;
+      setIsRecording(true);
+    } catch (e) {
+      console.error("Failed to start speech recognition:", e);
+      setIsRecording(false);
+    }
+  };
+
+  const handleOpenUpload = (filterType) => {
     let accept = '*/*';
-    if (filterType === 'document') accept = '.pdf,.txt,.md,.csv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.cpp,.h,.c,.rs,.go,.yaml,.yml,.sh,.log';
+    if (filterType === 'image') accept = 'image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg';
+    else if (filterType === 'audio') accept = 'audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.webm';
+    else if (filterType === 'document') accept = '.pdf,.docx,.txt,.md,.csv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.cpp,.h,.c,.rs,.go,.yaml,.yml,.sh,.log,.sql,.xml,.epub,.rtf';
     
     setAcceptFilter(accept);
     setShowUploadMenu(false);
@@ -481,12 +534,7 @@ export default function ChatPlayground({
       const fileId = `att_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       let category = 'document';
       if (file.type.startsWith('image/') || file.name.match(/\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i)) category = 'image';
-      else if (file.type.startsWith('audio/') || file.name.match(/\.(mp3|wav|ogg|flac|m4a|aac)$/i)) category = 'audio';
-
-      if (category === 'image' || category === 'audio') {
-        setGenerationError(t('chat.unsupportedFileTypeError', { name: file.name }));
-        continue;
-      }
+      else if (file.type.startsWith('audio/') || file.name.match(/\.(mp3|wav|ogg|flac|m4a|aac|webm)$/i)) category = 'audio';
 
       const item = {
         id: fileId,
@@ -498,7 +546,19 @@ export default function ChatPlayground({
         textData: null
       };
 
-      if (category === 'document' || file.name.match(/\.(txt|md|csv|json|py|js|ts|jsx|tsx|html|css|cpp|h|c|rs|go|yaml|yml|sh|log)$/i)) {
+      if (category === 'image' || category === 'audio') {
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+          item.url = dataUrl;
+        } catch (e) {
+          console.error("Error reading media file:", e);
+        }
+      } else {
         try {
           const content = await file.text();
           item.textData = content;
@@ -554,10 +614,16 @@ export default function ChatPlayground({
 
     if (attachments.length > 0) {
       const attachSummary = attachments.map(a => {
+        if (a.category === 'image') {
+          return `\n[Immagine allegata: ${a.name} (${(a.size / 1024).toFixed(1)} KB)]`;
+        }
+        if (a.category === 'audio') {
+          return `\n[Audio allegato: ${a.name} (${(a.size / 1024).toFixed(1)} KB)]`;
+        }
         if (a.textData) {
           return `\n\n--- [Allegato: ${a.name}] ---\n${a.textData}\n--- [Fine ${a.name}] ---`;
         }
-        return `\n[Allegato caricato: ${a.name} (${a.category}, ${(a.size / 1024).toFixed(1)} KB)]`;
+        return `\n[Documento caricato: ${a.name} (${(a.size / 1024).toFixed(1)} KB)]`;
       }).join('');
 
       fullPromptContent = fullPromptContent ? `${fullPromptContent}\n${attachSummary}` : attachSummary.trim();
@@ -1106,14 +1172,21 @@ export default function ChatPlayground({
                                   src={att.url}
                                   alt={att.name}
                                   onClick={() => setPreviewImageModal(att.url)}
-                                  style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '6px', cursor: 'pointer' }}
+                                  style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: '6px', cursor: 'pointer' }}
                                 />
+                              ) : att.category === 'audio' && att.url ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                  <span style={{ fontWeight: 500, fontSize: '0.75rem', color: 'var(--text-muted)' }}>{att.name}</span>
+                                  <audio src={att.url} controls style={{ height: '30px', maxWidth: '240px' }} />
+                                </div>
                               ) : (
-                                <FileText size={16} color="var(--accent-cyan)" />
+                                <>
+                                  <FileText size={16} color="var(--accent-cyan)" />
+                                  <span style={{ fontWeight: 500, maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {att.name}
+                                  </span>
+                                </>
                               )}
-                              <span style={{ fontWeight: 500, maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {att.name}
-                              </span>
                             </div>
                           ))}
                         </div>
@@ -1147,25 +1220,19 @@ export default function ChatPlayground({
                           >
                             <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
                               <Brain size={16} /> {t('chat.thinkingTitle')}
-                              {isCurrentlyGeneratingThis && !displayMessageText && (
-                                <span className="pulse-icon" style={{ fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>
-                                  {t('chat.thinkingProcessing')}
-                                </span>
-                              )}
                             </span>
                             {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                           </button>
 
                           {(isExpanded || (isCurrentlyGeneratingThis && !displayMessageText)) && (
                             <div style={{
-                              padding: '0.75rem 0.85rem',
+                              padding: '0.85rem 1rem',
                               borderTop: '1px solid rgba(139, 92, 246, 0.15)',
-                              fontSize: '0.84rem',
-                              lineHeight: '1.5',
+                              fontSize: '0.86rem',
+                              lineHeight: '1.6',
                               color: 'var(--text-muted)',
-                              fontFamily: 'var(--font-mono)',
                               whiteSpace: 'pre-wrap',
-                              background: 'rgba(0,0,0,0.15)'
+                              fontFamily: 'monospace'
                             }}>
                               {thinking}
                             </div>
@@ -1173,101 +1240,104 @@ export default function ChatPlayground({
                         </div>
                       )}
 
-                      {/* Streaming First-Token Pulse Placeholder */}
-                      {isCurrentlyGeneratingThis && !displayMessageText && !thinking && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--accent-cyan)', fontSize: '0.9rem', padding: '0.2rem 0' }}>
-                          <Sparkles size={18} className="pulse-icon" />
-                          <span>{t('chat.initializingNpu')}</span>
-                        </div>
-                      )}
-
-                      {/* Markdown Text Body */}
-                      <div style={{ fontSize: '0.94rem', lineHeight: '1.6' }}>
-                        {isUser ? (
-                          <div style={{ whiteSpace: 'pre-wrap' }}>{displayMessageText}</div>
+                      {/* Message Content */}
+                      <div className="markdown-content" style={{ fontSize: '0.94rem', lineHeight: '1.65' }}>
+                        {isCurrentlyGeneratingThis && !displayMessageText ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)' }}>
+                            <Zap size={16} className="spin-icon" color="var(--accent-cyan)" />
+                            <span>{t('chat.initializingNpu')}</span>
+                          </div>
                         ) : (
-                          displayMessageText && (
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              components={{
-                                code: CodeBlock
-                              }}
-                            >
-                              {displayMessageText}
-                            </ReactMarkdown>
-                          )
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {displayMessageText}
+                          </ReactMarkdown>
                         )}
                       </div>
 
-                      {/* Copy Action */}
-                      {!isUser && displayMessageText && (
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.6rem' }}>
+                      {/* Actions footer */}
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: isUser ? 'flex-end' : 'space-between',
+                        marginTop: '0.65rem',
+                        gap: '0.5rem',
+                        borderTop: isUser ? 'none' : '1px solid rgba(255,255,255,0.05)',
+                        paddingTop: isUser ? 0 : '0.45rem'
+                      }}>
+                        {!isUser && (
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <Cpu size={12} color="var(--accent-cyan)" />
+                            {activeModel}
+                          </span>
+                        )}
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                           <button
-                            onClick={() => copyToClipboard(displayMessageText, idx)}
+                            onClick={() => handleCopy(displayMessageText || msg.content, idx)}
+                            title={t('chat.copyResponse')}
                             aria-label={t('chat.copyResponse')}
                             style={{
                               background: 'none',
                               border: 'none',
                               color: copiedIndex === idx ? 'var(--accent-green)' : 'var(--text-muted)',
                               cursor: 'pointer',
-                              fontSize: '0.76rem',
+                              padding: '0.2rem 0.4rem',
+                              borderRadius: '4px',
                               display: 'flex',
                               alignItems: 'center',
-                              gap: '0.3rem'
+                              gap: '0.25rem',
+                              fontSize: '0.72rem'
                             }}
                           >
-                            {copiedIndex === idx ? <Check size={14} /> : <Copy size={14} />}
-                            <span>{copiedIndex === idx ? t('chat.copied') : t('chat.copy')}</span>
+                            {copiedIndex === idx ? <Check size={13} /> : <Copy size={13} />}
+                            {copiedIndex === idx ? t('chat.copied') : t('chat.copy')}
                           </button>
                         </div>
-                      )}
+                      </div>
                     </div>
                   </div>
                 </div>
               );
             })
           )}
-
-          {/* Resilient Error Banner */}
-          {generationError && !isGenerating && (
-            <div style={{
-              alignSelf: 'center',
-              maxWidth: '600px',
-              width: '100%',
-              margin: '0.5rem 0',
-              padding: '0.85rem 1.25rem',
-              borderRadius: '12px',
-              background: 'rgba(239, 68, 68, 0.12)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '1rem'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: '#fca5a5', fontSize: '0.85rem' }}>
-                <AlertTriangle size={18} style={{ flexShrink: 0 }} />
-                <span>{generationError}</span>
-              </div>
-              {lastUserPrompt && (
-                <button
-                  className="btn-secondary"
-                  onClick={() => handleSend(lastUserPrompt)}
-                  style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', color: '#fca5a5', borderColor: 'rgba(239, 68, 68, 0.4)' }}
-                  aria-label={t('chat.retry')}
-                >
-                  <RefreshCw size={14} /> {t('chat.retry')}
-                </button>
-              )}
-            </div>
-          )}
-
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Selected Attachments Bar */}
+        {/* Retry Banner after interruption */}
+        {generationError && (
+          <div style={{
+            padding: '0.75rem 1.5rem',
+            background: 'rgba(239, 68, 68, 0.1)',
+            borderTop: '1px solid rgba(239, 68, 68, 0.25)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+            fontSize: '0.85rem',
+            color: 'var(--accent-red)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <AlertTriangle size={16} />
+              <span>{generationError}</span>
+            </div>
+            {lastUserPrompt && (
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  handleSend(lastUserPrompt);
+                }}
+                style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+              >
+                <RefreshCw size={14} /> {t('chat.retry')}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Active Attachments Bar */}
         {attachments.length > 0 && (
           <div style={{
-            padding: '0.6rem 1.5rem',
+            padding: '0.5rem 1.5rem',
             background: 'rgba(0,0,0,0.2)',
             borderTop: '1px solid var(--border-color)',
             display: 'flex',
@@ -1294,7 +1364,17 @@ export default function ChatPlayground({
                   flexShrink: 0
                 }}
               >
-                <FileText size={14} color="var(--accent-purple)" />
+                {att.category === 'image' && att.url ? (
+                  <img
+                    src={att.url}
+                    alt={att.name}
+                    style={{ width: '18px', height: '18px', objectFit: 'cover', borderRadius: '3px' }}
+                  />
+                ) : att.category === 'audio' ? (
+                  <Music size={14} color="var(--accent-cyan)" />
+                ) : (
+                  <FileText size={14} color="var(--accent-green)" />
+                )}
                 <span style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {att.name}
                 </span>
@@ -1354,58 +1434,18 @@ export default function ChatPlayground({
                   }}
                 >
                   <button
-                    disabled
+                    onClick={() => handleOpenUpload('image')}
                     role="menuitem"
-                    title={t('chat.comingSoonTooltip')}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--text-muted)',
-                      padding: '0.5rem 0.75rem',
-                      borderRadius: '6px',
-                      cursor: 'not-allowed',
-                      opacity: 0.5,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: '0.5rem',
-                      fontSize: '0.85rem',
-                      width: '100%'
-                    }}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left', width: '100%' }}
                   >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <ImageIcon size={16} color="var(--text-muted)" /> {t('chat.image')}
-                    </span>
-                    <span style={{ fontSize: '0.7rem', padding: '0.1rem 0.35rem', background: 'var(--bg-tertiary)', borderRadius: '4px', whiteSpace: 'nowrap' }}>
-                      {t('chat.comingSoon')}
-                    </span>
+                    <ImageIcon size={16} color="var(--accent-purple)" /> {t('chat.image')}
                   </button>
                   <button
-                    disabled
+                    onClick={() => handleOpenUpload('audio')}
                     role="menuitem"
-                    title={t('chat.comingSoonTooltip')}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--text-muted)',
-                      padding: '0.5rem 0.75rem',
-                      borderRadius: '6px',
-                      cursor: 'not-allowed',
-                      opacity: 0.5,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: '0.5rem',
-                      fontSize: '0.85rem',
-                      width: '100%'
-                    }}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left', width: '100%' }}
                   >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <Music size={16} color="var(--text-muted)" /> {t('chat.audio')}
-                    </span>
-                    <span style={{ fontSize: '0.7rem', padding: '0.1rem 0.35rem', background: 'var(--bg-tertiary)', borderRadius: '4px', whiteSpace: 'nowrap' }}>
-                      {t('chat.comingSoon')}
-                    </span>
+                    <Music size={16} color="var(--accent-cyan)" /> {t('chat.audio')}
                   </button>
                   <button
                     onClick={() => handleOpenUpload('document')}
@@ -1417,6 +1457,24 @@ export default function ChatPlayground({
                 </div>
               )}
             </div>
+
+            {/* Microphone Button */}
+            <button
+              className={isRecording ? "btn-danger pulse-icon" : "btn-secondary"}
+              onClick={toggleRecording}
+              title={isRecording ? "Ferma registrazione vocale" : "Registrazione vocale / Speech-to-Text"}
+              aria-label={isRecording ? "Ferma registrazione vocale" : "Registrazione vocale"}
+              disabled={!isServerRunning || isGenerating}
+              style={{
+                padding: '0.75rem',
+                borderRadius: '10px',
+                background: isRecording ? 'rgba(239, 68, 68, 0.25)' : undefined,
+                borderColor: isRecording ? 'rgba(239, 68, 68, 0.6)' : undefined,
+                color: isRecording ? 'var(--accent-red, #ef4444)' : undefined
+              }}
+            >
+              {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
 
             <textarea
               value={input}

@@ -26,7 +26,7 @@ describe('ChatPlayground', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders ChatPlayground and gates image/audio uploads as coming soon', async () => {
+  it('renders ChatPlayground and provides image, audio, and document upload options', async () => {
     await act(async () => {
       render(
         <I18nProvider>
@@ -48,8 +48,9 @@ describe('ChatPlayground', () => {
       fireEvent.click(attachBtn);
     });
 
-    const comingSoonBadges = screen.getAllByText('Coming soon');
-    expect(comingSoonBadges.length).toBe(2);
+    expect(screen.getByText('Image')).toBeDefined();
+    expect(screen.getByText('Audio')).toBeDefined();
+    expect(screen.getByText('Document')).toBeDefined();
   });
 
   it('rejects image files when uploaded', async () => {

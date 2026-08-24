@@ -111,25 +111,51 @@ void ApiServer::start(int port) {
             bool is_gemma4 = generator_.config().is_gemma4();
             bool is_gemma3 = (model_type == "gemma3");
 
+            auto get_msg_content = [](const nlohmann::json& msg) -> std::string {
+                if (!msg.contains("content")) return "";
+                if (msg["content"].is_string()) return msg["content"].get<std::string>();
+                if (msg["content"].is_array()) {
+                    std::string res = "";
+                    for (const auto& part : msg["content"]) {
+                        if (part.is_object()) {
+                            if (part.value("type", "") == "text" && part.contains("text")) {
+                                if (!res.empty()) res += "\n";
+                                res += part["text"].get<std::string>();
+                            } else if (part.value("type", "") == "image_url") {
+                                if (!res.empty()) res += "\n";
+                                res += "[Immagine Allegata]";
+                            } else if (part.value("type", "") == "input_audio") {
+                                if (!res.empty()) res += "\n";
+                                res += "[Audio Allegato]";
+                            }
+                        }
+                    }
+                    return res;
+                }
+                return "";
+            };
+
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
                 if (is_gemma3) {
                     prompt = "<bos>";
                     for (const auto& msg : j_req["messages"]) {
-                        if (!msg.contains("content") || !msg["content"].is_string()) continue;
+                        std::string c = get_msg_content(msg);
+                        if (c.empty()) continue;
                         std::string role = msg.value("role", "user");
                         if (role == "assistant") role = "model";
                         prompt += "<start_of_turn>" + role + "\n";
-                        prompt += msg["content"].get<std::string>() + "<end_of_turn>\n";
+                        prompt += c + "<end_of_turn>\n";
                     }
                     prompt += "<start_of_turn>model\n";
                 } else if (is_gemma4) {
                     prompt = "<bos>";
                     for (const auto& msg : j_req["messages"]) {
-                        if (!msg.contains("content") || !msg["content"].is_string()) continue;
+                        std::string c = get_msg_content(msg);
+                        if (c.empty()) continue;
                         std::string role = msg.value("role", "user");
                         if (role == "assistant") role = "model";
                         prompt += "<|turn>" + role + "\n";
-                        prompt += msg["content"].get<std::string>() + "<turn|>\n";
+                        prompt += c + "<turn|>\n";
                     }
                     if (enable_thinking) {
                         prompt += "<|turn>model\n<|channel>thought\n";
@@ -138,8 +164,9 @@ void ApiServer::start(int port) {
                     }
                 } else {
                     for (const auto& msg : j_req["messages"]) {
-                        if (msg.contains("content") && msg["content"].is_string()) {
-                            prompt += msg["content"].get<std::string>() + "\n";
+                        std::string c = get_msg_content(msg);
+                        if (!c.empty()) {
+                            prompt += c + "\n";
                         }
                     }
                 }
