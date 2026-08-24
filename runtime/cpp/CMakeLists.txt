@@ -57,6 +57,7 @@ set(ALVEARE_CORE_SRC
     src/prompt_lookup.cpp
     src/generator.cpp
     src/vision_embedder.cpp
+    src/audio_embedder.cpp
     src/server.cpp
 )
 

@@ -196,7 +196,8 @@ GenerationStats Generator::generate(
     const std::string& prompt,
     const GenerationParams& params,
     std::function<bool(const std::string&)> on_token,
-    const std::vector<std::vector<float>>& visual_embeddings
+    const std::vector<std::vector<float>>& visual_embeddings,
+    const std::vector<std::vector<float>>& audio_embeddings
 ) {
     GenerationStats stats;
     std::lock_guard<std::mutex> gen_lock(gen_mutex_);
@@ -231,6 +232,15 @@ GenerationStats Generator::generate(
         }
         tag() << "Injected " << v_idx << " visual token embeddings into prompt sequence\n" << std::flush;
     }
+    if (!audio_embeddings.empty()) {
+        size_t a_idx = 0;
+        for (size_t i = 0; i < input_tokens.size(); ++i) {
+            if (input_tokens[i] == 258881 && a_idx < audio_embeddings.size()) {
+                custom_emb_map[static_cast<int>(i)] = audio_embeddings[a_idx++].data();
+            }
+        }
+        tag() << "Injected " << a_idx << " audio token embeddings into prompt sequence\n" << std::flush;
+    }
 
     std::cout << "[input_tokens]";
     for (int t : input_tokens) std::cout << " " << t;
@@ -242,7 +252,7 @@ GenerationStats Generator::generate(
     // the whole conversation history. We never need the last prompt token in the
     // reused prefix (the decode loop processes it), so cap at num_prompt-1.
     int reuse = 0;
-    if (visual_embeddings.empty()) {
+    if (visual_embeddings.empty() && audio_embeddings.empty()) {
         int maxP = std::min(static_cast<int>(cached_tokens_.size()), num_prompt_tokens - 1);
         while (reuse < maxP && input_tokens[reuse] == cached_tokens_[reuse]) ++reuse;
     }

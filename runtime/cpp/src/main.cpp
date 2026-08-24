@@ -14,6 +14,7 @@
 #include "alveare/tokenizer.h"
 #include "alveare/generator.h"
 #include "alveare/vision_embedder.h"
+#include "alveare/audio_embedder.h"
 #include "alveare/server.h"
 
 using namespace alveare;
@@ -323,10 +324,18 @@ int main(int argc, char** argv) {
         VisionEmbedder vision_embedder;
         std::string vision_dir = model_dir + "/vision";
         if (vision_embedder.load(vision_dir)) {
-            std::cout << "[alveare_runtime] VisionEmbedder active for multimodal input\n" << std::flush;
+            std::cout << "[alveare_runtime] VisionEmbedder active for multimodal vision input\n" << std::flush;
         }
 
-        ApiServer server(generator, vision_embedder.is_loaded() ? &vision_embedder : nullptr);
+        AudioEmbedder audio_embedder;
+        std::string audio_dir = model_dir + "/audio";
+        if (audio_embedder.load(audio_dir)) {
+            std::cout << "[alveare_runtime] AudioEmbedder active for multimodal audio input\n" << std::flush;
+        }
+
+        ApiServer server(generator,
+                         vision_embedder.is_loaded() ? &vision_embedder : nullptr,
+                         audio_embedder.is_loaded() ? &audio_embedder : nullptr);
         server.start(port);
         
     } catch (const std::exception& e) {

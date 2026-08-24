@@ -1,5 +1,6 @@
 #include "alveare/server.h"
 #include "alveare/vision_embedder.h"
+#include "alveare/audio_embedder.h"
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 #include <iostream>
@@ -27,8 +28,8 @@ static void handle_server_signal(int sig) {
     }).detach();
 }
 
-ApiServer::ApiServer(Generator& generator, VisionEmbedder* vision_embedder)
-    : generator_(generator), vision_embedder_(vision_embedder) {}
+ApiServer::ApiServer(Generator& generator, VisionEmbedder* vision_embedder, AudioEmbedder* audio_embedder)
+    : generator_(generator), vision_embedder_(vision_embedder), audio_embedder_(audio_embedder) {}
 
 void ApiServer::stop() {
     if (svr_ptr_) {
@@ -97,7 +98,7 @@ void ApiServer::start(int port) {
             auto j_req = json::parse(req.body);
             std::string prompt = "";
             bool stream = false;
-            bool enable_thinking = true;
+            bool enable_thinking = (model_type != "gemma4-e4b" && model_type != "gemma4-e2b");
             
             if (j_req.contains("stream") && j_req["stream"].is_boolean()) {
                 stream = j_req["stream"].get<bool>();
@@ -114,6 +115,7 @@ void ApiServer::start(int port) {
             bool is_gemma3 = (model_type == "gemma3");
 
             std::vector<std::vector<float>> all_visual_embeddings;
+            std::vector<std::vector<float>> all_audio_embeddings;
 
             auto process_image = [&](const std::string& url_or_b64) -> std::string {
                 if (!vision_embedder_ || !vision_embedder_->is_loaded() || url_or_b64.empty()) {
@@ -133,11 +135,30 @@ void ApiServer::start(int port) {
                 return "[Immagine Allegata]";
             };
 
+            auto process_audio = [&](const std::string& url_or_b64) -> std::string {
+                if (!audio_embedder_ || !audio_embedder_->is_loaded() || url_or_b64.empty()) {
+                    return "[Audio Allegato]";
+                }
+                auto emb = audio_embedder_->encode_audio_base64(url_or_b64);
+                if (!emb.empty()) {
+                    std::cout << "[server] Successfully encoded audio into " << emb.size() 
+                              << " audio tokens (dim=" << (emb.empty() ? 0 : emb[0].size()) << ")\n" << std::flush;
+                    std::string aud_tag = "<|audio>";
+                    for (size_t i = 0; i < emb.size(); ++i) aud_tag += "<|audio|>";
+                    aud_tag += "<audio|>";
+                    all_audio_embeddings.insert(all_audio_embeddings.end(), emb.begin(), emb.end());
+                    return aud_tag;
+                }
+                std::cerr << "[server] Failed to decode audio payload\n" << std::flush;
+                return "[Audio Allegato]";
+            };
+
             auto get_msg_content = [&](const nlohmann::json& msg) -> std::string {
                 std::string visual_tags = "";
+                std::string audio_tags = "";
                 std::string text_body = "";
 
-                // Check for root-level "images" array (Open-WebUI / Ollama / Jan format)
+                // Check for root-level "images" array
                 if (msg.contains("images") && msg["images"].is_array()) {
                     for (const auto& img_item : msg["images"]) {
                         if (img_item.is_string()) {
@@ -151,6 +172,24 @@ void ApiServer::start(int port) {
                     std::string tag = process_image(msg["image_url"].get<std::string>());
                     if (!visual_tags.empty()) visual_tags += "\n";
                     visual_tags += tag;
+                }
+
+                // Check for root-level "audio" / "input_audio"
+                if (msg.contains("audio") && msg["audio"].is_string()) {
+                    std::string tag = process_audio(msg["audio"].get<std::string>());
+                    if (!audio_tags.empty()) audio_tags += "\n";
+                    audio_tags += tag;
+                }
+                if (msg.contains("input_audio")) {
+                    if (msg["input_audio"].is_string()) {
+                        std::string tag = process_audio(msg["input_audio"].get<std::string>());
+                        if (!audio_tags.empty()) audio_tags += "\n";
+                        audio_tags += tag;
+                    } else if (msg["input_audio"].is_object() && msg["input_audio"].contains("data")) {
+                        std::string tag = process_audio(msg["input_audio"]["data"].get<std::string>());
+                        if (!audio_tags.empty()) audio_tags += "\n";
+                        audio_tags += tag;
+                    }
                 }
 
                 if (msg.contains("content")) {
@@ -180,19 +219,39 @@ void ApiServer::start(int port) {
                                     std::string tag = process_image(url);
                                     if (!visual_tags.empty()) visual_tags += "\n";
                                     visual_tags += tag;
-                                } else if (ptype == "input_audio") {
-                                    if (!text_body.empty()) text_body += "\n";
-                                    text_body += "[Audio Allegato]";
+                                } else if (ptype == "input_audio" || ptype == "audio_url" || ptype == "audio") {
+                                    std::string aud_data = "";
+                                    if (part.contains("input_audio")) {
+                                        if (part["input_audio"].is_string()) aud_data = part["input_audio"].get<std::string>();
+                                        else if (part["input_audio"].is_object() && part["input_audio"].contains("data")) aud_data = part["input_audio"]["data"].get<std::string>();
+                                    } else if (part.contains("audio_url")) {
+                                        if (part["audio_url"].is_string()) aud_data = part["audio_url"].get<std::string>();
+                                        else if (part["audio_url"].is_object() && part["audio_url"].contains("url")) aud_data = part["audio_url"]["url"].get<std::string>();
+                                    } else if (part.contains("data") && part["data"].is_string()) {
+                                        aud_data = part["data"].get<std::string>();
+                                    } else if (part.contains("url") && part["url"].is_string()) {
+                                        aud_data = part["url"].get<std::string>();
+                                    }
+                                    std::string tag = process_audio(aud_data);
+                                    if (!audio_tags.empty()) audio_tags += "\n";
+                                    audio_tags += tag;
                                 }
                             }
                         }
                     }
                 }
 
-                if (!visual_tags.empty() && !text_body.empty()) {
-                    return visual_tags + "\n" + text_body;
+                std::string header_tags = "";
+                if (!visual_tags.empty()) header_tags += visual_tags;
+                if (!audio_tags.empty()) {
+                    if (!header_tags.empty()) header_tags += "\n";
+                    header_tags += audio_tags;
                 }
-                return !visual_tags.empty() ? visual_tags : text_body;
+
+                if (!header_tags.empty() && !text_body.empty()) {
+                    return header_tags + "\n" + text_body;
+                }
+                return !header_tags.empty() ? header_tags : text_body;
             };
 
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
@@ -237,7 +296,8 @@ void ApiServer::start(int port) {
             }
 
             std::cout << "[server] Request received: " << all_visual_embeddings.size() 
-                      << " visual tokens attached. Prompt length: " << prompt.length() << " chars\n" << std::flush;
+                      << " visual tokens, " << all_audio_embeddings.size()
+                      << " audio tokens. Prompt length: " << prompt.length() << " chars\n" << std::flush;
 
             GenerationParams params;
             if (j_req.contains("max_tokens") && j_req["max_tokens"].is_number_integer()) {
@@ -269,7 +329,7 @@ void ApiServer::start(int port) {
 
             if (stream) {
                 res.set_chunked_content_provider("text/event-stream",
-                    [this, prompt, params, model_name, is_gemma4, enable_thinking, all_visual_embeddings](size_t offset, httplib::DataSink& sink) {
+                    [this, prompt, params, model_name, is_gemma4, enable_thinking, all_visual_embeddings, all_audio_embeddings](size_t offset, httplib::DataSink& sink) {
                         auto req_id = "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                         int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                         std::string prefix = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"";
@@ -292,7 +352,7 @@ void ApiServer::start(int port) {
                             sse_buf += suffix;
                             sink.write(sse_buf.c_str(), sse_buf.size());
                             return true; // continue
-                        }, all_visual_embeddings);
+                        }, all_visual_embeddings, all_audio_embeddings);
 
                         std::string stop_chunk = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
                         sink.write(stop_chunk.c_str(), stop_chunk.size());
@@ -310,7 +370,7 @@ void ApiServer::start(int port) {
                 GenerationStats stats = generator_.generate(prompt, params, [&](const std::string& token) {
                     full_response += token;
                     return true;
-                }, all_visual_embeddings);
+                }, all_visual_embeddings, all_audio_embeddings);
                 
                 json resp = {
                     {"id", "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count())},

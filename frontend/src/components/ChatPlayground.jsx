@@ -197,12 +197,20 @@ export default function ChatPlayground({
   const [generationError, setGenerationError] = useState(null);
   const [lastUserPrompt, setLastUserPrompt] = useState(null);
 
-  // File upload state
+  // File upload & Audio recording state
   const [attachments, setAttachments] = useState([]);
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const [acceptFilter, setAcceptFilter] = useState('*/*');
   const [isDragging, setIsDragging] = useState(false);
   const [previewImageModal, setPreviewImageModal] = useState(null);
+
+  // Audio recording state
+  const [isVoiceRecording, setIsVoiceRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const mediaRecorderRef = useRef(null);
+  const recordingStreamRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recordingTimerRef = useRef(null);
 
   const fileInputRef = useRef(null);
   const uploadMenuRef = useRef(null);
@@ -521,6 +529,113 @@ export default function ChatPlayground({
     }
   };
 
+  const formatAudioDuration = (sec) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const handleStartVoiceRecording = async () => {
+    setShowUploadMenu(false);
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("Il tuo browser non supporta la registrazione audio da microfono.");
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+          mimeType = 'audio/ogg;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/wav')) {
+          mimeType = 'audio/wav';
+        }
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        if (audioBlob.size > 0) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result;
+            const timestampStr = new Date().toISOString().replace(/[:.]/g, '-').slice(11, 19);
+            const attId = `rec_${Date.now()}`;
+            const newAtt = {
+              id: attId,
+              name: `Registrazione_${timestampStr}.wav`,
+              size: audioBlob.size,
+              type: mimeType,
+              category: 'audio',
+              url: dataUrl
+            };
+            setAttachments(prev => [...prev, newAtt]);
+          };
+          reader.readAsDataURL(audioBlob);
+        }
+
+        if (recordingStreamRef.current) {
+          recordingStreamRef.current.getTracks().forEach(track => track.stop());
+          recordingStreamRef.current = null;
+        }
+      };
+
+      mediaRecorder.start(100);
+      setIsVoiceRecording(true);
+      setRecordingTime(0);
+
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(t => t + 1);
+      }, 1000);
+
+    } catch (err) {
+      console.error("Microphone access error:", err);
+      alert("Impossibile accedere al microfono: " + (err.message || err));
+      setIsVoiceRecording(false);
+    }
+  };
+
+  const handleStopVoiceRecording = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsVoiceRecording(false);
+  };
+
+  const handleCancelVoiceRecording = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    audioChunksRef.current = [];
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach(track => track.stop());
+      recordingStreamRef.current = null;
+    }
+    setIsVoiceRecording(false);
+  };
+
   const handleOpenUpload = (filterType) => {
     let accept = '*/*';
     if (filterType === 'image') accept = 'image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg';
@@ -692,6 +807,11 @@ export default function ChatPlayground({
               parts.push({
                 type: 'image_url',
                 image_url: { url: att.url }
+              });
+            } else if (att.category === 'audio' && att.url) {
+              parts.push({
+                type: 'input_audio',
+                input_audio: { data: att.url, format: 'wav' }
               });
             }
           }
@@ -1475,7 +1595,14 @@ export default function ChatPlayground({
                     role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left', width: '100%' }}
                   >
-                    <Music size={16} color="var(--accent-cyan)" /> {t('chat.audio')}
+                    <Music size={16} color="var(--accent-cyan)" /> Carica file audio
+                  </button>
+                  <button
+                    onClick={handleStartVoiceRecording}
+                    role="menuitem"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left', width: '100%' }}
+                  >
+                    <Mic size={16} color="#ef4444" /> Registra vocale
                   </button>
                   <button
                     onClick={() => handleOpenUpload('document')}
@@ -1488,57 +1615,114 @@ export default function ChatPlayground({
               )}
             </div>
 
-            {/* Microphone Button */}
-            <button
-              className={isRecording ? "btn-danger pulse-icon" : "btn-secondary"}
-              onClick={toggleRecording}
-              title={isRecording ? "Ferma registrazione vocale" : "Registrazione vocale / Speech-to-Text"}
-              aria-label={isRecording ? "Ferma registrazione vocale" : "Registrazione vocale"}
-              disabled={!isServerRunning || isGenerating}
-              style={{
-                padding: '0.75rem',
-                borderRadius: '10px',
-                background: isRecording ? 'rgba(239, 68, 68, 0.25)' : undefined,
-                borderColor: isRecording ? 'rgba(239, 68, 68, 0.6)' : undefined,
-                color: isRecording ? 'var(--accent-red, #ef4444)' : undefined
-              }}
-            >
-              {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
-            </button>
-
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  if (e.nativeEvent.isComposing) return;
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder={
-                !isServerRunning
-                  ? t('chat.inputPlaceholderServerOff')
-                  : models.length === 0
-                  ? t('chat.inputPlaceholderNoModels')
-                  : t('chat.inputPlaceholderReady')
-              }
-              disabled={!isServerRunning || isGenerating || models.length === 0}
-              aria-label="Campo testo messaggio"
-              style={{
+            {/* Live Audio Recording Bar or Text Input */}
+            {isVoiceRecording ? (
+              <div style={{
                 flex: 1,
-                padding: '0.8rem 1rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
                 borderRadius: '10px',
-                background: 'rgba(0,0,0,0.3)',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-main)',
-                fontSize: '0.95rem',
-                resize: 'none',
-                height: '52px',
-                outline: 'none',
-                fontFamily: 'var(--font-sans)'
-              }}
-            />
+                padding: '0.5rem 1rem',
+                height: '52px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{
+                    width: '12px',
+                    height: '12px',
+                    borderRadius: '50%',
+                    background: '#ef4444',
+                    boxShadow: '0 0 12px #ef4444'
+                  }} className="pulse-icon" />
+                  <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#f87171' }}>
+                    Registrazione vocale in corso... {formatAudioDuration(recordingTime)}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <button
+                    onClick={handleCancelVoiceRecording}
+                    className="btn-secondary"
+                    style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}
+                  >
+                    Annulla
+                  </button>
+                  <button
+                    onClick={handleStopVoiceRecording}
+                    style={{
+                      background: '#ef4444',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      padding: '0.4rem 0.85rem',
+                      fontSize: '0.82rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.4rem'
+                    }}
+                  >
+                    <StopCircle size={15} /> Ferma e Allega
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Microphone Button (Speech to Text) */}
+                <button
+                  className={isRecording ? "btn-danger pulse-icon" : "btn-secondary"}
+                  onClick={toggleRecording}
+                  title={isRecording ? "Ferma trascrizione vocale" : "Trascrizione vocale (Speech-to-Text)"}
+                  aria-label={isRecording ? "Ferma trascrizione vocale" : "Trascrizione vocale"}
+                  disabled={!isServerRunning || isGenerating}
+                  style={{
+                    padding: '0.75rem',
+                    borderRadius: '10px',
+                    background: isRecording ? 'rgba(239, 68, 68, 0.25)' : undefined,
+                    borderColor: isRecording ? 'rgba(239, 68, 68, 0.6)' : undefined,
+                    color: isRecording ? 'var(--accent-red, #ef4444)' : undefined
+                  }}
+                >
+                  {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+                </button>
+
+                <textarea
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      if (e.nativeEvent.isComposing) return;
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  placeholder={
+                    !isServerRunning
+                      ? t('chat.inputPlaceholderServerOff')
+                      : models.length === 0
+                      ? t('chat.inputPlaceholderNoModels')
+                      : t('chat.inputPlaceholderReady')
+                  }
+                  disabled={!isServerRunning || isGenerating || models.length === 0}
+                  aria-label="Campo testo messaggio"
+                  style={{
+                    flex: 1,
+                    padding: '0.8rem 1rem',
+                    borderRadius: '10px',
+                    background: 'rgba(0,0,0,0.3)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-main)',
+                    fontSize: '0.95rem',
+                    resize: 'none',
+                    height: '52px',
+                    outline: 'none',
+                    fontFamily: 'var(--font-sans)'
+                  }}
+                />
+              </>
+            )}
 
             {isGenerating ? (
               <button
