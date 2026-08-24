@@ -81,6 +81,15 @@ function parseThinking(content) {
     return { thinking, text };
   }
 
+  // 4. Natural language chain-of-thought monologue: e.g. "I need to analyze... Plan:... <Answer>"
+  const monologueRegex = /^((?:I need to analyze|Let's analyze|Constraint Check:|The user is asking)[\s\S]*?(?:Plan:\s*(?:[^\n]+\n)*\s*(?:\([^)]+\)\s*)?))([A-ZÀ-Úa-zà-ú].*)$/s;
+  const monologueMatch = content.match(monologueRegex);
+  if (monologueMatch) {
+    const thinking = monologueMatch[1].trim();
+    const text = monologueMatch[2].trim();
+    return { thinking, text };
+  }
+
   return { thinking: '', text: content };
 }
 

@@ -159,6 +159,8 @@ void ApiServer::start(int port) {
                     }
                     if (enable_thinking) {
                         prompt += "<|turn>model\n<|channel>thought\n";
+                    } else if (model_type == "gemma4-e4b" || model_type == "gemma4-e2b") {
+                        prompt += "<|turn>model\n";
                     } else {
                         prompt += "<|turn>model\n<|channel>thought\n<channel|>";
                     }
