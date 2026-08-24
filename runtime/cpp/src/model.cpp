@@ -188,14 +188,15 @@ Model::Model(const ModelConfig& config, const ModelWeights& weights, NpuRegistry
     precompute_rope();
 }
 
-void Model::compute_per_layer_inputs(int token_id, const float* inpL, std::vector<float>& out_per_layer) {
+void Model::compute_per_layer_inputs(int token_id, const float* inpL, float* out_per_layer) {
+    if (!out_per_layer) return;
     int n_embd = config_.hidden_size; // 2560
     int n_embd_per_layer = config_.per_layer_input; // 256
     int n_layer = config_.num_hidden_layers; // 42
     int total_dim = n_layer * n_embd_per_layer; // 10752
 
-    out_per_layer.resize(total_dim);
     if (token_id < 0 || token_id >= config_.vocab_size || weights_.per_layer_token_embd_f16.empty() || weights_.per_layer_model_proj_packed.empty()) {
+        std::memset(out_per_layer, 0, size_t(total_dim) * sizeof(float));
         return;
     }
 
@@ -241,6 +242,12 @@ void Model::compute_per_layer_inputs(int token_id, const float* inpL, std::vecto
         float emb = half_to_float(tok_ptr[i]) * lookup_scale;
         out_per_layer[i] = (proj_normed[i] + emb) * blend_scale;
     }
+}
+
+void Model::compute_per_layer_inputs(int token_id, const float* inpL, std::vector<float>& out_per_layer) {
+    int total_dim = config_.num_hidden_layers * config_.per_layer_input;
+    out_per_layer.resize(total_dim);
+    compute_per_layer_inputs(token_id, inpL, out_per_layer.data());
 }
 
 void Model::init_kv_caches() {
@@ -944,7 +951,7 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     auto t_blayer = pclock::now();
     const int K = config_.hidden_size;
     const int K_padded = config_.get_padded_hidden_size();
-    const int B = (nrows <= 8) ? 8 : 16;
+    const int B = 16;
     const LayerWeights& lw = weights_.layers[layer];
 
     const bool is_sliding = ((layer + 1) % config_.sliding_pattern_period != 0);
@@ -969,24 +976,47 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     for (int b = 0; b < nrows; ++b)
         run_rmsnorm_cpu(&x_batch[size_t(b) * K], attn_norm_w, &x_norm_pad[size_t(b) * K_padded], K);
 
-    // 2. Fused Q/K/V projection (one batched GEMM), then slice — matches the
-    // decode path's w_qkv (q++k++v sliding, q++k global with v==k).
-    std::vector<bf16> q(size_t(B) * N_q), k(size_t(B) * N_kv), v(size_t(B) * N_kv);
-    std::vector<bf16> qkv(size_t(B) * lw.n_qkv);
+    // 2. Fused Q/K/V projection (resident tiles or single resident GEMM).
+    std::vector<bf16> q(size_t(B) * N_q, bf16(0.0f)), k(size_t(B) * N_kv, bf16(0.0f)), v(size_t(B) * N_kv, bf16(0.0f));
     auto t_bqkv = pclock::now();
-    reg_.run_gemm(B, lw.n_qkv, K_padded, lw.w_qkv, x_norm_pad.data(), qkv.data());
-    g_bprof.gemm += ms_since(t_bqkv);
-    for (int b = 0; b < nrows; ++b) {
-        const bf16* row = &qkv[size_t(b) * lw.n_qkv];
-        std::memcpy(&q[size_t(b) * N_q], row, size_t(N_q) * sizeof(bf16));
-        if (has_kv) {
-            std::memcpy(&k[size_t(b) * N_kv], row + N_q, size_t(N_kv) * sizeof(bf16));
-            if (is_sliding)
-                std::memcpy(&v[size_t(b) * N_kv], row + N_q + N_kv, size_t(N_kv) * sizeof(bf16));
+    const bool os_q = (!lw.os_qkv_tiles.empty() && lw.os_n > 0);
+    if (os_q) {
+        const int TN = lw.os_n, TK = lw.os_k;
+        const int total_out_rows = int(lw.os_qkv_tiles.size()) * TN;
+        std::vector<bf16> qkv(size_t(B) * total_out_rows);
+        std::vector<bf16> tile_out(size_t(B) * TN);
+        for (size_t t = 0; t < lw.os_qkv_tiles.size(); ++t) {
+            reg_.run_gemm(B, TN, TK, lw.os_qkv_tiles[t], x_norm_pad.data(), tile_out.data());
+            for (int b = 0; b < B; ++b) {
+                std::memcpy(&qkv[size_t(b) * total_out_rows + t * TN],
+                            &tile_out[size_t(b) * TN], size_t(TN) * sizeof(bf16));
+            }
+        }
+        for (int b = 0; b < nrows; ++b) {
+            const bf16* row = &qkv[size_t(b) * total_out_rows];
+            std::memcpy(&q[size_t(b) * N_q], row, size_t(N_q) * sizeof(bf16));
+            if (has_kv) {
+                std::memcpy(&k[size_t(b) * N_kv], row + N_q, size_t(N_kv) * sizeof(bf16));
+                if (is_sliding || config_.model_type == "gemma4-e4b")
+                    std::memcpy(&v[size_t(b) * N_kv], row + N_q + N_kv, size_t(N_kv) * sizeof(bf16));
+            }
+        }
+    } else {
+        std::vector<bf16> qkv(size_t(B) * lw.n_qkv);
+        reg_.run_gemm(B, lw.n_qkv, K_padded, lw.w_qkv, x_norm_pad.data(), qkv.data());
+        for (int b = 0; b < nrows; ++b) {
+            const bf16* row = &qkv[size_t(b) * lw.n_qkv];
+            std::memcpy(&q[size_t(b) * N_q], row, size_t(N_q) * sizeof(bf16));
+            if (has_kv) {
+                std::memcpy(&k[size_t(b) * N_kv], row + N_q, size_t(N_kv) * sizeof(bf16));
+                if (is_sliding || config_.model_type == "gemma4-e4b")
+                    std::memcpy(&v[size_t(b) * N_kv], row + N_q + N_kv, size_t(N_kv) * sizeof(bf16));
+            }
         }
     }
-    if (has_kv && !is_sliding)
-        v = k;  // gemma4 global layers reuse K for V (before per-head norm)
+    g_bprof.gemm += ms_since(t_bqkv);
+    if (has_kv && !is_sliding && config_.model_type != "gemma4-e4b")
+        v = k;  // gemma4 12B global layers reuse K for V
 
     // 3. QK-norm and V-norm (per head, per row).
     std::vector<bf16> tmp(h_dim);
@@ -1036,20 +1066,72 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
         run_attention_host(&q_rope[size_t(b) * N_q], pos_start + b, layer, &attn_out[size_t(b) * N_q]);
     g_bprof.attn += ms_since(t_battn);
 
-    // 7. Output projection (batched GEMM). w_o may be output-padded to o_gemv_n
-    // (gemma4 sliding shares the w_qkv kernel shape); only the first K columns
-    // of each row are the real projection.
-    const int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : K_padded;
-    std::vector<bf16> attn_proj(size_t(B) * o_n);
+    // 7. Output projection (batched GEMM with resident ONESHAPE tiles or padded shape).
+    const bool os_o_on = (!lw.os_o_tiles.empty() && lw.os_n > 0);
+    std::vector<bf16> attn_proj(size_t(B) * K, bf16(0.0f));
     auto t_bo = pclock::now();
-    reg_.run_gemm(B, o_n, N_q, lw.w_o, attn_out.data(), attn_proj.data());
+    if (os_o_on) {
+        const int TN = lw.os_n, TK = lw.os_k;
+        if (lw.os_o_is_kchunked) {
+            std::vector<float> acc(size_t(B) * K, 0.0f);
+            std::vector<bf16> chunk_in(size_t(B) * TK, bf16(0.0f));
+            std::vector<bf16> part(size_t(B) * TN);
+            for (size_t c = 0; c < lw.os_o_tiles.size(); ++c) {
+                int in_start = static_cast<int>(c) * TK;
+                int in_len = std::min(TK, N_q - in_start);
+                std::fill(chunk_in.begin(), chunk_in.end(), bf16(0.0f));
+                if (in_len > 0) {
+                    for (int b = 0; b < nrows; ++b) {
+                        std::memcpy(&chunk_in[size_t(b) * TK],
+                                    &attn_out[size_t(b) * N_q + in_start],
+                                    size_t(in_len) * sizeof(bf16));
+                    }
+                }
+                reg_.run_gemm(B, TN, TK, lw.os_o_tiles[c], chunk_in.data(), part.data());
+                for (int b = 0; b < nrows; ++b) {
+                    for (int i = 0; i < K; ++i) {
+                        acc[size_t(b) * K + i] += part[size_t(b) * TN + i].to_float();
+                    }
+                }
+            }
+            for (int b = 0; b < nrows; ++b) {
+                for (int i = 0; i < K; ++i) {
+                    attn_proj[size_t(b) * K + i] = bf16(acc[size_t(b) * K + i]);
+                }
+            }
+        } else {
+            std::vector<bf16> in_pad(size_t(B) * TK, bf16(0.0f));
+            for (int b = 0; b < nrows; ++b) {
+                std::memcpy(&in_pad[size_t(b) * TK], &attn_out[size_t(b) * N_q], size_t(N_q) * sizeof(bf16));
+            }
+            std::vector<bf16> o_tile(size_t(B) * TN);
+            for (size_t t = 0; t < lw.os_o_tiles.size(); ++t) {
+                reg_.run_gemm(B, TN, TK, lw.os_o_tiles[t], in_pad.data(), o_tile.data());
+                for (int b = 0; b < nrows; ++b) {
+                    int rows_to_copy = std::min(K - int(t * TN), TN);
+                    if (rows_to_copy > 0) {
+                        std::memcpy(&attn_proj[size_t(b) * K + t * TN],
+                                    &o_tile[size_t(b) * TN],
+                                    size_t(rows_to_copy) * sizeof(bf16));
+                    }
+                }
+            }
+        }
+    } else {
+        const int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : K_padded;
+        std::vector<bf16> full_proj(size_t(B) * o_n);
+        reg_.run_gemm(B, o_n, N_q, lw.w_o, attn_out.data(), full_proj.data());
+        for (int b = 0; b < nrows; ++b) {
+            std::memcpy(&attn_proj[size_t(b) * K], &full_proj[size_t(b) * o_n], size_t(K) * sizeof(bf16));
+        }
+    }
     g_bprof.gemm += ms_since(t_bo);
 
     // 8. Post-attention norm + residual.
     std::vector<bf16> x_post_attn(size_t(nrows) * K);
     std::vector<bf16> normed(K);
     for (int b = 0; b < nrows; ++b) {
-        run_rmsnorm_cpu(&attn_proj[size_t(b) * o_n], post_attn_w, normed.data(), K);
+        run_rmsnorm_cpu(&attn_proj[size_t(b) * K], post_attn_w, normed.data(), K);
         for (int i = 0; i < K; ++i)
             x_post_attn[size_t(b) * K + i] = bf16(x_batch[size_t(b) * K + i].to_float() + normed[i].to_float());
     }
@@ -1059,53 +1141,96 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     for (int b = 0; b < nrows; ++b)
         run_rmsnorm_cpu(&x_post_attn[size_t(b) * K], ffn_norm_w, &x_norm2_pad[size_t(b) * K_padded], K);
 
-    // 10. FFN: gate/up GEMM (streamed) -> GeGLU (CPU) -> down GEMM.
-    const int I = config_.get_padded_intermediate_size();
-    const int I_real = config_.intermediate_size;
-    std::vector<bf16> gate(size_t(B) * I), up(size_t(B) * I);
-    auto t_bgu = pclock::now();
-    reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_gate_bytes.data(), lw.ffn_gate_bytes.size(),
-                           x_norm2_pad.data(), gate.data());
-    reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_up_bytes.data(), lw.ffn_up_bytes.size(),
-                           x_norm2_pad.data(), up.data());
-    g_bprof.ffn_cmp += ms_since(t_bgu);
-
-    std::vector<bf16> geglu(size_t(B) * I, bf16(0.0f));
-    const float kGeluC = std::sqrt(2.0f / static_cast<float>(M_PI));
-    for (int b = 0; b < nrows; ++b) {
-        for (int i = 0; i < I_real; ++i) {
-            float g = gate[size_t(b) * I + i].to_float();
-            float gelu = 0.5f * g * (1.0f + std::tanh(kGeluC * (g + 0.044715f * g * g * g)));
-            geglu[size_t(b) * I + i] = bf16(gelu * up[size_t(b) * I + i].to_float());
-        }
-    }
-
-    // down: GEMM output is Nd = K_padded. If I > 8192, split K into chunks of 8192.
-    const int Nd = K_padded;
-    const int chunkK = (I > 8192) ? 8192 : I;
-    const int num_chunks = (I + chunkK - 1) / chunkK;
-    const int row_bytes = (I / 32) * 20;
-    const int chunk_row_bytes = (chunkK / 32) * 20;
+    // 10. FFN: resident ONESHAPE tiles or streamed GEMM fallback
     std::vector<float> down_acc(size_t(nrows) * K, 0.0f);
-    std::vector<uint8_t> wchunk(size_t(Nd) * chunk_row_bytes);
-    std::vector<bf16> xchunk(size_t(B) * chunkK), ychunk(size_t(B) * Nd);
-    for (int c = 0; c < num_chunks; ++c) {
-        auto t_rep = pclock::now();
-        for (int r = 0; r < Nd; ++r)
-            std::memcpy(&wchunk[size_t(r) * chunk_row_bytes],
-                        &lw.ffn_down_bytes[size_t(r) * row_bytes + size_t(c) * chunk_row_bytes],
-                        chunk_row_bytes);
-        for (int b = 0; b < B; ++b)
-            for (int i = 0; i < chunkK; ++i)
-                xchunk[size_t(b) * chunkK + i] = geglu[size_t(b) * I + size_t(c) * chunkK + i];
-        g_bprof.ffn_repack += ms_since(t_rep);
-        auto t_dn = pclock::now();
-        reg_.run_gemm_streamed(B, Nd, chunkK, wchunk.data(), wchunk.size(),
-                               xchunk.data(), ychunk.data());
-        g_bprof.ffn_cmp += ms_since(t_dn);
-        for (int b = 0; b < nrows; ++b)
-            for (int i = 0; i < K; ++i)
-                down_acc[size_t(b) * K + i] += ychunk[size_t(b) * Nd + i].to_float();
+    if (!lw.os_gateup.empty() && !lw.os_down.empty()) {
+        const int TN = lw.os_n, TK = lw.os_k;
+        const int I_rows = int(lw.os_down.size()) * TK;
+        const int gu_rows = int(lw.os_gateup.size()) * TN;
+        std::vector<bf16> gu_batch(size_t(B) * gu_rows, bf16(0.0f));
+        std::vector<bf16> gu_tile(size_t(B) * TN);
+        auto t_bgu = pclock::now();
+        for (size_t t = 0; t < lw.os_gateup.size(); ++t) {
+            reg_.run_gemm(B, TN, TK, lw.os_gateup[t], x_norm2_pad.data(), gu_tile.data());
+            for (int b = 0; b < B; ++b) {
+                std::memcpy(&gu_batch[size_t(b) * gu_rows + size_t(t) * TN],
+                            &gu_tile[size_t(b) * TN], size_t(TN) * sizeof(bf16));
+            }
+        }
+        g_bprof.ffn_cmp += ms_since(t_bgu);
+
+        std::vector<bf16> act(size_t(B) * I_rows, bf16(0.0f));
+        for (int b = 0; b < nrows; ++b) {
+            for (int i = 0; i < I_rows; ++i) {
+                float g = gu_batch[size_t(b) * gu_rows + i].to_float();
+                float u = gu_batch[size_t(b) * gu_rows + size_t(I_rows) + i].to_float();
+                act[size_t(b) * I_rows + i] = bf16(0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f)) * u);
+            }
+        }
+
+        std::vector<bf16> chunk_in(size_t(B) * TK, bf16(0.0f));
+        std::vector<bf16> down_tile(size_t(B) * TN);
+        auto t_bdn = pclock::now();
+        for (size_t c = 0; c < lw.os_down.size(); ++c) {
+            for (int b = 0; b < B; ++b) {
+                std::memcpy(&chunk_in[size_t(b) * TK],
+                            &act[size_t(b) * I_rows + size_t(c) * TK],
+                            size_t(TK) * sizeof(bf16));
+            }
+            reg_.run_gemm(B, TN, TK, lw.os_down[c], chunk_in.data(), down_tile.data());
+            for (int b = 0; b < nrows; ++b) {
+                for (int i = 0; i < K; ++i) {
+                    down_acc[size_t(b) * K + i] += down_tile[size_t(b) * TN + i].to_float();
+                }
+            }
+        }
+        g_bprof.ffn_cmp += ms_since(t_bdn);
+    } else {
+        const int I = config_.get_padded_intermediate_size();
+        const int I_real = config_.intermediate_size;
+        std::vector<bf16> gate(size_t(B) * I), up(size_t(B) * I);
+        auto t_bgu = pclock::now();
+        reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_gate_bytes.data(), lw.ffn_gate_bytes.size(),
+                               x_norm2_pad.data(), gate.data());
+        reg_.run_gemm_streamed(B, I, K_padded, lw.ffn_up_bytes.data(), lw.ffn_up_bytes.size(),
+                               x_norm2_pad.data(), up.data());
+        g_bprof.ffn_cmp += ms_since(t_bgu);
+
+        std::vector<bf16> geglu(size_t(B) * I, bf16(0.0f));
+        const float kGeluC = std::sqrt(2.0f / static_cast<float>(M_PI));
+        for (int b = 0; b < nrows; ++b) {
+            for (int i = 0; i < I_real; ++i) {
+                float g = gate[size_t(b) * I + i].to_float();
+                float gelu = 0.5f * g * (1.0f + std::tanh(kGeluC * (g + 0.044715f * g * g * g)));
+                geglu[size_t(b) * I + i] = bf16(gelu * up[size_t(b) * I + i].to_float());
+            }
+        }
+
+        const int Nd = K_padded;
+        const int chunkK = (I > 8192) ? 8192 : I;
+        const int num_chunks = (I + chunkK - 1) / chunkK;
+        const int row_bytes = (I / 32) * 20;
+        const int chunk_row_bytes = (chunkK / 32) * 20;
+        std::vector<uint8_t> wchunk(size_t(Nd) * chunk_row_bytes);
+        std::vector<bf16> xchunk(size_t(B) * chunkK), ychunk(size_t(B) * Nd);
+        for (int c = 0; c < num_chunks; ++c) {
+            auto t_rep = pclock::now();
+            for (int r = 0; r < Nd; ++r)
+                std::memcpy(&wchunk[size_t(r) * chunk_row_bytes],
+                            &lw.ffn_down_bytes[size_t(r) * row_bytes + size_t(c) * chunk_row_bytes],
+                            chunk_row_bytes);
+            for (int b = 0; b < B; ++b)
+                for (int i = 0; i < chunkK; ++i)
+                    xchunk[size_t(b) * chunkK + i] = geglu[size_t(b) * I + size_t(c) * chunkK + i];
+            g_bprof.ffn_repack += ms_since(t_rep);
+            auto t_dn = pclock::now();
+            reg_.run_gemm_streamed(B, Nd, chunkK, wchunk.data(), wchunk.size(),
+                                   xchunk.data(), ychunk.data());
+            g_bprof.ffn_cmp += ms_since(t_dn);
+            for (int b = 0; b < nrows; ++b)
+                for (int i = 0; i < K; ++i)
+                    down_acc[size_t(b) * K + i] += ychunk[size_t(b) * Nd + i].to_float();
+        }
     }
 
     // 11. Post-FFN norm + residual + per-layer output scale.

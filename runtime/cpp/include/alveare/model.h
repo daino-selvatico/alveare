@@ -57,6 +57,7 @@ public:
     NpuRegistry& registry() { return reg_; }
 
     // Compute Gemma-4-E4B per-layer input embeddings for a token
+    void compute_per_layer_inputs(int token_id, const float* inpL, float* out_per_layer);
     void compute_per_layer_inputs(int token_id, const float* inpL, std::vector<float>& out_per_layer);
 
     // Run a single layer decode natively.

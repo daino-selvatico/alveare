@@ -332,14 +332,9 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
     // default path. The batched forward pays a fixed B=16 GEMM cost, so it only
     // wins when a draft is found AND partly accepted (repetitive / structured
     // text); the per-step log prints draft/accepted so the trade-off is visible.
-    bool use_spec = (cfg.model_type == "gemma4") && std::getenv("ALVEARE_SPECULATIVE");
+    bool use_spec = cfg.is_gemma4() && std::getenv("ALVEARE_SPECULATIVE");
     if (use_spec) {
-        // max draft length. The batched verify pads the GEMM to B=8 regardless of
-        // nd (see run_layer_batch), so the mmul cost is IDENTICAL for any nd<=7 —
-        // a longer draft fills the already-paid-for B=8 pad for free. K=7 => B=8,
-        // so on repetitive/structured text a verify can emit up to 8 tokens at the
-        // same ~3s cost as one that emitted 5 (profiled: 3060ms batched forward).
-        const int K = 7;                 // max draft length (fills the B=8 pad)
+        const int K_draft = 7;                 // max draft length (fills the B=16 pad)
         const int max_seq_len = model_.get_config().max_position_embeddings;
         std::vector<int> seq = input_tokens;  // committed sequence (drafter context)
         int generated = 0, step = 0;
@@ -352,22 +347,28 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
             return true;
         };
 
+        const int max_B = 16;
+        std::vector<bf16> xb(static_cast<size_t>(max_B) * hidden_size, bf16(0.0f));
+        std::vector<bf16> ob(static_cast<size_t>(max_B) * hidden_size, bf16(0.0f));
+        std::vector<int> btoks(max_B);
+        std::vector<int> preds(max_B);
+        std::vector<bf16> normed(hidden_size);
+        std::vector<float> rl;
+        std::vector<float> batch_ple;
+        std::vector<float> inpL_tmp(hidden_size);
+        if (cfg.per_layer_input > 0) {
+            batch_ple.resize(static_cast<size_t>(max_B) * cfg.num_hidden_layers * cfg.per_layer_input);
+        }
+
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
-            // min_ngram=3: require a 3-token context match before drafting. A
-            // rejected draft still runs the full B=8 verify (~3-4s, ~4x the 910ms
-            // fallback), so mis-fires on novel text are costly — but raising the gate
-            // to 4-grams did NOT remove them (matches into earlier repeated context
-            // are >=4-gram) and fired later on genuine repetition, so 3 is kept.
-            // Speculative is opt-in (ALVEARE_SPECULATIVE) and situational: a clear
-            // win on repetitive/structured runs, roughly neutral-to-negative on prose.
-            std::vector<int> draft = propose_draft(seq, K, 3, 3);
+            std::vector<int> draft = propose_draft(seq, K_draft, 3, 3);
             while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
                 draft.pop_back();
             int nd = static_cast<int>(draft.size());
 
             if (nd == 0) {
-                // Fallback: normal single-token decode (fused FFN, no B=16 penalty).
+                // Fallback: normal single-token decode (fused FFN, zero B=16 penalty).
                 forward(current_token, pos, true);
                 if (pos >= num_prompt_tokens) cached_tokens_.push_back(current_token);
                 int t = sample(logits_, params);
@@ -381,23 +382,27 @@ void Generator::generate(const std::string& prompt, const GenerationParams& para
 
             // Batched verify: rows = [current_token, draft...] at [pos..pos+nd].
             int B = nd + 1;
-            std::vector<bf16> xb(static_cast<size_t>(B) * hidden_size);
-            std::vector<bf16> ob(static_cast<size_t>(B) * hidden_size);
-            std::vector<int> btoks(B);
             btoks[0] = current_token;
             for (int j = 0; j < nd; ++j) btoks[j + 1] = draft[j];
-            for (int b = 0; b < B; ++b)
-                for (int i = 0; i < hidden_size; ++i)
-                    xb[static_cast<size_t>(b) * hidden_size + i] =
-                        bf16(weights_.token_embd[static_cast<size_t>(btoks[b]) * hidden_size + i] * embed_scale);
+            for (int b = 0; b < B; ++b) {
+                const float* emb_ptr = &weights_.token_embd[static_cast<size_t>(btoks[b]) * hidden_size];
+                for (int i = 0; i < hidden_size; ++i) {
+                    float val = emb_ptr[i] * embed_scale;
+                    xb[static_cast<size_t>(b) * hidden_size + i] = bf16(val);
+                    inpL_tmp[i] = val;
+                }
+                static const bool no_ple = (std::getenv("ALVEARE_NO_PLE") != nullptr);
+                if (cfg.per_layer_input > 0 && !no_ple) {
+                    float* ple_dst = &batch_ple[static_cast<size_t>(b) * cfg.num_hidden_layers * cfg.per_layer_input];
+                    model_.compute_per_layer_inputs(btoks[b], inpL_tmp.data(), ple_dst);
+                }
+            }
+            const float* ple_ptr = batch_ple.empty() ? nullptr : batch_ple.data();
             for (int l = 0; l < cfg.num_hidden_layers; ++l) {
-                model_.run_layer_batch(xb.data(), B, pos, l, ob.data());
+                model_.run_layer_batch(xb.data(), B, pos, l, ob.data(), ple_ptr);
                 std::swap(xb, ob);
             }
             // Per-row: final norm + LM head + argmax.
-            std::vector<int> preds(B);
-            std::vector<bf16> normed(hidden_size);
-            std::vector<float> rl;
             for (int b = 0; b < B; ++b) {
                 const bf16* xrow = &xb[static_cast<size_t>(b) * hidden_size];
                 float var = 0.0f;
