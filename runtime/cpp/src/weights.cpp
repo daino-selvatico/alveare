@@ -8,48 +8,6 @@
 
 namespace alveare {
 
-static std::vector<float> load_float_npy(const std::string& path) {
-    NpyArray arr;
-    try {
-        arr = load_npy(path);
-    } catch (const std::exception& e) {
-        return {};
-    }
-    if (!arr.data) {
-        std::cerr << "Warning: Failed to load " << path << "\n";
-        return {};
-    }
-    size_t num_elements = 1;
-    for (size_t d : arr.shape) num_elements *= d;
-    
-    std::vector<float> vec;
-    bool is_f16 = (arr.dtype == "<f2" || arr.dtype == "float16" || arr.dtype == "|f2");
-    bool is_bf16 = (arr.dtype == "<bfloat16" || arr.dtype == "bfloat16");
-    bool two_byte = (num_elements > 0 && arr.data_size / num_elements == 2);
-    if (is_f16 || is_bf16 || two_byte) {
-        size_t expected_elements = arr.data_size / 2;
-        vec.resize(expected_elements);
-        const uint16_t* ptr = reinterpret_cast<const uint16_t*>(arr.data);
-        // Default unknown 2-byte tensors to bf16; only true IEEE float16 uses the
-        // half decoder (mixing the two silently corrupts every value).
-        for (size_t i = 0; i < expected_elements; ++i) {
-            if (is_f16) {
-                vec[i] = half_to_float(ptr[i]);
-            } else {
-                alveare::bf16 b;
-                b.v = ptr[i];
-                vec[i] = b.to_float();
-            }
-        }
-    } else {
-        vec.resize(arr.data_size / sizeof(float));
-        std::memcpy(vec.data(), arr.data, arr.data_size);
-    }
-    
-    free_npy(arr);
-    return vec;
-}
-
 static std::vector<uint8_t> load_uint8_npy(const std::string& path) {
     NpyArray arr;
     try {
@@ -61,22 +19,6 @@ static std::vector<uint8_t> load_uint8_npy(const std::string& path) {
         return {};
     }
     std::vector<uint8_t> vec(arr.data_size);
-    std::memcpy(vec.data(), arr.data, arr.data_size);
-    free_npy(arr);
-    return vec;
-}
-
-static std::vector<uint16_t> load_uint16_npy(const std::string& path) {
-    NpyArray arr;
-    try {
-        arr = load_npy(path);
-    } catch (const std::exception& e) {
-        return {};
-    }
-    if (!arr.data) {
-        return {};
-    }
-    std::vector<uint16_t> vec(arr.data_size / sizeof(uint16_t));
     std::memcpy(vec.data(), arr.data, arr.data_size);
     free_npy(arr);
     return vec;

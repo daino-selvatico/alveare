@@ -97,5 +97,7 @@ struct ModelWeights {
 };
 
 ModelWeights load_weights(const std::string& dir, const ModelConfig& config, NpuRegistry& reg);
+std::vector<float> load_float_npy(const std::string& path);
+std::vector<uint16_t> load_uint16_npy(const std::string& path);
 
 } // namespace alveare

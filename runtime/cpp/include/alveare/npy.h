@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <cstddef>
+#include <cstdint>
 
 namespace alveare {
 struct NpyArray {
@@ -17,4 +18,6 @@ struct NpyArray {
 
 NpyArray load_npy(const std::string& path);
 void free_npy(NpyArray& arr);
+std::vector<float> load_float_npy(const std::string& path);
+std::vector<uint16_t> load_uint16_npy(const std::string& path);
 } // namespace alveare
