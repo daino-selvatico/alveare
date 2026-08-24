@@ -195,7 +195,7 @@ void Model::compute_per_layer_inputs(int token_id, const float* inpL, float* out
     int n_layer = config_.num_hidden_layers; // 42
     int total_dim = n_layer * n_embd_per_layer; // 10752
 
-    if (token_id < 0 || token_id >= config_.vocab_size || weights_.per_layer_token_embd_f16.empty() || weights_.per_layer_model_proj_packed.empty()) {
+    if (weights_.per_layer_model_proj_packed.empty()) {
         std::memset(out_per_layer, 0, size_t(total_dim) * sizeof(float));
         return;
     }
@@ -233,13 +233,17 @@ void Model::compute_per_layer_inputs(int token_id, const float* inpL, float* out
     }
 
     // 2. Token Embedding Lookup (per_layer_token_embd: vocab_size x 10752, FP16)
+    // For raw/multimodal embeddings (token_id < 0 or audio/image tokens 258881/259000),
+    // token embedding lookup is zero.
+    const bool is_custom = (token_id < 0 || token_id == 258881 || token_id == 259000 ||
+                            token_id >= config_.vocab_size || weights_.per_layer_token_embd_f16.empty());
     const float lookup_scale = std::sqrt(static_cast<float>(n_embd_per_layer)); // 16.0f
-    const uint16_t* tok_ptr = &weights_.per_layer_token_embd_f16[static_cast<size_t>(token_id) * total_dim];
+    const uint16_t* tok_ptr = is_custom ? nullptr : &weights_.per_layer_token_embd_f16[static_cast<size_t>(token_id) * total_dim];
 
     // 3. Combine
     const float blend_scale = 1.0f / std::sqrt(2.0f);
     for (int i = 0; i < total_dim; ++i) {
-        float emb = half_to_float(tok_ptr[i]) * lookup_scale;
+        float emb = tok_ptr ? (half_to_float(tok_ptr[i]) * lookup_scale) : 0.0f;
         out_per_layer[i] = (proj_normed[i] + emb) * blend_scale;
     }
 }

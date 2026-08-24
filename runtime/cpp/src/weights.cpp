@@ -259,7 +259,9 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             if (!has_kv) {
                 // Layers 24-41 (shared KV) only have Q projection
                 lw.n_qkv = l_N_q;
-                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, q_arr.data, q_arr.data_size);
+                if (reg.has_gemv(lw.n_qkv, K_q)) {
+                    lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, q_arr.data, q_arr.data_size);
+                }
                 os_qkv_src.assign(qd, qd + q_arr.data_size);
             } else if (is_sliding || config.model_type == "gemma4-e4b" || config.model_type == "e4b") {
                 // q ++ k ++ v  (N_qkv = N_q + 2*N_kv). e4b has a real V on EVERY
@@ -276,7 +278,9 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 qkv.insert(qkv.end(), vd, vd + v_arr.data_size);
                 free_npy(k_arr);
                 free_npy(v_arr);
-                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
+                if (reg.has_gemv(lw.n_qkv, K_q)) {
+                    lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
+                }
                 os_qkv_src = qkv;
             } else {
                 // q ++ k  (global layers reuse k for v; N_qkv = N_q + N_kv)
@@ -287,21 +291,29 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 qkv.insert(qkv.end(), qd, qd + q_arr.data_size);
                 qkv.insert(qkv.end(), kd, kd + k_arr.data_size);
                 free_npy(k_arr);
-                lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
+                if (reg.has_gemv(lw.n_qkv, K_q)) {
+                    lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
+                }
                 os_qkv_src = qkv;
             }
             free_npy(q_arr);
         } else {
             NpyArray q_arr = load_npy(q_path);
-            lw.w_q = reg.create_gemv_weight(l_N_q, K_attn_padded, q_arr.data, q_arr.data_size);
+            if (reg.has_gemv(l_N_q, K_attn_padded)) {
+                lw.w_q = reg.create_gemv_weight(l_N_q, K_attn_padded, q_arr.data, q_arr.data_size);
+            }
             free_npy(q_arr);
 
             NpyArray k_arr = load_npy(k_path);
-            lw.w_k = reg.create_gemv_weight(l_N_kv, K_attn_padded, k_arr.data, k_arr.data_size);
+            if (reg.has_gemv(l_N_kv, K_attn_padded)) {
+                lw.w_k = reg.create_gemv_weight(l_N_kv, K_attn_padded, k_arr.data, k_arr.data_size);
+            }
             free_npy(k_arr);
 
             NpyArray v_arr = load_npy(v_path);
-            lw.w_v = reg.create_gemv_weight(l_N_kv, K_attn_padded, v_arr.data, v_arr.data_size);
+            if (reg.has_gemv(l_N_kv, K_attn_padded)) {
+                lw.w_v = reg.create_gemv_weight(l_N_kv, K_attn_padded, v_arr.data, v_arr.data_size);
+            }
             free_npy(v_arr);
         }
 
@@ -336,11 +348,11 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 std::vector<uint8_t> o_pad(size_t(target_N) * row_bytes, 0);
                 std::memcpy(o_pad.data(), o_arr.data, o_arr.data_size);
                 lw.w_o = reg.create_gemv_weight(target_N, l_N_q, o_pad.data(), o_pad.size());
-            } else {
+            } else if (reg.has_gemv(l_N_out, l_N_q)) {
                 lw.o_gemv_n = l_N_out;
                 lw.w_o = reg.create_gemv_weight(l_N_out, l_N_q, o_arr.data, o_arr.data_size);
             }
-        } else {
+        } else if (reg.has_gemv(K_attn_padded, l_N_q)) {
             lw.o_gemv_n = K_attn_padded;
             lw.w_o = reg.create_gemv_weight(K_attn_padded, l_N_q, o_arr.data, o_arr.data_size);
         }
