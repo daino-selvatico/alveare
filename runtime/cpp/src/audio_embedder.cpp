@@ -263,10 +263,17 @@ public:
             }
             proj_w_ = load_float_npy(proj_w_path);
             if (proj_w_.empty()) return false;
+
+            std::string mm_proj_path = weights_dir + "/mm_input_projection_weight.npy";
+            if (std::ifstream(mm_proj_path).good()) {
+                mm_proj_w_ = load_float_npy(mm_proj_path);
+            }
+
             hidden_size_ = 3840;
             input_dim_ = static_cast<int>(proj_w_.size() / hidden_size_);
             std::cout << "[Gemma4UaAudioEncoder] Loaded Unified Audio linear projector (in=" 
-                      << input_dim_ << ", hidden=" << hidden_size_ << ")" << std::endl;
+                      << input_dim_ << ", hidden=" << hidden_size_ 
+                      << ", mm_proj=" << (!mm_proj_w_.empty() ? "yes" : "no") << ")" << std::endl;
             return true;
         } catch (...) {
             return false;
@@ -277,39 +284,42 @@ public:
     AudioArch arch() const override { return AudioArch::GEMMA4_UA; }
 
     std::vector<std::vector<float>> encode_audio_samples(const float* pcm_16k, size_t num_samples) override {
-        if (!pcm_16k || num_samples < 400 || proj_w_.empty()) return {};
+        if (!pcm_16k || num_samples < static_cast<size_t>(input_dim_) || proj_w_.empty()) return {};
 
-        auto mel_frames = mel_extractor_.compute(pcm_16k, num_samples);
-        if (mel_frames.empty()) return {};
-
-        // Stack 5 consecutive 128-bin Mel frames into 640-dim audio tokens
-        const int kStackFrames = 5;
-        const int kMelDim = 128;
-        int num_tokens = static_cast<int>(mel_frames.size()) / kStackFrames;
-        if (num_tokens == 0) num_tokens = 1;
+        int num_tokens = static_cast<int>(num_samples / input_dim_);
+        if (num_tokens == 0) return {};
 
         std::vector<std::vector<float>> output_tokens(num_tokens, std::vector<float>(hidden_size_, 0.0f));
-        std::vector<float> stacked_frame(input_dim_, 0.0f);
+        std::vector<float> step1(hidden_size_, 0.0f);
 
         for (int t = 0; t < num_tokens; ++t) {
-            std::fill(stacked_frame.begin(), stacked_frame.end(), 0.0f);
-            for (int sf = 0; sf < kStackFrames; ++sf) {
-                int frame_idx = t * kStackFrames + sf;
-                if (frame_idx < static_cast<int>(mel_frames.size())) {
-                    std::memcpy(&stacked_frame[sf * kMelDim], mel_frames[frame_idx].data(), kMelDim * sizeof(float));
-                }
-            }
+            const float* chunk = pcm_16k + t * input_dim_;
 
-            // GEMV: output[t] = proj_w_ (hidden_size x 640) * stacked_frame (640)
-            #pragma omp parallel for schedule(static)
+            // Stage 1: step1 = mm_a_input_projection (3840 x 640) * chunk (640)
             for (int h = 0; h < hidden_size_; ++h) {
                 const float* w_row = &proj_w_[h * input_dim_];
                 float dot = 0.0f;
                 #pragma omp simd reduction(+:dot)
                 for (int d = 0; d < input_dim_; ++d) {
-                    dot += w_row[d] * stacked_frame[d];
+                    dot += w_row[d] * chunk[d];
                 }
-                output_tokens[t][h] = dot;
+                step1[h] = dot;
+            }
+
+            // Stage 2: output = mm_input_projection (3840 x 3840) * step1 (3840)
+            if (!mm_proj_w_.empty()) {
+                #pragma omp parallel for schedule(static)
+                for (int h = 0; h < hidden_size_; ++h) {
+                    const float* w_row = &mm_proj_w_[h * hidden_size_];
+                    float dot = 0.0f;
+                    #pragma omp simd reduction(+:dot)
+                    for (int d = 0; d < hidden_size_; ++d) {
+                        dot += w_row[d] * step1[d];
+                    }
+                    output_tokens[t][h] = dot;
+                }
+            } else {
+                output_tokens[t] = step1;
             }
         }
         return output_tokens;
@@ -319,7 +329,7 @@ private:
     int hidden_size_ = 3840;
     int input_dim_ = 640;
     std::vector<float> proj_w_;
-    MelSpectrogramExtractor mel_extractor_;
+    std::vector<float> mm_proj_w_;
 };
 
 // ============================================================================
@@ -336,40 +346,44 @@ public:
     }
 
     bool load(const std::string& weights_dir) override {
-        std::vector<std::string> candidates = {
-            weights_dir + "/mmproj.gguf",
-            weights_dir + "/../models/gemma-4-E4B-it-mmproj-F16.gguf",
-            "/home/daino/llama-mtp/models/gemma-4-E4B-it-mmproj-F16.gguf"
-        };
-        std::string found_path = "";
+        std::vector<std::string> candidates;
+        if (std::ifstream(weights_dir + "/mmproj.gguf").good()) {
+            candidates.push_back(weights_dir + "/mmproj.gguf");
+        }
+        if (weights_dir.find("e4b") != std::string::npos || weights_dir.find("E4B") != std::string::npos) {
+            candidates.push_back(weights_dir + "/../models/gemma-4-E4B-it-mmproj-F16.gguf");
+            candidates.push_back("/home/daino/llama-mtp/models/gemma-4-E4B-it-mmproj-F16.gguf");
+        }
+        
         for (const auto& p : candidates) {
-            if (std::ifstream(p).good()) {
-                found_path = p;
-                break;
+            if (!std::ifstream(p).good()) continue;
+
+            clip_context_params params{};
+            params.use_gpu = false;
+            params.warmup = false;
+
+            auto res = clip_init(p.c_str(), params);
+            if (!res.ctx_a) {
+                if (res.ctx_v) clip_free(res.ctx_v);
+                continue;
+            }
+
+            try {
+                auto preproc = std::make_unique<mtmd_audio_preprocessor_gemma4a>(res.ctx_a);
+                preproc->initialize();
+                preproc_ = std::move(preproc);
+                ctx_a_ = res.ctx_a;
+                ctx_v_ = res.ctx_v;
+                hidden_size_ = clip_n_mmproj_embd(ctx_a_);
+                std::cout << "[Gemma4AudioEncoder] Loaded native 12-layer Conformer Audio Encoder from "
+                          << p << " (output_dim=" << hidden_size_ << ")" << std::endl;
+                return true;
+            } catch (...) {
+                clip_free(res.ctx_a);
+                if (res.ctx_v) clip_free(res.ctx_v);
             }
         }
-        if (found_path.empty()) return false;
-
-        clip_context_params params{};
-        params.use_gpu = false;
-        params.warmup = false;
-
-        auto res = clip_init(found_path.c_str(), params);
-        if (!res.ctx_a) {
-            if (res.ctx_v) clip_free(res.ctx_v);
-            return false;
-        }
-
-        ctx_a_ = res.ctx_a;
-        ctx_v_ = res.ctx_v;
-        hidden_size_ = clip_n_mmproj_embd(ctx_a_);
-
-        preproc_ = std::make_unique<mtmd_audio_preprocessor_gemma4a>(ctx_a_);
-        preproc_->initialize();
-
-        std::cout << "[Gemma4AudioEncoder] Loaded native 12-layer Conformer Audio Encoder from "
-                  << found_path << " (output_dim=" << hidden_size_ << ")" << std::endl;
-        return true;
+        return false;
     }
 
     int output_dim() const override { return hidden_size_; }
@@ -455,14 +469,23 @@ AudioEmbedder::AudioEmbedder() = default;
 AudioEmbedder::~AudioEmbedder() = default;
 
 bool AudioEmbedder::load(const std::string& weights_dir) {
-    // 1. Try Gemma4AudioEncoder (E4B Conformer)
+    // 1. If 12B model directory, try Gemma4UaAudioEncoder first
+    if (weights_dir.find("gemma4-e4b") == std::string::npos && weights_dir.find("E4B") == std::string::npos) {
+        auto ua_enc = std::make_unique<Gemma4UaAudioEncoder>();
+        if (ua_enc->load(weights_dir)) {
+            backend_ = std::move(ua_enc);
+            return true;
+        }
+    }
+
+    // 2. Try Gemma4AudioEncoder (E4B Conformer)
     auto e4b_enc = std::make_unique<Gemma4AudioEncoder>();
     if (e4b_enc->load(weights_dir)) {
         backend_ = std::move(e4b_enc);
         return true;
     }
 
-    // 2. Try Gemma4UaAudioEncoder (12B Unified Audio)
+    // 3. Fallback to Gemma4UaAudioEncoder
     auto ua_enc = std::make_unique<Gemma4UaAudioEncoder>();
     if (ua_enc->load(weights_dir)) {
         backend_ = std::move(ua_enc);

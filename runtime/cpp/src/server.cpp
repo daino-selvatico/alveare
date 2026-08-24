@@ -330,6 +330,7 @@ void ApiServer::start(int port) {
             if (stream) {
                 res.set_chunked_content_provider("text/event-stream",
                     [this, prompt, params, model_name, is_gemma4, enable_thinking, all_visual_embeddings, all_audio_embeddings](size_t offset, httplib::DataSink& sink) {
+                        std::lock_guard<std::mutex> lock(generate_mutex_);
                         auto req_id = "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                         int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                         std::string prefix = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"";
@@ -364,6 +365,7 @@ void ApiServer::start(int port) {
                     }
                 );
             } else {
+                std::lock_guard<std::mutex> lock(generate_mutex_);
                 if (is_gemma4 && enable_thinking) {
                     full_response = "<|channel>thought\n";
                 }

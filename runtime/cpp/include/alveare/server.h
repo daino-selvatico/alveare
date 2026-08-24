@@ -1,6 +1,7 @@
 #pragma once
 #include "alveare/generator.h"
 #include <string>
+#include <mutex>
 
 namespace alveare {
 
@@ -23,6 +24,7 @@ private:
     Generator& generator_;
     VisionEmbedder* vision_embedder_{nullptr};
     AudioEmbedder* audio_embedder_{nullptr};
+    std::mutex generate_mutex_;
     void* svr_ptr_{nullptr};
 };
 
