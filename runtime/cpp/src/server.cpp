@@ -134,38 +134,39 @@ void ApiServer::start(int port) {
             };
 
             auto get_msg_content = [&](const nlohmann::json& msg) -> std::string {
-                std::string res = "";
+                std::string visual_tags = "";
+                std::string text_body = "";
 
                 // Check for root-level "images" array (Open-WebUI / Ollama / Jan format)
                 if (msg.contains("images") && msg["images"].is_array()) {
                     for (const auto& img_item : msg["images"]) {
                         if (img_item.is_string()) {
                             std::string tag = process_image(img_item.get<std::string>());
-                            if (!res.empty()) res += "\n";
-                            res += tag;
+                            if (!visual_tags.empty()) visual_tags += "\n";
+                            visual_tags += tag;
                         }
                     }
                 }
                 if (msg.contains("image_url") && msg["image_url"].is_string()) {
                     std::string tag = process_image(msg["image_url"].get<std::string>());
-                    if (!res.empty()) res += "\n";
-                    res += tag;
+                    if (!visual_tags.empty()) visual_tags += "\n";
+                    visual_tags += tag;
                 }
 
                 if (msg.contains("content")) {
                     if (msg["content"].is_string()) {
                         std::string text = msg["content"].get<std::string>();
                         if (!text.empty()) {
-                            if (!res.empty()) res += "\n";
-                            res += text;
+                            if (!text_body.empty()) text_body += "\n";
+                            text_body += text;
                         }
                     } else if (msg["content"].is_array()) {
                         for (const auto& part : msg["content"]) {
                             if (part.is_object()) {
                                 std::string ptype = part.value("type", "");
                                 if ((ptype == "text" || ptype.empty()) && part.contains("text")) {
-                                    if (!res.empty()) res += "\n";
-                                    res += part["text"].get<std::string>();
+                                    if (!text_body.empty()) text_body += "\n";
+                                    text_body += part["text"].get<std::string>();
                                 } else if (ptype == "image_url" || ptype == "image") {
                                     std::string url = "";
                                     if (part.contains("image_url")) {
@@ -177,17 +178,21 @@ void ApiServer::start(int port) {
                                         url = part["url"].get<std::string>();
                                     }
                                     std::string tag = process_image(url);
-                                    if (!res.empty()) res += "\n";
-                                    res += tag;
+                                    if (!visual_tags.empty()) visual_tags += "\n";
+                                    visual_tags += tag;
                                 } else if (ptype == "input_audio") {
-                                    if (!res.empty()) res += "\n";
-                                    res += "[Audio Allegato]";
+                                    if (!text_body.empty()) text_body += "\n";
+                                    text_body += "[Audio Allegato]";
                                 }
                             }
                         }
                     }
                 }
-                return res;
+
+                if (!visual_tags.empty() && !text_body.empty()) {
+                    return visual_tags + "\n" + text_body;
+                }
+                return !visual_tags.empty() ? visual_tags : text_body;
             };
 
             if (j_req.contains("messages") && j_req["messages"].is_array()) {
