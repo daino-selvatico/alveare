@@ -231,6 +231,9 @@ void ApiServer::start(int port) {
                 prompt = j_req["prompt"].get<std::string>();
             }
 
+            std::cout << "[server] Request received: " << all_visual_embeddings.size() 
+                      << " visual tokens attached. Prompt length: " << prompt.length() << " chars\n" << std::flush;
+
             GenerationParams params;
             if (j_req.contains("max_tokens") && j_req["max_tokens"].is_number_integer()) {
                 params.max_tokens = j_req["max_tokens"].get<int>();
