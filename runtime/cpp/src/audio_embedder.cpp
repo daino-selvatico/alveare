@@ -7,6 +7,15 @@
 #include <algorithm>
 #include <immintrin.h>
 #include <omp.h>
+#include <memory>
+#include <vector>
+#include <string>
+
+#ifdef HAVE_MTMD
+#include "clip.h"
+#include "mtmd.h"
+#include "mtmd-audio.h"
+#endif
 
 namespace alveare {
 
@@ -317,73 +326,101 @@ private:
 // Gemma-4 E4B Conformer Audio Encoder (`gemma4a`)
 // 12 Conformer blocks, 1024 dim, depthwise conv, output projection to 2560
 // ============================================================================
+#ifdef HAVE_MTMD
 class Gemma4AudioEncoder : public IAudioEncoder {
 public:
     Gemma4AudioEncoder() = default;
+    ~Gemma4AudioEncoder() override {
+        if (ctx_a_) clip_free(ctx_a_);
+        if (ctx_v_) clip_free(ctx_v_);
+    }
 
     bool load(const std::string& weights_dir) override {
-        try {
-            std::string check_file = weights_dir + "/mm_a_input_projection_weight.npy";
-            std::string check_blk = weights_dir + "/a_blk_0_ln2_weight.npy";
-            if (!std::ifstream(check_file).good() || !std::ifstream(check_blk).good()) {
-                return false;
+        std::vector<std::string> candidates = {
+            weights_dir + "/mmproj.gguf",
+            weights_dir + "/../models/gemma-4-E4B-it-mmproj-F16.gguf",
+            "/home/daino/llama-mtp/models/gemma-4-E4B-it-mmproj-F16.gguf"
+        };
+        std::string found_path = "";
+        for (const auto& p : candidates) {
+            if (std::ifstream(p).good()) {
+                found_path = p;
+                break;
             }
-            out_proj_w_ = load_float_npy(check_file);
-            if (out_proj_w_.empty()) return false;
-            hidden_size_ = 2560;
-            std::cout << "[Gemma4AudioEncoder] Loaded 12-layer Conformer Audio Encoder (output_dim=" 
-                      << hidden_size_ << ")" << std::endl;
-            return true;
-        } catch (...) {
+        }
+        if (found_path.empty()) return false;
+
+        clip_context_params params{};
+        params.use_gpu = false;
+        params.warmup = false;
+
+        auto res = clip_init(found_path.c_str(), params);
+        if (!res.ctx_a) {
+            if (res.ctx_v) clip_free(res.ctx_v);
             return false;
         }
+
+        ctx_a_ = res.ctx_a;
+        ctx_v_ = res.ctx_v;
+        hidden_size_ = clip_n_mmproj_embd(ctx_a_);
+
+        preproc_ = std::make_unique<mtmd_audio_preprocessor_gemma4a>(ctx_a_);
+        preproc_->initialize();
+
+        std::cout << "[Gemma4AudioEncoder] Loaded native 12-layer Conformer Audio Encoder from "
+                  << found_path << " (output_dim=" << hidden_size_ << ")" << std::endl;
+        return true;
     }
 
     int output_dim() const override { return hidden_size_; }
     AudioArch arch() const override { return AudioArch::GEMMA4_A; }
 
     std::vector<std::vector<float>> encode_audio_samples(const float* pcm_16k, size_t num_samples) override {
-        if (!pcm_16k || num_samples < 400 || out_proj_w_.empty()) return {};
+        if (!ctx_a_ || !preproc_ || !pcm_16k || num_samples == 0) return {};
 
-        auto mel_frames = mel_extractor_.compute(pcm_16k, num_samples);
-        if (mel_frames.empty()) return {};
+        std::vector<mtmd_audio_mel> mel_spec_chunks;
+        bool ok = preproc_->preprocess(pcm_16k, num_samples, mel_spec_chunks);
+        if (!ok || mel_spec_chunks.empty()) return {};
 
-        // Stride 4 subsampling for audio frames
-        int num_tokens = std::max(1, static_cast<int>(mel_frames.size()) / 4);
-        std::vector<std::vector<float>> output_tokens(num_tokens, std::vector<float>(hidden_size_, 0.0f));
+        std::vector<std::vector<float>> all_tokens;
+        for (auto& mel : mel_spec_chunks) {
+            clip_image_f32_batch batch;
+            batch.is_audio = true;
+            clip_image_f32_ptr img(clip_image_f32_init());
+            img->nx = mel.n_len;
+            img->ny = mel.n_mel;
+            img->buf = std::move(mel.data);
+            int n_tokens = clip_n_output_tokens(ctx_a_, img.get());
+            int embd_dim = clip_n_mmproj_embd(ctx_a_);
+            batch.entries.push_back(std::move(img));
 
-        const int kInDim = 1536;
-        std::vector<float> intermediate_buf(kInDim, 0.0f);
-
-        for (int t = 0; t < num_tokens; ++t) {
-            std::fill(intermediate_buf.begin(), intermediate_buf.end(), 0.0f);
-            int base_f = t * 4;
-            for (int sf = 0; sf < 4 && (base_f + sf) < static_cast<int>(mel_frames.size()); ++sf) {
-                for (int m = 0; m < 128 && (sf * 128 + m) < kInDim; ++m) {
-                    intermediate_buf[sf * 128 + m] = mel_frames[base_f + sf][m];
+            std::vector<float> chunk_emb(n_tokens * embd_dim);
+            bool enc_ok = clip_image_batch_encode(ctx_a_, 4, &batch, chunk_emb.data());
+            if (enc_ok && n_tokens > 0) {
+                for (int t = 0; t < n_tokens; ++t) {
+                    all_tokens.emplace_back(chunk_emb.begin() + t * embd_dim,
+                                            chunk_emb.begin() + (t + 1) * embd_dim);
                 }
-            }
-
-            // Output projection (2560 x 1536)
-            #pragma omp parallel for schedule(static)
-            for (int h = 0; h < hidden_size_; ++h) {
-                const float* w_row = &out_proj_w_[h * kInDim];
-                float dot = 0.0f;
-                #pragma omp simd reduction(+:dot)
-                for (int d = 0; d < kInDim; ++d) {
-                    dot += w_row[d] * intermediate_buf[d];
-                }
-                output_tokens[t][h] = dot;
             }
         }
-        return output_tokens;
+        return all_tokens;
     }
 
 private:
+    clip_ctx* ctx_a_ = nullptr;
+    clip_ctx* ctx_v_ = nullptr;
     int hidden_size_ = 2560;
-    std::vector<float> out_proj_w_;
-    MelSpectrogramExtractor mel_extractor_;
+    std::unique_ptr<mtmd_audio_preprocessor> preproc_;
 };
+#else
+class Gemma4AudioEncoder : public IAudioEncoder {
+public:
+    bool load(const std::string&) override { return false; }
+    int output_dim() const override { return 2560; }
+    AudioArch arch() const override { return AudioArch::GEMMA4_A; }
+    std::vector<std::vector<float>> encode_audio_samples(const float*, size_t) override { return {}; }
+};
+#endif
 
 // ============================================================================
 // Base64 helper

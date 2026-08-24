@@ -44,6 +44,21 @@ if(OpenMP_CXX_FOUND)
     message(STATUS "OpenMP enabled for host decode parallelism")
 endif()
 
+set(LLAMA_MTP_DIR "/home/daino/llama-mtp/llama.cpp")
+if(EXISTS "${LLAMA_MTP_DIR}/build/bin/libmtmd.so")
+    include_directories(
+        ${LLAMA_MTP_DIR}/include
+        ${LLAMA_MTP_DIR}/ggml/include
+        ${LLAMA_MTP_DIR}/tools/mtmd
+    )
+    link_directories(${LLAMA_MTP_DIR}/build/bin)
+    set(MTMD_LIBS mtmd llama ggml ggml-base ggml-cpu)
+    add_compile_definitions(HAVE_MTMD)
+    set(CMAKE_BUILD_RPATH "${LLAMA_MTP_DIR}/build/bin")
+    set(CMAKE_INSTALL_RPATH "${LLAMA_MTP_DIR}/build/bin")
+    message(STATUS "libmtmd found: Conformer Audio Encoder enabled")
+endif()
+
 # Shared runtime sources (everything except the per-binary main()).
 set(ALVEARE_CORE_SRC
     src/bf16.cpp
@@ -63,29 +78,29 @@ set(ALVEARE_CORE_SRC
 
 add_executable(alveare_runtime src/main.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(alveare_runtime PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
+target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
 
 # NPU registry smoke test: runs a harvested GEMV shape and checks parity.
 add_executable(parity_test test/parity_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(parity_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
+target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
 
 # Layer decode test
 add_executable(layer_test test/layer_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(layer_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
+target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
 
 # Gemma-4-E4B oracle test
 add_executable(e4b_test test/e4b_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(e4b_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
+target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
 
 # Micro-benchmark: NPU kernel context-switch cost (see test/bench_switch.cpp)
 add_executable(bench_switch test/bench_switch.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(bench_switch PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(bench_switch PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
+target_link_libraries(bench_switch PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
 
 # Statistical kernel benchmark (median + spread) — see test/bench_stat.cpp
 add_executable(bench_stat test/bench_stat.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(bench_stat PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(bench_stat PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP})
+target_link_libraries(bench_stat PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
