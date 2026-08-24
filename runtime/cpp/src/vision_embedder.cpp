@@ -450,13 +450,13 @@ public:
             matmul_transposed(x_norm.data(), layer.k_w.data(), k.data(), n_patches, vit_dim_, vit_dim_);
             matmul_transposed(x_norm.data(), layer.v_w.data(), v.data(), n_patches, vit_dim_, vit_dim_);
 
-            // Q/K head norms & V norm
+            // Q/K head norms & V head norm
             for (int p = 0; p < n_patches; ++p) {
                 for (int h = 0; h < kNumHeads; ++h) {
                     rmsnorm(&q[(p * kNumHeads + h) * kHeadDim], kHeadDim, layer.q_norm_w.data());
                     rmsnorm(&k[(p * kNumHeads + h) * kHeadDim], kHeadDim, layer.k_norm_w.data());
+                    rmsnorm(&v[(p * kNumHeads + h) * kHeadDim], kHeadDim);
                 }
-                rmsnorm(&v[p * vit_dim_], vit_dim_);
             }
 
             // 2D RoPE (Neox ordering with pos_x on first 32 dims, pos_y on second 32 dims)
