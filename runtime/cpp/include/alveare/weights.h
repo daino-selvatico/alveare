@@ -40,6 +40,7 @@ struct LayerWeights {
     // there is no padding waste and still no context switch.
     std::vector<WeightHandle> os_qkv_tiles;
     std::vector<WeightHandle> os_o_tiles;
+    bool os_o_is_kchunked = false;
     int os_n = 0;                         // tile output rows (== fused-QKV N)
     int os_k = 0;                         // tile input dim  (== fused-QKV K)
 

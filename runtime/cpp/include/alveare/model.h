@@ -8,6 +8,42 @@
 
 namespace alveare {
 
+struct LayerScratch {
+    std::vector<bf16> x_norm;
+    std::vector<bf16> q;
+    std::vector<bf16> k;
+    std::vector<bf16> v;
+    std::vector<bf16> qkv;
+    std::vector<bf16> q_buf;
+    std::vector<bf16> k_buf;
+    std::vector<bf16> v_buf;
+    std::vector<bf16> q_h;
+    std::vector<bf16> k_h;
+    std::vector<bf16> v_h;
+    std::vector<bf16> q_rope;
+    std::vector<bf16> k_rope;
+    std::vector<bf16> attn_out;
+    std::vector<bf16> attn_out_padded;
+    std::vector<bf16> attn_proj;
+    std::vector<bf16> attn_proj_normed;
+    std::vector<bf16> x_post_attn;
+    std::vector<bf16> x_norm2;
+    std::vector<bf16> down;
+    std::vector<bf16> gu;
+    std::vector<bf16> act;
+    std::vector<float> acc_f;
+    std::vector<bf16> part_bf16;
+    std::vector<bf16> chunk_in;
+    std::vector<float> geglu;
+    std::vector<float> x_norm2_f;
+    std::vector<bf16> down_normed;
+    std::vector<bf16> x_post_ffn;
+    std::vector<float> ple_z;
+    std::vector<float> ple_x_f;
+    std::vector<bf16> ple_p;
+    std::vector<bf16> ple_y;
+};
+
 class Model {
 public:
     Model(const ModelConfig& config, const ModelWeights& weights, NpuRegistry& reg);
@@ -50,7 +86,10 @@ private:
     std::vector<bf16> cos_sin_table_sliding_; // Gemma
     std::vector<bf16> cos_sin_table_full_; // Gemma
 
+    LayerScratch scratch_;
+
     void init_kv_caches();
+    void init_scratch();
     void precompute_rope();
 
     void run_rmsnorm_cpu(const bf16* x, const float* w, bf16* out, int K = 0);

@@ -299,7 +299,8 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         int qkv_K = 0;   // K of the fused-QKV kernel (for O context sharing below)
         // ALVEARE_ONESHAPE keeps the raw QKV/O bytes so they can be re-registered
         // zero-padded onto one shared kernel shape (see the oneshape block below).
-        static const bool os_on = (std::getenv("ALVEARE_ONESHAPE") != nullptr);
+        static const bool os_on = (std::getenv("ALVEARE_NO_ONESHAPE") == nullptr &&
+                                   (std::getenv("ALVEARE_ONESHAPE") != nullptr || config.is_gemma4()));
         std::vector<uint8_t> os_qkv_src, os_o_src;
         int os_o_rows = 0;
         if (config.is_gemma4()) {
@@ -317,6 +318,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 // Layers 24-41 (shared KV) only have Q projection
                 lw.n_qkv = l_N_q;
                 lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, q_arr.data, q_arr.data_size);
+                os_qkv_src.assign(qd, qd + q_arr.data_size);
             } else if (is_sliding || config.model_type == "gemma4-e4b" || config.model_type == "e4b") {
                 // q ++ k ++ v  (N_qkv = N_q + 2*N_kv). e4b has a real V on EVERY
                 // layer (kv_heads=2 uniformly); only the 12B's global layers are
@@ -333,6 +335,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 free_npy(k_arr);
                 free_npy(v_arr);
                 lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
+                os_qkv_src = qkv;
             } else {
                 // q ++ k  (global layers reuse k for v; N_qkv = N_q + N_kv)
                 NpyArray k_arr = load_npy(k_path);
@@ -343,6 +346,7 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
                 qkv.insert(qkv.end(), kd, kd + k_arr.data_size);
                 free_npy(k_arr);
                 lw.w_qkv = reg.create_gemv_weight(lw.n_qkv, K_q, qkv.data(), qkv.size());
+                os_qkv_src = qkv;
             }
             free_npy(q_arr);
         } else {
@@ -364,6 +368,9 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             int target_N = 4096;
             int row_bytes = o_arr.data_size / l_N_out;
             int K_o = (row_bytes / 20) * 32;   // O's real input dim (= N_q)
+            os_o_src.assign(static_cast<const uint8_t*>(o_arr.data),
+                            static_cast<const uint8_t*>(o_arr.data) + o_arr.data_size);
+            os_o_rows = l_N_out;
 
             // BEST CASE: zero-pad O in BOTH dims to the fused-QKV kernel's (n_qkv, K_q)
             // so O runs in the SAME kernel context as QKV — removing one ~2.6 ms
@@ -412,172 +419,122 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         if (ffn_arr.data) {
             lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, ffn_arr.data, ffn_arr.data_size);
             free_npy(ffn_arr);
-        } else {
-            // Fallback: load gate, up, down and pack in C++
-            std::cout << "\nPre-packing FFN fused weights for layer " << l << " ...\r" << std::flush;
-            std::string gate_path = dir + "/blk." + std::to_string(l) + ".ffn_gate.weight_packed.npy";
-            std::string up_path = dir + "/blk." + std::to_string(l) + ".ffn_up.weight_packed.npy";
-            std::string down_path = dir + "/blk." + std::to_string(l) + ".ffn_down.weight_packed.npy";
+        }
 
-            auto w_gate = load_uint8_npy(gate_path);
-            auto w_up = load_uint8_npy(up_path);
-            auto w_down = load_uint8_npy(down_path);
+        std::string gate_path = dir + "/blk." + std::to_string(l) + ".ffn_gate.weight_packed.npy";
+        std::string up_path = dir + "/blk." + std::to_string(l) + ".ffn_up.weight_packed.npy";
+        std::string down_path = dir + "/blk." + std::to_string(l) + ".ffn_down.weight_packed.npy";
 
-            if (w_gate.empty() || w_up.empty() || w_down.empty()) {
-                throw std::runtime_error("Missing FFN weights for layer " + std::to_string(l));
-            }
+        std::vector<uint8_t> w_gate, w_up, w_down;
+        try {
+            w_gate = load_uint8_npy(gate_path);
+            w_up = load_uint8_npy(up_path);
+            w_down = load_uint8_npy(down_path);
+        } catch (...) {}
 
-            // k_tile MUST match the compiled ffn_fused kernel in the manifest (all
-            // ffn_fused kernels are built with k_tile=256; the old hidden==1152 -> 128
-            // special-case packed Gemma-3 for a 128-tile kernel that no longer exists,
-            // so the k_tile=256 kernel read a mismatched layout -> NaN logits).
-            int k_tile = 256;
-            auto fused = pack_ffn_fused_weights(w_gate, w_up, w_down, H_padded, I_padded, 32, k_tile);
-
-            // Register the fused FFN on the NPU iff a matching kernel exists in the
-            // manifest; otherwise keep the raw gate/up/down bytes for the CPU
-            // fallback. (The old `H_padded % 1024 == 0` gate wrongly excluded e4b's
-            // H=2560, forcing a ~17s/token CPU FFN even though the 2560x10240 kernel
-            // is built.)
-            // The e4b FFN kernel (H=2560) previously hung because N_PASSES was
-            // hard-coded to 4 (didn't divide H//m_H=10) — now fixed (adaptive
-            // N_PASSES=5 for e4b) in ffn_fused.py + pack_ffn_fused_weights above, so
-            // the NPU FFN is used by default like every other model.
-            // Gemma-3 (H=2048) briefly needed a CPU-FFN fallback: build_kernels.py's
-            // direct-path xclbin compile produced a broken (NaN) kernel for that shape.
-            // Fixed — build_kernels.py now compiles ffn_fused via the jit cache path
-            // (see its compile_ffn_fused) — so Gemma-3 uses the fast NPU-fused FFN too.
-            if (reg.has_ffn_fused(H_padded, I_padded, act_type)) {
-                lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, fused.data(), fused.size());
-            } else {
-                lw.w_ffn_fused = kInvalidWeight;
-            }
-
-            // ALVEARE_ONESHAPE: additionally register the FFN as gemv tiles that reuse
-            // the fused-QKV kernel shape (lw.n_qkv, qkv_K), so the whole layer runs in
-            // ONE hw context. A context switch is a fixed ~2.5 ms and decode pays two
-            // per layer; on e4b that is ~210 ms/token (40%). Gate and up are
-            // concatenated along the output dim and split into ceil(2I/N) tiles; the
-            // down projection is split along its INPUT dim into K/qkv_K chunks whose
-            // partial results the host sums.
-            // NB: the down tiles need hidden_size output rows, so the shared tile N must
-            // be >= hidden_size. On e4b the KV-sharing layers (24-41) fuse only Q
-            // (n_qkv = 2048 < hidden 2560) and are skipped here — they keep the fused FFN.
-            // One shared tile shape for the whole layer: it must fit the down tiles
-            // (hidden_size output rows) AND this layer's QKV. e4b's KV-sharing layers
-            // fuse only Q (2048 rows) and get zero-padded up to it; global layers
-            // (n_qkv 6144) exceed every candidate and keep the fused-FFN path.
-            int TN_pick = 0;
-            if (os_on && qkv_K > 0) {
-                // Pick the SMALLEST kernel shape that fits both the down tiles
-                // (hidden_size rows) and this layer's QKV — but only if it stays within
-                // 2x hidden_size: the down tiles use just hidden_size of the TN rows, so
-                // an oversized TN wastes more in padding than it saves in switches
-                // (measured: e4b global layers at TN=6144 = 514 ms/token vs 468 leaving
-                // them on the fused FFN).
-                // Budget: the shared shape must stay CLOSE to the padded hidden size.
-                // The down tiles use only hidden of the TN rows, so an oversized TN
-                // wastes more in padding than it saves in switches. Measured:
-                //   e4b sliding TN=3072 (1.2x hidden 2560) -> 530 to ~470 ms/tok  (WIN)
-                //   e4b global  TN=6144 (2.4x)             -> 514 vs 468 ms/tok   (LOSS)
-                //   12B         TN=8192 (2.0x hidden 4096) -> 1161 vs 1010 ms/tok (LOSS)
-                // Now that QKV/O are TILED (not padded), TN no longer has to cover
-                // n_qkv — only the down tiles' hidden_size rows. Prefer the smallest
-                // shape >= padded hidden: on the 12B that is exactly H_padded=4096, and
-                // every dim (qkv 8192, gate+up 32768, down chunks) is a multiple of it,
-                // so there is zero padding waste.
-                const int max_tn = (5 * H_padded) / 4;   // 1.25x: keep tiles near hidden
-                for (int cand : {2560, 3072, 4096, 5120, 6144, 8192}) {
-                    if (cand > max_tn) break;
-                    if (cand >= config.hidden_size && reg.has_gemv(cand, qkv_K)) {
-                        TN_pick = cand; break;
-                    }
+        // ALVEARE_ONESHAPE: register the FFN as gemv tiles that reuse
+        // the shared shape (TN, TK), so the whole layer runs in ONE hw context.
+        int TN_pick = 0;
+        if (os_on && qkv_K > 0) {
+            const int max_tn = (5 * H_padded) / 4;   // 1.25x: keep tiles near hidden
+            for (int cand : {2560, 3072, 4096, 5120, 6144, 8192}) {
+                if (cand > max_tn) break;
+                if (cand >= config.hidden_size && reg.has_gemv(cand, qkv_K)) {
+                    TN_pick = cand; break;
                 }
             }
-            if (TN_pick > 0) {
-                const int TN = TN_pick, TK = qkv_K;
-                const size_t tile_row_bytes = size_t(TK / 32) * 20;
-                // Derive the gate/up row count from the weight itself: it is padded to
-                // I_padded (12B: 16384 rows, vs intermediate_size 15360), while e4b's
-                // happens to equal intermediate_size. Rows past intermediate_size are
-                // zero padding and contribute nothing.
-                const size_t gu_row_bytes = tile_row_bytes;
-                const int I_rows = (gu_row_bytes && w_gate.size() % gu_row_bytes == 0)
-                                 ? int(w_gate.size() / gu_row_bytes) : 0;
-                const int gu_rows = 2 * I_rows;                        // gate ++ up
+        }
+        if (TN_pick > 0 && !w_gate.empty() && !w_up.empty() && !w_down.empty()) {
+            const int TN = TN_pick, TK = qkv_K;
+            const size_t tile_row_bytes = size_t(TK / 32) * 20;
+            const size_t gu_row_bytes = tile_row_bytes;
+            const int I_rows = (gu_row_bytes && w_gate.size() % gu_row_bytes == 0)
+                             ? int(w_gate.size() / gu_row_bytes) : 0;
+            const int gu_rows = 2 * I_rows;                        // gate ++ up
 
-                if (I_rows > 0 && I_rows % TK == 0) {
-                    for (int base = 0; base < gu_rows; base += TN) {
-                        std::vector<uint8_t> tile(size_t(TN) * tile_row_bytes, 0);
-                        for (int r = 0; r < TN && base + r < gu_rows; ++r) {
-                            int gr = base + r;
-                            const std::vector<uint8_t>& src = (gr < I_rows) ? w_gate : w_up;
-                            size_t off = size_t(gr < I_rows ? gr : gr - I_rows) * gu_row_bytes;
-                            if (off + gu_row_bytes <= src.size())
-                                std::memcpy(tile.data() + size_t(r) * tile_row_bytes,
-                                            src.data() + off, gu_row_bytes);
-                        }
-                        lw.os_gateup.push_back(reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+            if (I_rows > 0 && I_rows % TK == 0) {
+                for (int base = 0; base < gu_rows; base += TN) {
+                    std::vector<uint8_t> tile(size_t(TN) * tile_row_bytes, 0);
+                    for (int r = 0; r < TN && base + r < gu_rows; ++r) {
+                        int gr = base + r;
+                        const std::vector<uint8_t>& src = (gr < I_rows) ? w_gate : w_up;
+                        size_t off = size_t(gr < I_rows ? gr : gr - I_rows) * gu_row_bytes;
+                        if (off + gu_row_bytes <= src.size())
+                            std::memcpy(tile.data() + size_t(r) * tile_row_bytes,
+                                        src.data() + off, gu_row_bytes);
                     }
-                    // down: (hidden, I) packed row-major; slice its columns into
-                    // I/TK chunks of tile_row_bytes each, pad rows hidden -> TN.
-                    const size_t down_row_bytes = size_t(I_padded / 32) * 20;
-                    const int n_chunks = I_rows / TK;
-                    for (int c = 0; c < n_chunks; ++c) {
-                        std::vector<uint8_t> tile(size_t(TN) * tile_row_bytes, 0);
-                        for (int r = 0; r < config.hidden_size; ++r) {
-                            size_t off = size_t(r) * down_row_bytes + size_t(c) * tile_row_bytes;
-                            if (off + tile_row_bytes <= w_down.size())
-                                std::memcpy(tile.data() + size_t(r) * tile_row_bytes,
-                                            w_down.data() + off, tile_row_bytes);
-                        }
-                        lw.os_down.push_back(reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                    lw.os_gateup.push_back(reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                }
+                const size_t down_row_bytes = size_t(I_padded / 32) * 20;
+                const int n_chunks = I_rows / TK;
+                for (int c = 0; c < n_chunks; ++c) {
+                    std::vector<uint8_t> tile(size_t(TN) * tile_row_bytes, 0);
+                    for (int r = 0; r < config.hidden_size && r < TN; ++r) {
+                        size_t off = size_t(r) * down_row_bytes + size_t(c) * tile_row_bytes;
+                        if (off + tile_row_bytes <= w_down.size())
+                            std::memcpy(tile.data() + size_t(r) * tile_row_bytes,
+                                        w_down.data() + off, tile_row_bytes);
                     }
-                    const size_t trb = size_t(TK / 32) * 20;
-                    // Split QKV into ceil(n_qkv/TN) tiles of (TN,TK) instead of padding
-                    // it up to a bigger shape. q/k/v are sliced from the START of the
-                    // concatenated output, so emitting the tiles in order is equivalent.
-                    // (Padding QKV up was what made the 12B slower: it forced TN=8192,
-                    // and the down tiles then used only 4096 of those 8192 rows.)
-                    if (!os_qkv_src.empty() && os_qkv_src.size() % trb == 0) {
-                        const int rows = int(os_qkv_src.size() / trb);
-                        for (int base = 0; base < rows; base += TN) {
+                    lw.os_down.push_back(reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                }
+                const size_t trb = size_t(TK / 32) * 20;
+                if (!os_qkv_src.empty() && os_qkv_src.size() % trb == 0) {
+                    const int rows = int(os_qkv_src.size() / trb);
+                    for (int base = 0; base < rows; base += TN) {
+                        std::vector<uint8_t> tile(size_t(TN) * trb, 0);
+                        const int n = std::min(TN, rows - base);
+                        std::memcpy(tile.data(), os_qkv_src.data() + size_t(base) * trb,
+                                    size_t(n) * trb);
+                        lw.os_qkv_tiles.push_back(
+                            reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                    }
+                }
+                if (!os_o_src.empty() && os_o_rows > 0) {
+                    const size_t orb = os_o_src.size() / size_t(os_o_rows);
+                    if (orb <= trb) {
+                        for (int base = 0; base < os_o_rows; base += TN) {
                             std::vector<uint8_t> tile(size_t(TN) * trb, 0);
-                            const int n = std::min(TN, rows - base);
-                            std::memcpy(tile.data(), os_qkv_src.data() + size_t(base) * trb,
-                                        size_t(n) * trb);
-                            lw.os_qkv_tiles.push_back(
+                            const int n = std::min(TN, os_o_rows - base);
+                            for (int r = 0; r < n; ++r)
+                                std::memcpy(tile.data() + size_t(r) * trb,
+                                            os_o_src.data() + size_t(base + r) * orb, orb);
+                            lw.os_o_tiles.push_back(
                                 reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
                         }
-                    }
-                    // O: rows hidden->TN (one tile when TN == padded hidden), input cols
-                    // widened to TK (the attention output is zero-padded to match).
-                    if (!os_o_src.empty() && os_o_rows > 0) {
-                        const size_t orb = os_o_src.size() / os_o_rows;
-                        if (orb <= trb) {
-                            for (int base = 0; base < os_o_rows; base += TN) {
-                                std::vector<uint8_t> tile(size_t(TN) * trb, 0);
-                                const int n = std::min(TN, os_o_rows - base);
-                                for (int r = 0; r < n; ++r)
-                                    std::memcpy(tile.data() + size_t(r) * trb,
-                                                os_o_src.data() + size_t(base + r) * orb, orb);
-                                lw.os_o_tiles.push_back(
-                                    reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
+                        lw.os_o_is_kchunked = false;
+                    } else {
+                        const int n_kchunks = static_cast<int>((orb + trb - 1) / trb);
+                        for (int c = 0; c < n_kchunks; ++c) {
+                            std::vector<uint8_t> tile(size_t(TN) * trb, 0);
+                            const size_t c_offset = size_t(c) * trb;
+                            const size_t c_bytes = (c_offset + trb <= orb) ? trb : (orb - c_offset);
+                            for (int r = 0; r < os_o_rows && r < TN; ++r) {
+                                std::memcpy(tile.data() + size_t(r) * trb,
+                                            os_o_src.data() + size_t(r) * orb + c_offset, c_bytes);
                             }
+                            lw.os_o_tiles.push_back(
+                                reg.create_gemv_weight(TN, TK, tile.data(), tile.size()));
                         }
+                        lw.os_o_is_kchunked = true;
                     }
-                    lw.os_n = TN;
-                    lw.os_k = TK;
-                    if (l == 0)
-                        std::cout << "[oneshape] FFN as " << lw.os_gateup.size() << "+"
-                                  << lw.os_down.size() << " gemv tiles of (" << TN << "," << TK << ")\n";
                 }
+                lw.os_n = TN;
+                lw.os_k = TK;
+                if (l == 0)
+                    std::cout << "[oneshape] FFN as " << lw.os_gateup.size() << "+"
+                              << lw.os_down.size() << " gemv tiles of (" << TN << "," << TK << ")\n";
             }
-
-            lw.ffn_gate_bytes = std::move(w_gate);
-            lw.ffn_up_bytes = std::move(w_up);
-            lw.ffn_down_bytes = std::move(w_down);
+        } else if (lw.w_ffn_fused == kInvalidWeight && !w_gate.empty() && !w_up.empty() && !w_down.empty()) {
+            int k_tile = 256;
+            auto fused = pack_ffn_fused_weights(w_gate, w_up, w_down, H_padded, I_padded, 32, k_tile);
+            if (reg.has_ffn_fused(H_padded, I_padded, act_type)) {
+                lw.w_ffn_fused = reg.create_ffn_fused_weight(H_padded, I_padded, act_type, fused.data(), fused.size());
+            }
         }
+
+        lw.ffn_gate_bytes = std::move(w_gate);
+        lw.ffn_up_bytes = std::move(w_up);
+        lw.ffn_down_bytes = std::move(w_down);
 
         mw.layers.push_back(lw);
     }

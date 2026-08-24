@@ -187,8 +187,19 @@ attention/rope/rmsnorm kernels first), port to e4b, measure.
   3072); gemma3 unchanged (never engages — `qkv_K` is only set on the gemma4 path). All
   three coherent.
   The gain is far below the +31% I projected: these gemv shapes sustain **~15.5 GMAC/s**
-  (not the fused FFN's 21.8) and the fixed per-call cost is paid **624 times per token**
-  on the 12B. Removing switches just converts them into many small dispatches.
+- 2026-08-24 **WIN #4 — Gemma-4-E4B Zero-Switch Single-Shape Architecture & Host Scratchpad (Phase 1)**
+  - Fixed incomplete/broken ONESHAPE weight wiring in `weights.cpp` (`os_qkv_src`, `os_o_src` assigned across all 42 layers, K-chunking for global layers `K_o=4096 > 2560` with partial host sums, and unified FFN tiling on `TN=3072, TK=2560`).
+  - Added `LayerScratch` in `Model` (`model.h` / `model.cpp`) to pre-allocate all intermediate vectors (`x_norm`, `q`, `k`, `v`, `qkv`, `q_rope`, `k_rope`, `attn_out`, `attn_proj`, `gu`, `act`, `down`, `geglu`, `ple_*`), completely eliminating ~840 heap allocations per token.
+  - Enabled ONESHAPE by default for `gemma4-e4b` (overridable with `ALVEARE_NO_ONESHAPE=1`), avoiding ~2.2 GB of duplicated fused-FFN NPU buffer allocations.
+  - **Measured on e4b (`e4b_test` e2e across 4 prompts)**:
+    - **Context switches during the 42-layer forward pass**: dropped from **106 switches** down to **0 switches**! (Only 2 switches total per token at the boundary for LM head).
+    - **QKV projection time**: dropped from **~142 ms** down to **~30 ms** (**4.7x speedup**).
+    - **O projection time**: dropped from **~89 ms** down to **~27 ms** (**3.3x speedup**).
+    - **Per-token layer loop**: dropped from **~577 ms** down to **~350-370 ms**.
+    - **Prefill time**: dropped from **~2.8s** down to **~0.75s** (**3.7x faster**).
+    - **End-to-end token latency**: dropped from **~620 ms/token (1.6 tok/s)** down to **~390-410 ms/token (2.5 tok/s, +56% throughput)**!
+    - **All test suites passing**: `layer_test` (SUCCESS) and `e4b_test` (all 4 prompts coherent: "Paris.", "def add_numbers", "in a vacuum").
+  - **Next phase (Phase 2)**: FFN tiling efficiency (optimizing host GELU / chunk accumulations) and LM Head NPU context optimization.
 - 2026-08-12 **NEGATIVE: skipping the activation upload between tiles buys nothing.**
   With tiling, 8-10 of a layer's 13 calls share the same input, so `run_gemv` gained an
   `x_unchanged` hint that skips the memcpy + DMA sync. Measured 12B 953-1023 ms vs
