@@ -34,6 +34,7 @@ struct LayerScratch {
     std::vector<float> acc_f;
     std::vector<bf16> part_bf16;
     std::vector<bf16> down_parts;
+    std::vector<const void*> act_chunks;
     std::vector<bf16> chunk_in;
     std::vector<float> geglu;
     std::vector<float> x_norm2_f;

@@ -867,11 +867,13 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
 
         run_fast_geglu_avx2(scratch_.gu.data(), scratch_.act.data(), I_rows);
 
-        std::vector<const void*> act_chunks(lw.os_down.size());
-        for (size_t c = 0; c < lw.os_down.size(); ++c) {
-            act_chunks[c] = scratch_.act.data() + c * TK;
+        if (scratch_.act_chunks.size() < lw.os_down.size()) {
+            scratch_.act_chunks.resize(lw.os_down.size());
         }
-        reg_.run_gemv_multi_in_batch(TN, TK, lw.os_down, act_chunks, scratch_.down_parts.data());
+        for (size_t c = 0; c < lw.os_down.size(); ++c) {
+            scratch_.act_chunks[c] = scratch_.act.data() + c * TK;
+        }
+        reg_.run_gemv_multi_in_batch(TN, TK, lw.os_down, scratch_.act_chunks, scratch_.down_parts.data());
 
         std::fill(scratch_.acc_f.begin(), scratch_.acc_f.begin() + K, 0.0f);
         for (size_t c = 0; c < lw.os_down.size(); ++c) {
