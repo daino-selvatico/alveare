@@ -328,6 +328,8 @@ void Model::init_scratch() {
         scratch_.proj_scaled.assign(total_ple_dim, 0.0f);
         scratch_.proj_normed.assign(total_ple_dim, 0.0f);
     }
+    scratch_.scores_buf.assign(config_.max_position_embeddings, 0.0f);
+    scratch_.out_f.assign(max_h_dim * 2, 0.0f);
 }
 
 void Model::reset_caches() {
@@ -599,8 +601,8 @@ void Model::run_attention_host(const bf16* q_rope, int pos, int layer, bf16* out
         target_layer = is_sliding ? (n_kv_start - 2) : (n_kv_start - 1);
     }
 
-    float scores_buf[2048];
-    float out_f[512];
+    float* scores_buf = scratch_.scores_buf.data();
+    float* out_f = scratch_.out_f.data();
 
     for (int h = 0; h < num_heads; ++h) {
         int kv_h = h / group_ratio;

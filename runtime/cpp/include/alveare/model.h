@@ -44,6 +44,8 @@ struct LayerScratch {
     std::vector<bf16> ple_y;
     std::vector<float> proj_scaled;
     std::vector<float> proj_normed;
+    std::vector<float> scores_buf;
+    std::vector<float> out_f;
 };
 
 class Model {
