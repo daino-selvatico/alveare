@@ -263,9 +263,10 @@ def _run_and_verify(opts):
     w_combined_np = pack_to_combined(w_q4_np, scales_np)
     
     # Create NPU tensors
-    w_combined_t = iron.tensor(w_combined_np.reshape(-1), dtype=np.uint8, device="npu")
-    x_t = iron.tensor(x_np.astype(bfloat16), dtype=bfloat16, device="npu")
-    y_t = iron.zeros(opts.N, dtype=bfloat16, device="npu")
+    dev = _resolve_full_device(opts)
+    w_combined_t = iron.tensor(w_combined_np.reshape(-1), dtype=np.uint8, device=dev)
+    x_t = iron.tensor(x_np.astype(bfloat16), dtype=bfloat16, device=dev)
+    y_t = iron.zeros(opts.N, dtype=bfloat16, device=dev)
     
     bench = run_iters(
         gemv_q_npu,

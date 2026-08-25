@@ -390,8 +390,8 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
         // the shared shape (TN, TK), so the whole layer runs in ONE hw context.
         int TN_pick = 0;
         if (os_on && qkv_K > 0) {
-            const int max_tn = (5 * H_padded) / 4;   // 1.25x: keep tiles near hidden
-            for (int cand : {2560, 3072, 4096, 5120, 6144, 8192}) {
+            const int max_tn = (5 * H_padded) / 4;   // 1.25x: keep tiles near hidden (3072 for hidden=2560)
+            for (int cand : {3072, 2560, 4096, 5120, 6144, 8192}) {
                 if (cand > max_tn) break;
                 if (cand >= config.hidden_size && reg.has_gemv(cand, qkv_K)) {
                     TN_pick = cand; break;
