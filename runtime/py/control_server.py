@@ -289,6 +289,7 @@ def discover_models() -> List[Dict[str, Any]]:
             if size_mb == 0:
                 size_mb = 145.0
 
+        supported_devices = ["npu", "cpu"] if (alias in ("whisper", "whisper-base") or arch == "whisper" or task == "speech-to-text") else ["npu"]
         models.append({
             "id": alias,
             "alias": alias,
@@ -298,6 +299,8 @@ def discover_models() -> List[Dict[str, Any]]:
             "description": description,
             "path": str(real_p),
             "size_mb": size_mb,
+            "supported_devices": supported_devices,
+            "default_device": "npu",
             "has_config": cfg_path.exists(),
             "active": (alias == state.active_model)
         })
@@ -370,7 +373,8 @@ def parse_server_log_line(line_str: str):
         state.last_error = line_str.strip()
 
 
-def start_inference_server(model: str, host: str, port: int, legacy: bool = False, offline: bool = False) -> bool:
+def start_inference_server(model: str, host: str, port: int, device: str = "npu", legacy: bool = False, offline: bool = False) -> bool:
+    device = (device or "npu").lower()
     if state.process and state.process.poll() is None:
         stop_inference_server()
 
@@ -382,16 +386,17 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
                 break
 
     if is_stt:
-        append_log(f"Avvio del motore Speech-to-Text ({model}) su CPU...")
+        dev_label = "NPU (XDNA2)" if device == "npu" else "CPU"
+        append_log(f"Avvio del motore Speech-to-Text ({model}) su {dev_label}...")
         state.status = "starting"
         state.active_model = model
         state.host = host
         state.port = port
-        state.device = "cpu"
+        state.device = device
         state.legacy = legacy
         state.offline = offline
         state.load_progress = 15.0
-        state.load_step = f"Caricamento modello {model}..."
+        state.load_step = f"Caricamento modello {model} su {dev_label}..."
         state.is_loaded = False
         state.tok_per_sec = 0.0
         state.last_error = ""
@@ -401,24 +406,31 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
             try:
                 stt_id = "openai/whisper-base"
                 from runtime.py.whisper_stt import WhisperSTT
-                stt = WhisperSTT.get_instance(model_id=stt_id)
+                stt = WhisperSTT.get_instance(model_id=stt_id, device=device)
                 stt._ensure_loaded()
                 state.load_progress = 100.0
                 state.is_loaded = True
                 state.load_step = "Modello pronto"
                 state.status = "running"
-                append_log(f"[STT Engine] Server STT attivo su CPU con {stt_id}. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
+                append_log(f"[STT Engine] Server STT attivo su {dev_label} con {stt_id}. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
             except Exception as e:
                 state.status = "error"
                 state.last_error = str(e)
                 append_log(f"[STT Engine] Errore avvio modello: {e}")
         
         threading.Thread(target=_load_stt_async, daemon=True).start()
-        save_config({"default_model": model, "host": host, "port": port})
+        save_config({"default_model": model, "host": host, "port": port, "device": device})
         return True
 
+    if device == "cpu":
+        state.status = "error"
+        err_msg = f"L'esecuzione su CPU non è disponibile per il modello '{model}'. Solo NPU (XDNA2) è supportato."
+        state.last_error = err_msg
+        append_log(f"Errore avvio: {err_msg}")
+        return False
+
     alveare_bin = ROOT_DIR / "alveare"
-    cmd = [str(alveare_bin), "serve", model, "--host", host, "--port", str(port)]
+    cmd = [str(alveare_bin), "serve", model, "--device", device, "--host", host, "--port", str(port)]
     if legacy:
         cmd.append("--legacy")
     if offline:
@@ -433,7 +445,7 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
     state.active_model = model
     state.host = host
     state.port = port
-    state.device = "npu"
+    state.device = device
     state.legacy = legacy
     state.offline = offline
     state.load_progress = 0.0
@@ -561,6 +573,7 @@ class StartRequest(BaseModel):
     model: Optional[str] = None
     host: Optional[str] = "127.0.0.1"
     port: Optional[int] = 8000
+    device: Optional[str] = "npu"
     legacy: Optional[bool] = False
     offline: Optional[bool] = False
 
@@ -592,7 +605,7 @@ async def get_status():
         "load_step": state.load_step,
         "tok_per_sec": state.tok_per_sec,
         "model": state.active_model,
-        "device": "cpu" if is_active_stt_model() else getattr(state, "device", "npu"),
+        "device": getattr(state, "device", "npu"),
         "host": state.host,
         "port": state.port,
         "legacy": state.legacy,
@@ -1079,12 +1092,13 @@ async def control_start(req: StartRequest):
         model=model,
         host=req.host or "127.0.0.1",
         port=req.port or 8000,
+        device=req.device or "npu",
         legacy=bool(req.legacy),
         offline=bool(req.offline)
     )
     if not success:
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to start server")
-    return {"status": "ok", "message": f"Server starting with model {model}"}
+    return {"status": "ok", "message": f"Server starting with model {model} on {req.device or 'npu'}"}
 
 @app.post("/api/control/stop")
 async def control_stop():
@@ -1100,15 +1114,17 @@ async def control_restart(req: StartRequest):
         model=model,
         host=req.host or "127.0.0.1",
         port=req.port or 8000,
+        device=req.device or "npu",
         legacy=bool(req.legacy),
         offline=bool(req.offline)
     )
     if not success:
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to restart server")
-    return {"status": "ok", "message": f"Server restarted with model {model}"}
+    return {"status": "ok", "message": f"Server restarted with model {model} on {req.device or 'npu'}"}
 
 class BuildKernelsRequest(BaseModel):
     model: Optional[str] = None
+    device: Optional[str] = "npu"
     force_arch: Optional[str] = None
     no_gemm: Optional[bool] = False
     max_batch: Optional[int] = 16
@@ -1163,7 +1179,7 @@ async def control_build_kernels(req: BuildKernelsRequest):
         stop_inference_server()
 
     alveare_bin = ROOT_DIR / "alveare"
-    cmd = [str(alveare_bin), "build-kernels", model]
+    cmd = [str(alveare_bin), "build-kernels", model, "--device", req.device or "npu"]
     if req.no_gemm:
         cmd.append("--no-gemm")
     if req.max_batch and req.max_batch != 16:

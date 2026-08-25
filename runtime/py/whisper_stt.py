@@ -54,20 +54,21 @@ class WhisperSTT:
     _loading = False
     _external_py = None
 
-    def __init__(self, model_id: str = "openai/whisper-base", device: str = "cpu"):
+    def __init__(self, model_id: str = "openai/whisper-base", device: str = "npu"):
         self.model_id = model_id
-        self.device = device
+        self.device = device or "npu"
         self._external_py = None
 
     @classmethod
-    def get_instance(cls, model_id: str = "openai/whisper-base", device: str = "cpu"):
-        if cls._instance is None or cls._instance.model_id != model_id:
+    def get_instance(cls, model_id: str = "openai/whisper-base", device: str = "npu"):
+        dev = device or "npu"
+        if cls._instance is None or cls._instance.model_id != model_id or cls._instance.device != dev:
             if cls._instance and cls._instance._worker_proc:
                 try:
                     cls._instance._worker_proc.terminate()
                 except Exception:
                     pass
-            cls._instance = cls(model_id=model_id, device=device)
+            cls._instance = cls(model_id=model_id, device=dev)
         return cls._instance
 
     def _ensure_loaded(self):

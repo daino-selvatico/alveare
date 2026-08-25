@@ -42,6 +42,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     }
   }, [models, targetModel]);
 
+  const [modelDevices, setModelDevices] = useState({});
+  const getSelectedDevice = (modelId) => modelDevices[modelId] || 'npu';
+
   const handleDeleteModel = async (modelId) => {
     if (status?.is_running && status?.model === modelId) {
       alert(t('serverControl.deleteRunningModelAlert', { modelId }));
@@ -67,18 +70,19 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     }
   };
 
-  const handleStart = async (modelToStart) => {
+  const handleStart = async (modelToStart, deviceOverride) => {
     const selected = modelToStart || targetModel;
     if (!selected) {
       alert(t('serverControl.selectModelFirst'));
       return;
     }
+    const device = deviceOverride || getSelectedDevice(selected) || 'npu';
     setLoading(true);
     try {
       await fetch(`${apiBase}/api/control/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
       });
       setTimeout(() => {
         onRefresh();
@@ -106,14 +110,15 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     }
   };
 
-  const handleRestart = async (modelToRestart) => {
+  const handleRestart = async (modelToRestart, deviceOverride) => {
     const selected = modelToRestart || targetModel;
+    const device = deviceOverride || getSelectedDevice(selected) || 'npu';
     setLoading(true);
     try {
       await fetch(`${apiBase}/api/control/restart`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
       });
       setTimeout(() => {
         onRefresh();
@@ -126,7 +131,8 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     }
   };
 
-  const handleBuildKernels = async (modelId) => {
+  const handleBuildKernels = async (modelId, deviceOverride) => {
+    const device = deviceOverride || getSelectedDevice(modelId) || 'npu';
     if (!confirm(t('serverControl.buildKernelConfirm', { modelId }))) {
       return;
     }
@@ -137,6 +143,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: modelId,
+          device: device,
           no_gemm: noGemm,
           max_batch: maxBatch
         })
@@ -165,12 +172,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 <>
                   <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>
                   <span className="badge" style={{
-                    background: (status.model === 'whisper-base' || status.device === 'cpu') ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                    color: (status.model === 'whisper-base' || status.device === 'cpu') ? '#60a5fa' : '#34d399',
-                    border: (status.model === 'whisper-base' || status.device === 'cpu') ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                    background: status.device === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                    color: status.device === 'cpu' ? '#60a5fa' : '#34d399',
+                    border: status.device === 'cpu' ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
                     fontWeight: 700
                   }}>
-                    {(status.model === 'whisper-base' || status.device === 'cpu') ? '🖥️ CPU (Whisper STT)' : '⚡ NPU (XDNA2 Native)'}
+                    {status.device === 'cpu' ? '🖥️ CPU' : '⚡ NPU (XDNA2 Native)'}
                   </span>
                 </>
               )}
@@ -430,12 +437,58 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                     </div>
                   )}
 
+                  {/* Device Target Selector */}
+                  {m.supported_devices && m.supported_devices.length > 1 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.4rem 0.6rem', borderRadius: '8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Dispositivo:</span>
+                      <div style={{ display: 'flex', gap: '0.35rem' }} onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => setModelDevices(prev => ({ ...prev, [m.id]: 'npu' }))}
+                          style={{
+                            padding: '0.25rem 0.55rem',
+                            borderRadius: '6px',
+                            border: (modelDevices[m.id] || 'npu') === 'npu' ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid transparent',
+                            background: (modelDevices[m.id] || 'npu') === 'npu' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
+                            color: (modelDevices[m.id] || 'npu') === 'npu' ? '#34d399' : 'var(--text-muted)',
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          ⚡ NPU (Default)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setModelDevices(prev => ({ ...prev, [m.id]: 'cpu' }))}
+                          style={{
+                            padding: '0.25rem 0.55rem',
+                            borderRadius: '6px',
+                            border: (modelDevices[m.id] || 'npu') === 'cpu' ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
+                            background: (modelDevices[m.id] || 'npu') === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
+                            color: (modelDevices[m.id] || 'npu') === 'cpu' ? '#60a5fa' : 'var(--text-muted)',
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          🖥️ CPU
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.4rem 0.6rem', borderRadius: '8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Dispositivo:</span>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#34d399' }}>⚡ NPU (XDNA2 Native)</span>
+                    </div>
+                  )}
+
                   {/* Kernel Status Indicator */}
                   <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{m.task === 'speech-to-text' || m.arch === 'whisper' ? 'Motore di Esecuzione' : t('serverControl.hardwareKernels')}</span>
-                    {m.task === 'speech-to-text' || m.arch === 'whisper' ? (
-                      <span style={{ color: '#06b6d4', fontWeight: 600 }}>🎙️ CPU (Whisper STT)</span>
-                    ) : isKernelMatching ? (
+                    <span>{t('serverControl.hardwareKernels')}</span>
+                    {isKernelMatching ? (
                       <span style={{ color: '#34d399', fontWeight: 600 }}>
                         {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
                       </span>
@@ -467,22 +520,20 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                       {isServed ? t('serverControl.restart') : t('serverControl.loadAndStart')}
                     </button>
 
-                    {m.task !== 'speech-to-text' && m.arch !== 'whisper' && (
-                      <button
-                        className="btn-secondary"
-                        style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setTargetModel(m.id);
-                          handleBuildKernels(m.id);
-                        }}
-                        disabled={buildingModel === m.id}
-                        title={t('serverControl.compileKernelTitle')}
-                        aria-label={`Compila kernel NPU per ${m.id}`}
-                      >
-                        <Hammer size={14} /> {buildingModel === m.id ? t('serverControl.compiling') : t('serverControl.compileKernel')}
-                      </button>
-                    )}
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTargetModel(m.id);
+                        handleBuildKernels(m.id);
+                      }}
+                      disabled={buildingModel === m.id}
+                      title={t('serverControl.compileKernelTitle')}
+                      aria-label={`Compila kernel NPU per ${m.id}`}
+                    >
+                      <Hammer size={14} /> {buildingModel === m.id ? t('serverControl.compiling') : t('serverControl.compileKernel')}
+                    </button>
 
                     <button
                       className="btn-danger"

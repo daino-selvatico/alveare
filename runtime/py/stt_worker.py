@@ -5,11 +5,11 @@ import time
 
 def main():
     model_id = "openai/whisper-base"
-    device = "cpu"
+    device = "npu"
     if len(sys.argv) > 1 and sys.argv[1]:
         model_id = sys.argv[1]
     if len(sys.argv) > 2 and sys.argv[2]:
-        device = sys.argv[2]
+        device = sys.argv[2].lower()
 
     # Save real IPC stdout descriptor and redirect sys.stdout to sys.stderr during model load
     ipc_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)
@@ -27,11 +27,13 @@ def main():
         
         processor = AutoProcessor.from_pretrained(model_id)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, torch_dtype=torch.float32, low_cpu_mem_usage=True)
-        model.to(device)
+        target_device = "cpu" if device in ("cpu", "npu") else device
+        model.to(target_device)
         model.eval()
     else:
         from funasr import AutoModel
-        model = AutoModel(model=model_id, hub="hf", device=device, disable_update=True)
+        target_device = "cpu" if device in ("cpu", "npu") else device
+        model = AutoModel(model=model_id, hub="hf", device=target_device, disable_update=True)
     
     # Notify parent process that model is loaded and ready
     ipc_out.write("READY\n")
@@ -77,7 +79,7 @@ def main():
                             pass
                     
                     with torch.no_grad():
-                        gen_out = model.generate(inputs.input_features.to(device), **gen_kwargs)
+                        gen_out = model.generate(inputs.input_features.to(target_device), **gen_kwargs)
                     
                     seq = gen_out.sequences[0].tolist()
                     if len(seq) > 1 and (not language or language in ("auto", "unknown", "")):

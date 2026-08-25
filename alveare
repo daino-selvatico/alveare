@@ -187,6 +187,7 @@ resolve_weights_dir() {
     gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/quantized_weights_gemma3" ;;
     gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
     gemma4-e4b|e4b)                echo "$ROOT/quantized_weights_gemma4-e4b" ;;
+    whisper|whisper-base)          echo "$ROOT/quantized_weights_whisper-base" ;;
     *)
       if [ -d "$model" ]; then
         echo "$model"
@@ -279,17 +280,29 @@ cmd_serve() {
   local model="$1"; shift
   local host="${ALVEARE_HOST:-127.0.0.1}"
   local port="${ALVEARE_PORT:-8000}"
+  local device="npu"
   local offline=0
+  local legacy=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host) host="$2"; shift 2 ;;
       --port) port="$2"; shift 2 ;;
+      --device) device="$2"; shift 2 ;;
+      --device=*) device="${1#--device=}"; shift ;;
       --offline) offline=1; shift 1 ;;
       --legacy) legacy=1; shift 1 ;;
       *) echo "error: unknown serve option '$1'" >&2; exit 2 ;;
     esac
   done
+
+  device="$(echo "$device" | tr '[:upper:]' '[:lower:]')"
+  if [ "$device" = "cpu" ]; then
+    if [ "$model" != "whisper" ] && [ "$model" != "whisper-base" ] && [[ "$model" != *"whisper"* ]]; then
+      echo "error: CPU execution is not supported for model '$model'. Only NPU (XDNA2) is supported." >&2
+      exit 1
+    fi
+  fi
 
   if [ "$offline" -eq 1 ]; then
     export HF_HUB_OFFLINE=1
@@ -336,6 +349,22 @@ cmd_serve() {
   export ALVEARE_WEIGHTS_DIR="$weights_dir"
   export ALVEARE_HOST="$host"
   export ALVEARE_PORT="$port"
+  export ALVEARE_DEVICE="$device"
+
+  if [ "$model" = "whisper" ] || [ "$model" = "whisper-base" ] || [[ "$model" == *"whisper"* ]]; then
+    local dev_label="NPU (XDNA2 Native)"
+    [ "$device" = "cpu" ] && dev_label="CPU"
+    echo "Starting Whisper Speech-to-Text Server on $dev_label..."
+    echo "  WebSocket Live Stream: ws://$host:$port/ws/stt"
+    echo "  OpenAI STT Endpoint:   http://$host:$port/v1/audio/transcriptions"
+    echo
+    exec "$PY" -c "
+import sys, uvicorn
+from runtime.py.control_server import app, start_inference_server
+start_inference_server(model='whisper-base', host='$host', port=$port, device='$device')
+uvicorn.run(app, host='$host', port=$port, log_level='info')
+"
+  fi
   
   if [ "${legacy:-0}" -eq 1 ]; then
     echo "Starting Legacy Python Server..."

@@ -139,6 +139,15 @@ def enumerate_shapes(weights_dir: Path, num_layers: int, model_type: str = "") -
     gemv_shapes: set[tuple[int, int]] = set()
     ffn_shapes: set[tuple[int, int]] = set()
     
+    if "whisper" in model_type.lower() or "whisper" in str(weights_dir).lower():
+        # Whisper Base architecture shapes:
+        # Hidden dimension: 512, FFN intermediate: 2048
+        gemv_shapes.add((512, 512))    # Attention Q, K, V, Out
+        gemv_shapes.add((2048, 512))   # FFN Up
+        gemv_shapes.add((512, 2048))   # FFN Down
+        ffn_shapes.add((512, 2048))    # FFN fused
+        return gemv_shapes, ffn_shapes
+
     for l in range(num_layers):
         for proj in PROJECTIONS:
             p = weights_dir / f"blk.{l}.{proj}.weight_packed.npy"
@@ -270,6 +279,7 @@ def main():
     ap.add_argument("--out", type=Path, default=ROOT / "kernels" / "build")
     ap.add_argument("--max-batch", type=int, default=16, help="prefill GEMM batch B")
     ap.add_argument("--no-gemm", action="store_true", help="skip prefill GEMM shapes")
+    ap.add_argument("--device", type=str, default="npu", choices=["npu", "cpu"], help="target hardware device (default: npu)")
     ap.add_argument("--force", action="store_true", help="recompile xclbin even if present")
     args = ap.parse_args()
 
