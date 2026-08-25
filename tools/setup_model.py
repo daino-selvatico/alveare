@@ -57,6 +57,8 @@ SUPPORTED_MODELS = [
         "repo_id": "bartowski/Llama-3.2-1B-Instruct-GGUF",
         "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
         "size_approx": "~0.8 GB",
+        "description": "Meta Llama 3.2 1B instruct model."
+    },
     {
         "id": "whisper-base",
         "name": "Whisper Base STT (Speech-to-Text)",
