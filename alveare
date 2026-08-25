@@ -128,15 +128,20 @@ QUANTIZE:
         alveare serve g4-12b
 
 BUILD-KERNELS:
-    alveare build-kernels <model>
+    alveare build-kernels <model> [--target npu|cpu|all] [--no-gemm] [--max-batch N]
 
-    Builds the XDNA2 hardware kernels (.xclbin) tailored to the exact matrix 
-    shapes of your quantized model. This interrogates the AIE compiler and 
-    may take several hours to complete. The kernels will be placed in 
-    'kernels/build', which is automatically searched by 'serve'.
+    Builds hardware kernels (NPU XDNA2 .xclbin and/or native CPU AVX-512 runtime)
+    tailored to the exact matrix shapes of your model.
+
+    Options:
+        --target npu|cpu|all   Target hardware architecture (default: all)
+        --no-gemm              Skip prefill GEMM compilation (GEMV only)
+        --max-batch <N>        Max prefill batch size (default: 16)
 
     Examples:
         alveare build-kernels gemma4
+        alveare build-kernels gemma4 --target cpu
+        alveare build-kernels gemma4 --target npu
 
 SERVE:
     <model> resolves in this order: built-in shorthand, then an existing

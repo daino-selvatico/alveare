@@ -1049,6 +1049,7 @@ async def control_restart(req: StartRequest):
 
 class BuildKernelsRequest(BaseModel):
     model: Optional[str] = None
+    target: Optional[str] = "all"
     force_arch: Optional[str] = None
     no_gemm: Optional[bool] = False
     max_batch: Optional[int] = 16
@@ -1104,6 +1105,8 @@ async def control_build_kernels(req: BuildKernelsRequest):
 
     alveare_bin = ROOT_DIR / "alveare"
     cmd = [str(alveare_bin), "build-kernels", model]
+    if req.target:
+        cmd.extend(["--target", req.target])
     if req.no_gemm:
         cmd.append("--no-gemm")
     if req.max_batch and req.max_batch != 16:

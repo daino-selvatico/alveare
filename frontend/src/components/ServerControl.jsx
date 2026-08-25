@@ -15,6 +15,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   // Kernel Build States
   const [kernelStatus, setKernelStatus] = useState(null);
   const [showBuildOptions, setShowBuildOptions] = useState(false);
+  const [buildTarget, setBuildTarget] = useState('all'); // 'all' | 'npu' | 'cpu'
   const [noGemm, setNoGemm] = useState(false);
   const [maxBatch, setMaxBatch] = useState(16);
   const [buildingModel, setBuildingModel] = useState(null);
@@ -126,7 +127,8 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   };
 
   const handleBuildKernels = async (modelId) => {
-    if (!confirm(t('serverControl.buildKernelConfirm', { modelId }))) {
+    const targetLabel = buildTarget === 'npu' ? 'NPU' : buildTarget === 'cpu' ? 'CPU' : 'NPU + CPU';
+    if (!confirm(t('serverControl.buildKernelConfirm', { modelId, target: targetLabel }))) {
       return;
     }
     setBuildingModel(modelId);
@@ -136,6 +138,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: modelId,
+          target: buildTarget,
           no_gemm: noGemm,
           max_batch: maxBatch
         })
@@ -560,7 +563,20 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
         {/* Expandable Advanced Kernel Compilation Options */}
         {showBuildOptions && (
-          <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
+          <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.88rem' }}>
+              <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>{t('serverControl.targetHardware')}</span>
+              <select
+                value={buildTarget}
+                onChange={e => setBuildTarget(e.target.value)}
+                style={{ padding: '0.4rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.4)', border: '1px solid var(--border-color)', color: 'white', fontWeight: 600 }}
+              >
+                <option value="all" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.targetAll')}</option>
+                <option value="npu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.targetNpu')}</option>
+                <option value="cpu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.targetCpu')}</option>
+              </select>
+            </div>
+
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
               <input type="checkbox" checked={noGemm} onChange={e => setNoGemm(e.target.checked)} />
               <span>{t('serverControl.noGemmOption')}</span>
