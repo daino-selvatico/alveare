@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <cstdlib>
+#include <fstream>
 #include "alveare/bf16.h"
 
 namespace alveare {
@@ -492,6 +493,23 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
 
         mw.layers.push_back(lw);
     }
+
+    // Load Medusa multi-head weights if present (medusa_head_0.npy, medusa_head_1.npy, ...)
+    for (int h = 0; h < 4; ++h) {
+        std::string medusa_path = dir + "/medusa_head_" + std::to_string(h) + ".npy";
+        std::ifstream test_f(medusa_path);
+        if (test_f.good()) {
+            std::vector<float> head_w = load_float_npy(medusa_path);
+            if (!head_w.empty()) {
+                mw.medusa_heads.push_back(std::move(head_w));
+            }
+        }
+    }
+    mw.num_medusa_heads = static_cast<int>(mw.medusa_heads.size());
+    if (mw.num_medusa_heads > 0) {
+        std::cout << "[medusa] Loaded " << mw.num_medusa_heads << " speculative prediction heads.\n";
+    }
+
     std::cout << "\nLoaded all weights.\n";
     return mw;
 }

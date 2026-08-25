@@ -449,12 +449,63 @@ GenerationStats Generator::generate(
             batch_ple.resize(static_cast<size_t>(max_B) * cfg.num_hidden_layers * cfg.per_layer_input);
         }
 
+        auto draft_medusa = [&](const bf16* last_hidden, int max_medusa) -> std::vector<int> {
+            if (weights_.num_medusa_heads <= 0) return {};
+            std::vector<int> mdraft;
+            int H = hidden_size;
+            std::vector<float> h_in(H);
+            for (int i = 0; i < H; ++i) h_in[i] = last_hidden[i].to_float();
+
+            std::vector<float> h_out(H);
+            std::vector<bf16> h_normed(H);
+            std::vector<float> m_logits;
+
+            int n_heads = std::min(max_medusa, weights_.num_medusa_heads);
+            for (int head = 0; head < n_heads; ++head) {
+                const float* W = weights_.medusa_heads[head].data();
+                
+                #pragma omp parallel for schedule(static)
+                for (int r = 0; r < H; ++r) {
+                    __m256 acc = _mm256_setzero_ps();
+                    const float* w_row = &W[size_t(r) * H];
+                    for (int c = 0; c < H; c += 8) {
+                        __m256 xv = _mm256_loadu_ps(&h_in[c]);
+                        __m256 wv = _mm256_loadu_ps(&w_row[c]);
+                        acc = _mm256_fmadd_ps(xv, wv, acc);
+                    }
+                    alignas(32) float tmp[8];
+                    _mm256_storeu_ps(tmp, acc);
+                    float dot = (tmp[0] + tmp[1] + tmp[2] + tmp[3]) + (tmp[4] + tmp[5] + tmp[6] + tmp[7]);
+                    h_out[r] = h_in[r] + dot;
+                }
+
+                float var = 0.0f;
+                for (int i = 0; i < H; ++i) var += h_out[i] * h_out[i];
+                var /= H;
+                float inv = 1.0f / std::sqrt(var + cfg.rms_norm_eps);
+                for (int i = 0; i < H; ++i) {
+                    float w = weights_.output_norm.empty() ? 1.0f : weights_.output_norm[i];
+                    h_normed[i] = bf16(h_out[i] * inv * w);
+                }
+
+                run_lm_head(h_normed.data(), m_logits);
+                int tok = sample(m_logits, params);
+                mdraft.push_back(tok);
+            }
+            return mdraft;
+        };
+
         int consecutive_misses = 0;
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
             std::vector<int> draft;
             if (step > 0 && consecutive_misses == 0) {
-                draft = drafter.draft(seq, K_draft);
+                if (weights_.num_medusa_heads > 0) {
+                    draft = draft_medusa(cur_x, K_draft);
+                }
+                if (draft.empty()) {
+                    draft = drafter.draft(seq, K_draft);
+                }
                 while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
                     draft.pop_back();
             } else {

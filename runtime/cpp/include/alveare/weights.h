@@ -94,6 +94,10 @@ struct ModelWeights {
     int lm_head_vocab = 0;
     int lm_head_K = 0;
     int lm_head_chunk_N = 0;
+
+    // Medusa multi-head speculative drafters (optional)
+    int num_medusa_heads = 0;
+    std::vector<std::vector<float>> medusa_heads; // [head_idx][H * H]
 };
 
 ModelWeights load_weights(const std::string& dir, const ModelConfig& config, NpuRegistry& reg);
