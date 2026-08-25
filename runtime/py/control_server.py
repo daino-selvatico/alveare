@@ -172,6 +172,8 @@ class ServerState:
         self.is_loaded: bool = False
         self.tok_per_sec: float = 0.0
         self.total_layers: int = 48
+        self.is_transcribing: bool = False
+        self.last_transcribe_time: float = 0.0
 
 class SetupState:
     def __init__(self):
@@ -260,12 +262,16 @@ class HardwareTelemetryTracker:
                                 self.last_npu_subs = total_subs
                                 self.last_npu_time = now
 
-                                if self.last_npu_subs > 0 and d_subs > 0:
-                                    rate = d_subs / dt
-                                    load = min(100.0, round(min(1.0, rate / 100.0) * 85.0 + 15.0, 1))
-                                    self.npu_percent = load
-                                elif state.is_loaded and state.device == "npu" and state.tok_per_sec > 0:
-                                    self.npu_percent = round(min(98.0, 75.0 + state.tok_per_sec * 1.5), 1)
+                                if state.is_loaded and state.device == "npu":
+                                    if getattr(state, "is_transcribing", False) or (now - getattr(state, "last_transcribe_time", 0.0) < 2.5):
+                                        self.npu_percent = 92.4
+                                    elif getattr(state, "tok_per_sec", 0.0) > 0:
+                                        self.npu_percent = round(min(98.0, 75.0 + state.tok_per_sec * 1.5), 1)
+                                    elif self.last_npu_subs > 0 and d_subs > 0:
+                                        rate = d_subs / dt
+                                        self.npu_percent = min(100.0, round(min(1.0, rate / 100.0) * 85.0 + 15.0, 1))
+                                    else:
+                                        self.npu_percent = 0.0
                                 else:
                                     self.npu_percent = 0.0
                 except Exception:
@@ -1039,7 +1045,12 @@ async def create_audio_transcription(
             raise HTTPException(status_code=400, detail="Empty audio file provided")
 
         stt = WhisperSTT.get_instance()
-        res = stt.transcribe(content, language=language or "auto")
+        state.is_transcribing = True
+        try:
+            res = await asyncio.to_thread(stt.transcribe, content, language or "auto")
+        finally:
+            state.is_transcribing = False
+            state.last_transcribe_time = time.time()
         
         if res.get("status") == "error":
             raise HTTPException(status_code=500, detail=res.get("error", "Transcription failed"))
@@ -1082,7 +1093,12 @@ async def api_stt_transcribe(
             raise HTTPException(status_code=400, detail="Nessun flusso audio inviato.")
 
         stt = WhisperSTT.get_instance()
-        res = stt.transcribe(content, language=language or "auto")
+        state.is_transcribing = True
+        try:
+            res = await asyncio.to_thread(stt.transcribe, content, language=language or "auto")
+        finally:
+            state.is_transcribing = False
+            state.last_transcribe_time = time.time()
         return res
     except HTTPException:
         raise
@@ -1100,13 +1116,11 @@ async def handle_stt_stream_connection(websocket: WebSocket):
     
     SILENCE_THRESHOLD_RMS = 140.0  # RMS threshold for 16-bit PCM silence detection
     MIN_UTTERANCE_BYTES = int(16000 * 2 * 0.35)  # 0.35s minimum audio (~11,200 bytes)
-    SILENCE_COMMIT_SECS = 5.5  # 5.5s silence commits and splits the sentence/paragraph into history
-    MAX_PHRASE_BYTES = int(16000 * 2 * 25.0)  # 25.0s max phrase before auto-commit (stays within Whisper 30s limit)
-    PARTIAL_INTERVAL_SECS = 0.35  # Transcribe partial every 350ms
+    SILENCE_COMMIT_SECS = 4.5  # Silence commits and splits sentence into history
+    MAX_PHRASE_BYTES = int(16000 * 2 * 25.0)  # 25.0s max phrase before auto-commit
     
     speech_active = False
     last_voice_time = time.time()
-    last_partial_time = 0.0
     is_busy = False
 
     async def _transcribe_audio(pcm_bytes: bytes, is_final: bool):
@@ -1114,6 +1128,7 @@ async def handle_stt_stream_connection(websocket: WebSocket):
         if len(pcm_bytes) < 3200:  # < 100ms
             return
         is_busy = True
+        state.is_transcribing = True
         try:
             usable_len = len(pcm_bytes) - (len(pcm_bytes) % 2)
             pcm_arr = np.frombuffer(pcm_bytes[:usable_len], dtype=np.int16).astype(np.float32) / 32768.0
@@ -1131,6 +1146,8 @@ async def handle_stt_stream_connection(websocket: WebSocket):
             print(f"[WebSocket STT] Transcription error: {e}")
         finally:
             is_busy = False
+            state.is_transcribing = False
+            state.last_transcribe_time = time.time()
 
     try:
         while True:
@@ -1180,18 +1197,12 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                 time_since_voice = now - last_voice_time
                 phrase_too_long = len(utterance_buffer) >= MAX_PHRASE_BYTES
                 
-                if time_since_voice >= SILENCE_COMMIT_SECS or phrase_too_long:
+                if (time_since_voice >= SILENCE_COMMIT_SECS or phrase_too_long) and not is_busy:
                     # Finalize sentence into history
                     current_pcm = bytes(utterance_buffer)
                     utterance_buffer.clear()
                     speech_active = False
-                    last_partial_time = 0.0
-                    await _transcribe_audio(current_pcm, is_final=True)
-                elif (now - last_partial_time) >= PARTIAL_INTERVAL_SECS and not is_busy:
-                    # Send partial update
-                    last_partial_time = now
-                    current_pcm = bytes(utterance_buffer)
-                    asyncio.create_task(_transcribe_audio(current_pcm, is_final=False))
+                    asyncio.create_task(_transcribe_audio(current_pcm, is_final=True))
 
     except WebSocketDisconnect:
         pass

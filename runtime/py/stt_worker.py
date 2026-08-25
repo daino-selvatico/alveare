@@ -155,7 +155,8 @@ def main():
                 if len(speech_np) >= 1200: # at least 75ms
                     inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
                     gen_kwargs = {
-                        "max_new_tokens": 256,
+                        "max_new_tokens": 128,
+                        "num_beams": 1,
                         "no_repeat_ngram_size": 3,
                         "return_dict_in_generate": True
                     }
