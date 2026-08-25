@@ -12,6 +12,7 @@ import re
 import tempfile
 import subprocess
 import json
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 import numpy as np
@@ -49,6 +50,8 @@ def find_torch_python() -> Optional[str]:
 class SenseVoiceSTT:
     _instance = None
     _model = None
+    _worker_proc = None
+    _worker_lock = threading.Lock()
     _loading = False
     _external_py = None
 
@@ -64,7 +67,7 @@ class SenseVoiceSTT:
         return cls._instance
 
     def _ensure_loaded(self):
-        if self._model is not None or self._external_py is not None:
+        if self._model is not None or (self._worker_proc is not None and self._worker_proc.poll() is None):
             return
         if self._loading:
             while self._loading:
@@ -87,12 +90,32 @@ class SenseVoiceSTT:
                 print("[SenseVoiceSTT] SenseVoiceSmall loaded in-process.")
                 return
             except BaseException as in_proc_err:
-                # 2. Try external python environment
+                # 2. Try persistent external python worker
                 ext_py = find_torch_python()
                 if ext_py and ext_py != sys.executable:
                     self._external_py = ext_py
-                    print(f"[SenseVoiceSTT] Using external PyTorch environment: {ext_py}")
-                    return
+                    worker_script = str(Path(__file__).resolve().parent / "stt_worker.py")
+                    clean_env = os.environ.copy()
+                    clean_env.pop("PYTHONPATH", None)
+                    cmd = [ext_py, worker_script, self.model_id, self.device]
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                        env=clean_env
+                    )
+                    # Wait for worker to load weights and output READY
+                    ready_line = proc.stdout.readline().strip()
+                    if "READY" in ready_line:
+                        self._worker_proc = proc
+                        print(f"[SenseVoiceSTT] Persistent STT worker started with {ext_py} (model ready in RAM).")
+                        return
+                    else:
+                        err_out = proc.stderr.read()
+                        raise RuntimeError(f"STT worker failed to start: {err_out}")
                 else:
                     raise in_proc_err
         except BaseException as e:
@@ -164,6 +187,7 @@ class SenseVoiceSTT:
             input_target = str(audio_input)
 
         try:
+            raw_text = ""
             if self._model is not None:
                 res = self._model.generate(
                     input=input_target,
@@ -171,46 +195,34 @@ class SenseVoiceSTT:
                     language=language if language != "auto" else "auto",
                     use_itn=use_itn
                 )
-                elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-                raw_text = ""
                 if res and isinstance(res, list) and len(res) > 0:
                     raw_text = res[0].get("text", "")
-
-                parsed = self.clean_text(raw_text)
-                parsed["raw_text"] = raw_text
-                parsed["latency_ms"] = round(elapsed_ms, 2)
-                parsed["status"] = "success"
-                return parsed
-            elif self._external_py:
-                # Subprocess worker execution
-                worker_code = f"""
-import sys, json
-from funasr import AutoModel
-model = AutoModel(model='{self.model_id}', hub='hf', device='{self.device}', disable_update=True)
-res = model.generate(input='{input_target}', cache={{}}, language='{language}', use_itn={use_itn})
-raw = res[0].get('text', '') if res and len(res) > 0 else ''
-print(json.dumps({{'raw_text': raw}}))
-"""
-                cmd = [self._external_py, "-c", worker_code]
-                clean_env = os.environ.copy()
-                clean_env.pop("PYTHONPATH", None)
-                proc = subprocess.run(cmd, capture_output=True, text=True, env=clean_env)
-                elapsed_ms = (time.perf_counter() - t0) * 1000.0
-                if proc.returncode == 0:
-                    lines = [l for l in proc.stdout.strip().split("\n") if l.strip()]
-                    last_json = lines[-1] if lines else "{}"
-                    data = json.loads(last_json)
+            elif self._worker_proc is not None:
+                with self._worker_lock:
+                    if self._worker_proc.poll() is not None:
+                        # Process died, restart
+                        self._ensure_loaded()
+                    req_line = json.dumps({
+                        "input": input_target,
+                        "language": language if language != "auto" else "auto",
+                        "use_itn": use_itn
+                    })
+                    self._worker_proc.stdin.write(req_line + "\n")
+                    self._worker_proc.stdin.flush()
+                    resp_line = self._worker_proc.stdout.readline()
+                    data = json.loads(resp_line.strip())
+                    if data.get("status") == "error":
+                        raise RuntimeError(data.get("error", "Worker error"))
                     raw_text = data.get("raw_text", "")
-                    parsed = self.clean_text(raw_text)
-                    parsed["raw_text"] = raw_text
-                    parsed["latency_ms"] = round(elapsed_ms, 2)
-                    parsed["status"] = "success"
-                    return parsed
-                else:
-                    raise RuntimeError(f"External STT worker failed: {proc.stderr}")
             else:
-                raise RuntimeError("No SenseVoice STT model or worker available.")
+                raise RuntimeError("No STT model or worker available.")
+
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            parsed = self.clean_text(raw_text)
+            parsed["raw_text"] = raw_text
+            parsed["latency_ms"] = round(elapsed_ms, 2)
+            parsed["status"] = "success"
+            return parsed
 
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000.0

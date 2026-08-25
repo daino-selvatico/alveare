@@ -119,6 +119,30 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     renderFrame();
   }, []);
 
+function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
+  if (outSampleRate >= sampleRate) {
+    return buffer;
+  }
+  const sampleRateRatio = sampleRate / outSampleRate;
+  const newLength = Math.round(buffer.length / sampleRateRatio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+      accum += buffer[i];
+      count++;
+    }
+    result[offsetResult] = count > 0 ? accum / count : 0;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return result;
+}
+
   // Real-time stream starter
   const startRealtimeStream = async () => {
     if (!isServerRunning) {
@@ -131,16 +155,16 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate: 16000,
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
+          autoGainControl: true
         }
       });
       mediaStreamRef.current = stream;
 
-      // 2. Setup AudioContext and downsampling to 16kHz
+      // 2. Setup AudioContext
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioCtx({ sampleRate: 16000 });
+      const ctx = new AudioCtx();
       if (ctx.state === 'suspended') {
         await ctx.resume();
       }
@@ -203,7 +227,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
         setIsStreaming(false);
       };
 
-      // 4. Create ScriptProcessorNode to capture PCM chunks
+      // 4. Create ScriptProcessorNode to capture and downsample to 16kHz PCM
       const bufferSize = 4096;
       const processor = ctx.createScriptProcessor(bufferSize, 1, 1);
       processorRef.current = processor;
@@ -211,18 +235,22 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       processor.onaudioprocess = (e) => {
         if (ws.readyState === WebSocket.OPEN) {
           const inputData = e.inputBuffer.getChannelData(0);
+          const downsampled = downsampleBuffer(inputData, ctx.sampleRate, 16000);
           // Convert float32 [-1.0, 1.0] to int16 PCM [-32768, 32767]
-          const int16Buffer = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            const s = Math.max(-1, Math.min(1, inputData[i]));
+          const int16Buffer = new Int16Array(downsampled.length);
+          for (let i = 0; i < downsampled.length; i++) {
+            const s = Math.max(-1, Math.min(1, downsampled[i]));
             int16Buffer[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           }
           ws.send(int16Buffer.buffer);
         }
       };
 
+      const muteGain = ctx.createGain();
+      muteGain.gain.value = 0;
       source.connect(processor);
-      processor.connect(ctx.destination);
+      processor.connect(muteGain);
+      muteGain.connect(ctx.destination);
 
     } catch (err) {
       console.error("Microphone access error:", err);
