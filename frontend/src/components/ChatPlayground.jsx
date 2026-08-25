@@ -50,6 +50,7 @@ import {
 import { useTranslation } from '../i18n/I18nContext';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { SlidingWindowTpsCalculator } from '../utils/tpsCalculator';
+import { extractDocumentText } from '../utils/documentParser';
 
 
 function parseThinking(content) {
@@ -813,10 +814,11 @@ export default function ChatPlayground({
         }
       } else {
         try {
-          const content = await file.text();
+          const content = await extractDocumentText(file);
           item.textData = content;
-        } catch {
-          // Ignore binary reading error
+        } catch (e) {
+          console.error("Error extracting document text:", e);
+          item.textData = `[Errore lettura documento ${file.name}]`;
         }
       }
 
@@ -1741,7 +1743,7 @@ export default function ChatPlayground({
                     role="menuitem"
                     style={{ background: 'none', border: 'none', color: 'var(--text-main)', padding: '0.5rem 0.75rem', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', textAlign: 'left', width: '100%' }}
                   >
-                    <Music size={16} color="var(--accent-cyan)" /> Carica file audio
+                    <Music size={16} color="var(--accent-cyan)" /> {t('chat.audio')}
                   </button>
                   <button
                     onClick={handleStartVoiceRecording}
