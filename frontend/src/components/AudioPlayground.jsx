@@ -47,7 +47,21 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   // Real-time streaming state
   const [isStreaming, setIsStreaming] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState('');
-  const [streamHistory, setStreamHistory] = useState([]);
+  const [streamHistory, setStreamHistory] = useState(() => {
+    try {
+      const saved = localStorage.getItem('alveare_stt_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('alveare_stt_history', JSON.stringify(streamHistory));
+    } catch {}
+  }, [streamHistory]);
+
   const [streamStats, setStreamStats] = useState({
     language: 'it',
     emotion: 'NEUTRAL',
@@ -206,13 +220,16 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
               latency_ms: data.latency_ms || 0
             });
             if (data.is_final && data.text && data.text.trim()) {
-              setStreamHistory(prev => [...prev, {
-                text: data.text,
+              const newEntry = {
+                id: Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+                text: data.text.trim(),
                 time: new Date().toLocaleTimeString(),
-                emotion: data.emotion,
-                event: data.event,
-                language: data.language
-              }]);
+                emotion: data.emotion || 'NEUTRAL',
+                event: data.event || 'Speech',
+                language: data.language || 'it',
+                latency_ms: data.latency_ms || 0
+              };
+              setStreamHistory(prev => [newEntry, ...prev]);
             }
           }
         } catch (e) {
@@ -856,19 +873,43 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
             borderBottom: '1px solid var(--border-color)',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between'
+            justifyContent: 'space-between',
+            gap: '0.5rem'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-main)' }}>
               <Clock size={16} color="var(--accent-purple)" />
               <span>{t('audioPlayground.historyTitle')}</span>
+              {streamHistory.length > 0 && (
+                <span style={{ fontSize: '0.72rem', background: 'rgba(255,255,255,0.1)', padding: '0.1rem 0.45rem', borderRadius: '10px', color: 'var(--text-muted)' }}>
+                  {streamHistory.length}
+                </span>
+              )}
             </div>
             {streamHistory.length > 0 && (
-              <button
-                onClick={() => setStreamHistory([])}
-                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.78rem' }}
-              >
-                {t('audioPlayground.clear')}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <button
+                  onClick={() => {
+                    const allText = streamHistory.map(h => `[${h.time}] ${h.text}`).join('\n');
+                    handleCopy(allText);
+                  }}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent-cyan)', cursor: 'pointer', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                  title="Copia tutto lo storico"
+                >
+                  <Copy size={13} />
+                  <span>Copia Tutto</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setStreamHistory([]);
+                    try { localStorage.removeItem('alveare_stt_history'); } catch {}
+                  }}
+                  style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                  title="Svuota cronologia"
+                >
+                  <Trash2 size={13} />
+                  <span>{t('audioPlayground.clear')}</span>
+                </button>
+              </div>
             )}
           </div>
 
@@ -880,7 +921,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
             ) : (
               streamHistory.map((item, idx) => (
                 <div
-                  key={idx}
+                  key={item.id || idx}
                   style={{
                     background: 'rgba(255,255,255,0.03)',
                     border: '1px solid var(--border-color)',
@@ -888,16 +929,42 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                     padding: '0.75rem',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '0.35rem'
+                    gap: '0.35rem',
+                    transition: 'border-color 0.15s ease'
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                    <span>{item.time}</span>
-                    <span style={{ color: getEmotionBadge(item.emotion).color }}>
-                      {getEmotionBadge(item.emotion).label}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <span style={{ fontWeight: 600 }}>{item.time}</span>
+                      {item.language && (
+                        <span style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', padding: '0.1rem 0.35rem', borderRadius: '4px', textTransform: 'uppercase', fontSize: '0.65rem' }}>
+                          {item.language}
+                        </span>
+                      )}
+                      {item.latency_ms > 0 && (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>
+                          {Math.round(item.latency_ms)}ms
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <button
+                        onClick={() => handleCopy(item.text)}
+                        style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                        title="Copia frase"
+                      >
+                        <Copy size={12} />
+                      </button>
+                      <button
+                        onClick={() => setStreamHistory(prev => prev.filter((_, i) => i !== idx))}
+                        style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                        title="Rimuovi"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
-                  <div style={{ fontSize: '0.88rem', color: 'var(--text-main)', lineHeight: 1.4 }}>
+                  <div style={{ fontSize: '0.88rem', color: 'var(--text-main)', lineHeight: 1.4, wordBreak: 'break-word' }}>
                     {item.text}
                   </div>
                 </div>

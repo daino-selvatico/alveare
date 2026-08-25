@@ -22,6 +22,9 @@ def main():
         import torchaudio
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
         
+        # Optimize CPU threads for Zen 5
+        torch.set_num_threads(8)
+        
         processor = AutoProcessor.from_pretrained(model_id)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, torch_dtype=torch.float32, low_cpu_mem_usage=True)
         model.to(device)
@@ -57,19 +60,23 @@ def main():
                     speech = torchaudio.functional.resample(speech, sr, 16000)
                 speech_np = speech.squeeze(0).numpy()
 
-                inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
-                gen_kwargs = {}
-                if language and language not in ("auto", "unknown"):
-                    lang_map = {
-                        "it": "italian", "en": "english", "es": "spanish", "fr": "french",
-                        "de": "german", "zh": "chinese", "ja": "japanese", "ko": "korean",
-                        "pt": "portuguese", "ru": "russian"
+                if len(speech_np) >= 1200: # at least 75ms
+                    inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
+                    gen_kwargs = {
+                        "max_new_tokens": 128,
+                        "no_repeat_ngram_size": 3
                     }
-                    gen_kwargs["language"] = lang_map.get(language, language)
-                
-                with torch.no_grad():
-                    gen_ids = model.generate(inputs.input_features.to(device), **gen_kwargs)
-                raw_text = processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip()
+                    if language and language not in ("auto", "unknown"):
+                        lang_map = {
+                            "it": "italian", "en": "english", "es": "spanish", "fr": "french",
+                            "de": "german", "zh": "chinese", "ja": "japanese", "ko": "korean",
+                            "pt": "portuguese", "ru": "russian"
+                        }
+                        gen_kwargs["language"] = lang_map.get(language, language)
+                    
+                    with torch.no_grad():
+                        gen_ids = model.generate(inputs.input_features.to(device), **gen_kwargs)
+                    raw_text = processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip()
             else:
                 res = model.generate(
                     input=audio_target,
