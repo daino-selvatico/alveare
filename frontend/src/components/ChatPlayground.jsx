@@ -1827,18 +1827,6 @@ export default function ChatPlayground({
               )}
             </div>
 
-            {/* Direct Microphone STT Button */}
-            <button
-              className="btn-secondary"
-              onClick={handleStartVoiceRecording}
-              title="Registra messaggio vocale (Whisper STT)"
-              aria-label="Registra vocale"
-              disabled={!isServerRunning || isGenerating || isVoiceRecording}
-              style={{ padding: '0.75rem', borderRadius: '10px' }}
-            >
-              <Mic size={18} color="var(--accent-cyan)" />
-            </button>
-
             {/* Live Audio Recording Bar or Text Input */}
             {isVoiceRecording ? (
               <div style={{
