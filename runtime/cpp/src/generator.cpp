@@ -242,6 +242,19 @@ GenerationStats Generator::generate(
         tag() << "Injected " << a_idx << " audio token embeddings into prompt sequence\n" << std::flush;
     }
 
+    const int max_seq_len = cfg.max_position_embeddings;
+    if (num_prompt_tokens >= max_seq_len - 64) {
+        tag() << "Warning: prompt length (" << num_prompt_tokens << ") exceeds safe context limit ("
+              << (max_seq_len - 64) << "), truncating prefix...\n" << std::flush;
+        int max_allowed = max_seq_len - 64;
+        int excess = num_prompt_tokens - max_allowed;
+        if (excess > 0 && input_tokens.size() > static_cast<size_t>(excess + 4)) {
+            input_tokens.erase(input_tokens.begin() + 1, input_tokens.begin() + 1 + excess);
+            num_prompt_tokens = static_cast<int>(input_tokens.size());
+            stats.prompt_tokens = num_prompt_tokens;
+        }
+    }
+
     std::cout << "[input_tokens]";
     for (int t : input_tokens) std::cout << " " << t;
     std::cout << "\n" << std::flush;
