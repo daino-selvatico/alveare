@@ -50,7 +50,7 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 ### 3. Launch Web UI & Server
 
 ```bash
-./alveare serve
+./alveare start
 ```
 Open `http://127.0.0.1:8000` in your browser.
 
