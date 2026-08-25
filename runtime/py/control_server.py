@@ -553,11 +553,14 @@ class ConfigUpdateRequest(BaseModel):
 
 @app.get("/api/status")
 async def get_status():
-    is_running = state.process is not None and state.process.poll() is None
-    if not is_running and state.status == "running":
-        state.status = "stopped"
+    if state.active_model == "sensevoice":
+        is_running = (state.status in ("starting", "running"))
+    else:
+        is_running = state.process is not None and state.process.poll() is None
+        if not is_running and state.status == "running":
+            state.status = "stopped"
 
-    uptime = round(time.time() - state.start_time, 1) if is_running else 0
+    uptime = round(time.time() - state.start_time, 1) if (is_running and state.start_time > 0) else 0
     cfg = load_config()
 
     return {
@@ -572,7 +575,7 @@ async def get_status():
         "port": state.port,
         "legacy": state.legacy,
         "offline": state.offline,
-        "pid": state.process.pid if is_running else None,
+        "pid": state.process.pid if (state.process and is_running) else None,
         "uptime_seconds": uptime,
         "first_launch": cfg.get("first_launch", True),
         "last_error": state.last_error

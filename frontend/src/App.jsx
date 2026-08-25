@@ -24,6 +24,11 @@ export default function App() {
   const [modelsLoading, setModelsLoading] = useState(true);
   const [showWizard, setShowWizard] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+
+  const isSttActive = Boolean(
+    status?.is_running &&
+    (status?.model === 'sensevoice' || models.find(m => m.id === status?.model)?.task === 'speech-to-text')
+  );
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -180,7 +185,7 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            {status?.model === 'sensevoice' ? (
+            {isSttActive ? (
               <>
                 <Radio size={16} aria-hidden="true" /> {t('nav.audioPlayground')}
               </>
@@ -365,7 +370,7 @@ export default function App() {
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         <ErrorBoundary onReset={handleRetryConnection}>
           <div id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
-            {status?.model === 'sensevoice' ? (
+            {isSttActive ? (
               <AudioPlayground
                 apiBase={apiBase}
                 status={status}
