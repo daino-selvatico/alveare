@@ -325,7 +325,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
     // Automatically trigger transcription
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('model', 'sensevoice');
+    formData.append('model', activeModel || 'whisper-base');
     if (selectedLanguage !== 'auto') {
       formData.append('language', selectedLanguage);
     }

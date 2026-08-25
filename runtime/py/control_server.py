@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from runtime.py.sensevoice_stt import SenseVoiceSTT
+from runtime.py.whisper_stt import WhisperSTT
 
 # Root directory of the repository
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -99,7 +99,7 @@ def parse_file_upload(file_name: str, content: bytes, mime_type: Optional[str] =
 
     if file_type == "audio":
         try:
-            stt = SenseVoiceSTT.get_instance()
+            stt = WhisperSTT.get_instance()
             res = stt.transcribe(content, language="auto")
             text = res.get("text", "").strip()
             lang = res.get("language", "auto").upper()
@@ -283,13 +283,13 @@ def discover_models() -> List[Dict[str, Any]]:
 
         size_mb = round(size_bytes / (1024 * 1024), 1)
 
-        if alias == "sensevoice" or arch == "sensevoice":
+        if alias in ("whisper", "whisper-base") or arch == "whisper" or task == "speech-to-text":
             task = "speech-to-text"
-            arch = "sensevoice"
-            name = "SenseVoice Small STT"
-            description = "Ultra-fast (<30ms) speech recognition, multilingual (IT/EN/ZH/JA/KO), emotion & event tagging."
+            arch = "whisper"
+            name = "Whisper Base STT"
+            description = "High-accuracy multilingual speech recognition (Italian, English, European & Asian languages) on CPU."
             if size_mb == 0:
-                size_mb = 140.0
+                size_mb = 145.0
 
         models.append({
             "id": alias,
@@ -306,7 +306,7 @@ def discover_models() -> List[Dict[str, Any]]:
     return models
 
 def is_active_stt_model() -> bool:
-    if state.active_model in ("whisper", "whisper-base", "sensevoice"):
+    if state.active_model in ("whisper", "whisper-base"):
         return True
     for m in discover_models():
         if m["id"] == state.active_model and m.get("task") == "speech-to-text":
@@ -376,7 +376,7 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
     if state.process and state.process.poll() is None:
         stop_inference_server()
 
-    is_stt = model in ("whisper", "whisper-base", "sensevoice")
+    is_stt = model in ("whisper", "whisper-base")
     if not is_stt:
         for m in discover_models():
             if m["id"] == model and m.get("task") == "speech-to-text":
@@ -401,9 +401,9 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
         
         def _load_stt_async():
             try:
-                stt_id = "openai/whisper-base" if ("whisper" in model or model == "whisper-base") else ("FunAudioLLM/SenseVoiceSmall" if model == "sensevoice" else "openai/whisper-base")
-                from runtime.py.sensevoice_stt import SenseVoiceSTT
-                stt = SenseVoiceSTT.get_instance(model_id=stt_id)
+                stt_id = "openai/whisper-base"
+                from runtime.py.whisper_stt import WhisperSTT
+                stt = WhisperSTT.get_instance(model_id=stt_id)
                 stt._ensure_loaded()
                 state.load_progress = 100.0
                 state.is_loaded = True
@@ -531,13 +531,13 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
         return False
 
 def stop_inference_server():
-    if state.active_model == "sensevoice":
+    if is_active_stt_model():
         state.status = "stopped"
         state.is_loaded = False
         state.load_progress = 0.0
         state.tok_per_sec = 0.0
         state.load_step = "Server arrestato"
-        append_log("[SenseVoice] Server STT arrestato.")
+        append_log(f"[{state.active_model}] Server STT arrestato.")
         return
 
     if state.process and state.process.poll() is None:
@@ -895,7 +895,7 @@ async def upload_files(req: FileUploadRequest):
 @app.post("/v1/audio/transcriptions")
 async def create_audio_transcription(
     file: UploadFile = File(...),
-    model: Optional[str] = Form("sensevoice"),
+    model: Optional[str] = Form("whisper-base"),
     language: Optional[str] = Form(None),
     prompt: Optional[str] = Form(None),
     response_format: Optional[str] = Form("json"),
@@ -906,7 +906,7 @@ async def create_audio_transcription(
         if not content:
             raise HTTPException(status_code=400, detail="Empty audio file provided")
 
-        stt = SenseVoiceSTT.get_instance()
+        stt = WhisperSTT.get_instance()
         res = stt.transcribe(content, language=language or "auto")
         
         if res.get("status") == "error":
@@ -951,7 +951,7 @@ async def api_stt_transcribe(
         else:
             raise HTTPException(status_code=400, detail="Nessun flusso audio inviato.")
 
-        stt = SenseVoiceSTT.get_instance()
+        stt = WhisperSTT.get_instance()
         res = stt.transcribe(content, language=language or "auto")
         return res
     except HTTPException:
@@ -962,8 +962,8 @@ async def api_stt_transcribe(
 # Real-Time WebSocket Streaming STT Engine
 async def handle_stt_stream_connection(websocket: WebSocket):
     await websocket.accept()
-    from runtime.py.sensevoice_stt import SenseVoiceSTT
-    stt = SenseVoiceSTT.get_instance()
+    from runtime.py.whisper_stt import WhisperSTT
+    stt = WhisperSTT.get_instance()
     
     audio_buffer = bytearray()
     last_transcribe_time = time.time()

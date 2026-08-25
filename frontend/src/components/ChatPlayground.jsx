@@ -714,11 +714,11 @@ export default function ChatPlayground({
           };
           setAttachments(prev => [...prev, newAtt]);
 
-          // Automatic transcription via SenseVoice STT endpoint
+          // Automatic transcription via Whisper STT endpoint
           try {
             const formData = new FormData();
             formData.append('file', wavBlob, fileName);
-            formData.append('model', 'sensevoice');
+            formData.append('model', 'whisper-base');
             const sttRes = await fetch(`${apiBase}/v1/audio/transcriptions`, {
               method: 'POST',
               body: formData
@@ -730,7 +730,7 @@ export default function ChatPlayground({
               }
             }
           } catch (sttErr) {
-            console.warn('[SenseVoiceSTT] Live voice transcription error:', sttErr);
+            console.warn('[WhisperSTT] Live voice transcription error:', sttErr);
           }
         };
         reader.readAsDataURL(wavBlob);
@@ -1831,7 +1831,7 @@ export default function ChatPlayground({
             <button
               className="btn-secondary"
               onClick={handleStartVoiceRecording}
-              title="Registra messaggio vocale (SenseVoice STT)"
+              title="Registra messaggio vocale (Whisper STT)"
               aria-label="Registra vocale"
               disabled={!isServerRunning || isGenerating || isVoiceRecording}
               style={{ padding: '0.75rem', borderRadius: '10px' }}

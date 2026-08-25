@@ -14,7 +14,7 @@ Alveare includes native Q4_0 quantizer pipelines for the following model archite
 | `gemma4-e4b` | Gemma 4 E4B (Edge 4B) | `gemma4-e4b` | `unsloth/gemma-4-e4b-it-GGUF` | ~3.8 GB | Per-Layer Embedding (PLE) injection |
 | `gemma3` | Gemma 3 1B Instruct | `gemma3` | `unsloth/gemma-3-1b-it-GGUF` | ~0.8 GB | 26 layers, SentencePiece SPM, NPU FFN |
 | `llama` | Llama 3.2 1B Instruct | `llama` | `bartowski/Llama-3.2-1B-Instruct-GGUF` | ~0.8 GB | Llama architecture, GQA attention |
-| `sensevoice` | SenseVoice Small STT | `sensevoice` | `FunAudioLLM/SenseVoiceSmall` | ~140 MB | Ultra-fast (<30ms) speech-to-text, emotion & events |
+| `whisper-base` | Whisper Base STT | `whisper` | `openai/whisper-base` | ~145 MB | High-accuracy speech-to-text, Italian & 90+ langs |
 
 ---
 
@@ -53,8 +53,8 @@ You can trigger the 1-click pipeline directly from the command line using `./alv
 # Install Gemma 4 E4B
 ./alveare setup gemma4-e4b --arch gemma4-e4b
 
-# Install & Initialize SenseVoice Small STT
-./alveare setup sensevoice
+# Install & Initialize Whisper Base STT
+./alveare setup whisper-base
 ```
 
 ### Advanced `setup_model.py` arguments:

@@ -6,7 +6,7 @@ import { I18nProvider } from '../i18n/I18nContext';
 
 describe('AudioPlayground', () => {
   const mockApiBase = 'http://127.0.0.1:8080';
-  const mockStatus = { is_running: true, model: 'sensevoice' };
+  const mockStatus = { is_running: true, model: 'whisper-base' };
 
   it('renders AudioPlayground in realtime mode with mic button', () => {
     render(
@@ -14,7 +14,7 @@ describe('AudioPlayground', () => {
         <AudioPlayground
           apiBase={mockApiBase}
           status={mockStatus}
-          activeModel="sensevoice"
+          activeModel="whisper-base"
           isServerRunning={true}
         />
       </I18nProvider>
@@ -31,7 +31,7 @@ describe('AudioPlayground', () => {
         <AudioPlayground
           apiBase={mockApiBase}
           status={mockStatus}
-          activeModel="sensevoice"
+          activeModel="whisper-base"
           isServerRunning={true}
         />
       </I18nProvider>
@@ -49,8 +49,8 @@ describe('AudioPlayground', () => {
       <I18nProvider>
         <AudioPlayground
           apiBase={mockApiBase}
-          status={{ is_running: false, model: 'sensevoice' }}
-          activeModel="sensevoice"
+          status={{ is_running: false, model: 'whisper-base' }}
+          activeModel="whisper-base"
           isServerRunning={false}
         />
       </I18nProvider>

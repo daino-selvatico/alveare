@@ -15,7 +15,7 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 - **⚡ In-Browser & Automated 1-Click Model Setup**: "Aggiungi Modello" modal enables 1-click GGUF downloading and quantization from Hugging Face for Gemma-4 12B, Gemma-4 E4B, Gemma-3 1B, and Llama 3.2 1B.
 - **💬 Rich Chat Experience**: Real-time token streaming with Markdown & code highlighting, persistent multi-turn conversation sessions (sidebar history manager), multimodal file upload (PDF/text/image/audio parsing), and dark/light theme toggle.
 - **🎛️ Advanced Sampling Controls**: Full control over `temperature` (0.0 to 2.0 with greedy decoding at 0.0), `top_p` (nucleus sampling), `top_k`, `max_tokens`, `max_context_length`, system prompt customization, and `enable_thinking` toggle for reasoning models.
-- **🎙️ Real-Time Speech-to-Text (`SenseVoiceSmall`)**: Integrated ultra-fast non-autoregressive speech recognition (<30 ms latency). Supports live microphone voice recording in Web UI, automatic audio file transcription (MP3/WAV/M4A/OGG), and OpenAI-compatible `/v1/audio/transcriptions` API with multilingual (IT, EN, ZH, JA, KO), emotion, and acoustic event tagging.
+- **🎙️ Real-Time Speech-to-Text (`Whisper Base`)**: Integrated speech recognition. Supports live microphone voice recording in Web UI, automatic audio file transcription (MP3/WAV/M4A/OGG), and OpenAI-compatible `/v1/audio/transcriptions` API with multilingual (Italian, English, European & Asian languages), emotion, and acoustic event tagging.
 - **🔌 OpenAI-Compatible API**: Standard `/v1/chat/completions`, `/v1/audio/transcriptions`, and `/v1/models` REST endpoints for direct drop-in replacement with the OpenAI Python SDK, LangChain, LlamaIndex, Continue, etc.
 - **🧩 Custom Quantizer Plugin Architecture**: Bring any custom architecture to the NPU by implementing `BaseQuantizer` (`tools/convert/base_quantizer.py`).
 
@@ -29,7 +29,7 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 | **Gemma 4 12B** | `gemma4` | 48 layers, 32-core unified GEMV | ~6.8 GB | **696–705 ms/tok (1.43–1.94 tok/s)**, full 12.8B model |
 | **Gemma 3 1B** | `gemma3` | SentencePiece SPM, 26 layers | ~0.8 GB | **7–12 tok/s**, lightweight edge model |
 | **Llama 3.2 1B** | `llama` | Llama architecture, GQA attention | ~0.8 GB | **10–15 tok/s**, fast conversational model |
-| **SenseVoice Small** | `sensevoice` | Multi-language STT, emotion & audio events | ~140 MB | **<30–90 ms audio transcription**, runs isolated with 0 VRAM |
+| **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **High-accuracy audio transcription**, runs isolated with 0 VRAM |
 
 > **⚡ Performance Transparency**: All models execute natively across all 32 AIE2 cores with zero-bubble asynchronous pipelining, saturating the physical memory bandwidth of the AMD Ryzen AI 300 series processor.
 

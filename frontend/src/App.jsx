@@ -27,7 +27,7 @@ export default function App() {
 
   const isSttActive = Boolean(
     status?.is_running &&
-    (status?.model === 'sensevoice' || models.find(m => m.id === status?.model)?.task === 'speech-to-text')
+    (status?.model === 'whisper-base' || models.find(m => m.id === status?.model)?.task === 'speech-to-text')
   );
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState(false);
@@ -374,7 +374,7 @@ export default function App() {
               <AudioPlayground
                 apiBase={apiBase}
                 status={status}
-                activeModel={status?.model || 'sensevoice'}
+                activeModel={status?.model || 'whisper-base'}
                 isServerRunning={status?.is_running || false}
                 models={models}
                 onNavigateToControl={() => setActiveTab('control')}

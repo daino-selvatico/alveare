@@ -1,8 +1,8 @@
 """
-SenseVoice Small Speech-to-Text (STT) Engine for Alveare.
+Whisper Speech-to-Text (STT) Engine for Alveare.
 
-Provides ultra-fast non-autoregressive speech transcription, multilingual recognition
-(Italian, English, Chinese, Japanese, Korean, etc.), emotion detection, and audio event detection.
+Provides high-accuracy speech transcription, multilingual recognition (Italian, English,
+Spanish, French, German, Chinese, Japanese, etc.), emotion detection, and audio event detection.
 """
 import os
 import sys
@@ -46,7 +46,7 @@ def find_torch_python() -> Optional[str]:
                 pass
     return None
 
-class SenseVoiceSTT:
+class WhisperSTT:
     _instance = None
     _model = None
     _worker_proc = None
@@ -80,7 +80,7 @@ class SenseVoiceSTT:
 
         self._loading = True
         try:
-            print(f"[SenseVoiceSTT] Initializing {self.model_id} on {self.device}...")
+            print(f"[WhisperSTT] Initializing {self.model_id} on {self.device}...")
             ext_py = find_torch_python() or sys.executable
             self._external_py = ext_py
             worker_script = str(Path(__file__).resolve().parent / "stt_worker.py")
@@ -106,7 +106,7 @@ class SenseVoiceSTT:
                 err_out = proc.stderr.read()
                 raise RuntimeError(f"STT worker failed to start: {err_out}")
         except BaseException as e:
-            print(f"[SenseVoiceSTT] Error loading SenseVoice model: {e}")
+            print(f"[WhisperSTT] Error loading STT model: {e}")
             raise e
         finally:
             self._loading = False
