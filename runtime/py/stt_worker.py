@@ -2,6 +2,52 @@ import sys
 import os
 import json
 import time
+import ctypes
+import numpy as np
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+LIB_PATH = ROOT_DIR / "runtime" / "cpp" / "build" / "libalveare_npu_c.so"
+
+def pack_weight_q4(W: np.ndarray) -> np.ndarray:
+    N, K = W.shape
+    W_blocks = W.reshape(N, K // 32, 32)
+    max_vals = np.max(np.abs(W_blocks), axis=2)
+    scales = max_vals / 7.0
+    scales[scales == 0.0] = 1.0
+    q_blocks = np.clip(np.round(W_blocks / np.expand_dims(scales, axis=2)), -8, 7).astype(np.int32)
+    q = q_blocks.reshape(N, K)
+    q0 = q[:, 0::2]
+    q1 = q[:, 1::2]
+    w_q4 = ((q0 & 0x0F) | ((q1 & 0x0F) << 4)).astype(np.uint8)
+
+    packed = np.zeros((N, (K // 32) * 20), dtype=np.uint8)
+    for i in range(K // 32):
+        packed[:, i*20 : i*20+16] = w_q4[:, i*16 : (i+1)*16]
+        sc_f32 = scales[:, i].astype(np.float32)
+        sc_u16 = (sc_f32.view(np.uint32) >> 16).astype(np.uint16)
+        packed[:, i*20+16] = (sc_u16 & 0xFF).astype(np.uint8)
+        packed[:, i*20+17] = ((sc_u16 >> 8) & 0xFF).astype(np.uint8)
+    return packed
+
+def init_npu_lib():
+    if not LIB_PATH.exists():
+        return None
+    try:
+        lib = ctypes.CDLL(str(LIB_PATH))
+        lib.alveare_npu_create_registry.restype = ctypes.c_void_p
+        lib.alveare_npu_create_registry.argtypes = [ctypes.c_char_p]
+        lib.alveare_npu_free_registry.argtypes = [ctypes.c_void_p]
+        lib.alveare_npu_create_gemv_weight.restype = ctypes.c_uint32
+        lib.alveare_npu_create_gemv_weight.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+        lib.alveare_npu_run_gemv.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
+        lib.alveare_npu_run_gemv_seq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        lib.alveare_npu_has_shape.restype = ctypes.c_int
+        lib.alveare_npu_has_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        return lib
+    except Exception as e:
+        sys.stderr.write(f"[WhisperSTT] NPU lib load failed: {e}\n")
+        return None
 
 def main():
     model_id = "openai/whisper-base"
@@ -19,17 +65,60 @@ def main():
     
     if is_whisper:
         import torch
+        import torch.nn as nn
         import torchaudio
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
         
-        # Optimize CPU threads for Zen 5
         torch.set_num_threads(8)
         
         processor = AutoProcessor.from_pretrained(model_id)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, torch_dtype=torch.float32, low_cpu_mem_usage=True)
-        target_device = "cpu" if device in ("cpu", "npu") else device
-        model.to(target_device)
         model.eval()
+
+        if device == "npu":
+            npu_lib = init_npu_lib()
+            manifest_path = ROOT_DIR / "kernels" / "build" / "whisper-base" / "manifest.json"
+            if npu_lib and manifest_path.exists():
+                reg = npu_lib.alveare_npu_create_registry(str(manifest_path).encode("utf-8"))
+                if reg:
+                    class NPULinear(nn.Module):
+                        def __init__(self, linear_layer: nn.Linear):
+                            super().__init__()
+                            self.in_features = linear_layer.in_features
+                            self.out_features = linear_layer.out_features
+                            self.bias = linear_layer.bias
+                            
+                            W_np = linear_layer.weight.detach().float().numpy()
+                            self.N = self.out_features
+                            self.K = self.in_features
+                            packed = pack_weight_q4(W_np)
+                            self.wh = npu_lib.alveare_npu_create_gemv_weight(
+                                reg, self.N, self.K, packed.ctypes.data_as(ctypes.c_void_p), packed.nbytes
+                            )
+
+                        def forward(self, x: torch.Tensor) -> torch.Tensor:
+                            orig_shape = x.shape
+                            x_2d = x.reshape(-1, self.K).contiguous().to(torch.bfloat16)
+                            n_tokens = x_2d.shape[0]
+                            
+                            y_2d = torch.zeros(n_tokens, self.N, dtype=torch.bfloat16, device=x.device)
+                            npu_lib.alveare_npu_run_gemv_seq(
+                                reg, self.N, self.K, self.wh, x_2d.data_ptr(), y_2d.data_ptr(), n_tokens
+                            )
+                            
+                            out = y_2d.to(x.dtype).reshape(*orig_shape[:-1], self.N)
+                            if self.bias is not None:
+                                out = out + self.bias
+                            return out
+
+                    converted_count = 0
+                    for name, module in list(model.model.named_modules()):
+                        for child_name, child in list(module.named_children()):
+                            if isinstance(child, nn.Linear):
+                                if npu_lib.alveare_npu_has_shape(reg, child.out_features, child.in_features):
+                                    setattr(module, child_name, NPULinear(child))
+                                    converted_count += 1
+                    sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} linear layers to AMD Ryzen AI NPU hardware (XDNA2)!\n")
     else:
         from funasr import AutoModel
         target_device = "cpu" if device in ("cpu", "npu") else device
@@ -79,7 +168,7 @@ def main():
                             pass
                     
                     with torch.no_grad():
-                        gen_out = model.generate(inputs.input_features.to(target_device), **gen_kwargs)
+                        gen_out = model.generate(inputs.input_features, **gen_kwargs)
                     
                     seq = gen_out.sequences[0].tolist()
                     if len(seq) > 1 and (not language or language in ("auto", "unknown", "")):

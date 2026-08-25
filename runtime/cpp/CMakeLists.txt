@@ -81,6 +81,11 @@ add_executable(alveare_runtime src/main.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(alveare_runtime PRIVATE ${XRT_INCLUDE_DIRS})
 target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
 
+# C-API Shared library for Python ctypes / PyTorch acceleration
+add_library(alveare_npu_c SHARED src/npu_c_api.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(alveare_npu_c PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(alveare_npu_c PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+
 # NPU registry smoke test: runs a harvested GEMV shape and checks parity.
 add_executable(parity_test test/parity_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(parity_test PRIVATE ${XRT_INCLUDE_DIRS})
