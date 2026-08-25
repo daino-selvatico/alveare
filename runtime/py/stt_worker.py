@@ -81,6 +81,48 @@ def main():
             if npu_lib and manifest_path.exists():
                 reg = npu_lib.alveare_npu_create_registry(str(manifest_path).encode("utf-8"))
                 if reg:
+                    class FusedQKVNPU(nn.Module):
+                        def __init__(self, q_proj: nn.Linear, k_proj: nn.Linear, v_proj: nn.Linear):
+                            super().__init__()
+                            self.in_features = q_proj.in_features
+                            self.out_features = q_proj.out_features * 3
+                            self.N = 1536
+                            self.K = 512
+                            
+                            W_q = q_proj.weight.detach().float().numpy()
+                            W_k = k_proj.weight.detach().float().numpy()
+                            W_v = v_proj.weight.detach().float().numpy()
+                            W_fused = np.vstack([W_q, W_k, W_v])
+                            
+                            b_q = q_proj.bias if q_proj.bias is not None else torch.zeros(512)
+                            b_k = k_proj.bias if k_proj.bias is not None else torch.zeros(512)
+                            b_v = v_proj.bias if v_proj.bias is not None else torch.zeros(512)
+                            self.register_buffer("bias", torch.cat([b_q, b_k, b_v]))
+                            
+                            packed = pack_weight_q4(W_fused)
+                            self.wh = npu_lib.alveare_npu_create_gemv_weight(
+                                reg, self.N, self.K, packed.ctypes.data_as(ctypes.c_void_p), packed.nbytes
+                            )
+
+                        def forward(self, x: torch.Tensor):
+                            orig_shape = x.shape
+                            x_2d = x.reshape(-1, self.K).contiguous().to(torch.bfloat16)
+                            n_tokens = x_2d.shape[0]
+                            
+                            if n_tokens == 1:
+                                y = torch.zeros(self.N, dtype=torch.bfloat16, device=x.device)
+                                npu_lib.alveare_npu_run_gemv(reg, self.N, self.K, self.wh, x_2d.data_ptr(), y.data_ptr())
+                                out = y.to(x.dtype) + self.bias
+                                q, k, v = torch.split(out, 512, dim=-1)
+                                return q.reshape(*orig_shape[:-1], 512), k.reshape(*orig_shape[:-1], 512), v.reshape(*orig_shape[:-1], 512)
+                            else:
+                                y_2d = torch.zeros(n_tokens, self.N, dtype=torch.bfloat16, device=x.device)
+                                for i in range(n_tokens):
+                                    npu_lib.alveare_npu_run_gemv(reg, self.N, self.K, self.wh, x_2d[i].contiguous().data_ptr(), y_2d[i].data_ptr())
+                                out = y_2d.to(x.dtype) + self.bias
+                                q, k, v = torch.split(out, 512, dim=-1)
+                                return q.reshape(*orig_shape[:-1], 512), k.reshape(*orig_shape[:-1], 512), v.reshape(*orig_shape[:-1], 512)
+
                     class NPULinear(nn.Module):
                         def __init__(self, linear_layer: nn.Linear):
                             super().__init__()
@@ -101,24 +143,44 @@ def main():
                             x_2d = x.reshape(-1, self.K).contiguous().to(torch.bfloat16)
                             n_tokens = x_2d.shape[0]
                             
-                            y_2d = torch.zeros(n_tokens, self.N, dtype=torch.bfloat16, device=x.device)
-                            npu_lib.alveare_npu_run_gemv_seq(
-                                reg, self.N, self.K, self.wh, x_2d.data_ptr(), y_2d.data_ptr(), n_tokens
-                            )
+                            if n_tokens == 1:
+                                y = torch.zeros(self.N, dtype=torch.bfloat16, device=x.device)
+                                npu_lib.alveare_npu_run_gemv(reg, self.N, self.K, self.wh, x_2d.data_ptr(), y.data_ptr())
+                                out = y.to(x.dtype).reshape(*orig_shape[:-1], self.N)
+                            else:
+                                y_2d = torch.zeros(n_tokens, self.N, dtype=torch.bfloat16, device=x.device)
+                                for i in range(n_tokens):
+                                    npu_lib.alveare_npu_run_gemv(reg, self.N, self.K, self.wh, x_2d[i].contiguous().data_ptr(), y_2d[i].data_ptr())
+                                out = y_2d.to(x.dtype).reshape(*orig_shape[:-1], self.N)
                             
-                            out = y_2d.to(x.dtype).reshape(*orig_shape[:-1], self.N)
                             if self.bias is not None:
                                 out = out + self.bias
                             return out
 
                     converted_count = 0
-                    for name, module in list(model.model.named_modules()):
-                        for child_name, child in list(module.named_children()):
-                            if isinstance(child, nn.Linear):
-                                if npu_lib.alveare_npu_has_shape(reg, child.out_features, child.in_features):
-                                    setattr(module, child_name, NPULinear(child))
+                    for layer in model.model.decoder.layers:
+                        # 1. Fused QKV on NPU for Self-Attention
+                        if npu_lib.alveare_npu_has_shape(reg, 1536, 512):
+                            layer.self_attn.q_proj = NPULinear(layer.self_attn.q_proj)
+                            layer.self_attn.k_proj = NPULinear(layer.self_attn.k_proj)
+                            layer.self_attn.v_proj = NPULinear(layer.self_attn.v_proj)
+                            converted_count += 3
+                        else:
+                            for proj in (layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj):
+                                if npu_lib.alveare_npu_has_shape(reg, proj.out_features, proj.in_features):
+                                    layer.self_attn.q_proj = NPULinear(layer.self_attn.q_proj)
                                     converted_count += 1
-                    sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} linear layers to AMD Ryzen AI NPU hardware (XDNA2)!\n")
+                        
+                        layer.self_attn.out_proj = NPULinear(layer.self_attn.out_proj)
+                        layer.encoder_attn.q_proj = NPULinear(layer.encoder_attn.q_proj)
+                        layer.encoder_attn.k_proj = NPULinear(layer.encoder_attn.k_proj)
+                        layer.encoder_attn.v_proj = NPULinear(layer.encoder_attn.v_proj)
+                        layer.encoder_attn.out_proj = NPULinear(layer.encoder_attn.out_proj)
+                        layer.fc1 = NPULinear(layer.fc1)
+                        layer.fc2 = NPULinear(layer.fc2)
+                        converted_count += 7
+
+                    sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} decoder layers to AMD Ryzen AI NPU hardware (XDNA2)!\n")
     else:
         from funasr import AutoModel
         target_device = "cpu" if device in ("cpu", "npu") else device

@@ -143,6 +143,7 @@ def enumerate_shapes(weights_dir: Path, num_layers: int, model_type: str = "") -
         # Whisper Base architecture shapes:
         # Hidden dimension: 512, FFN intermediate: 2048
         gemv_shapes.add((512, 512))    # Attention Q, K, V, Out
+        gemv_shapes.add((1536, 512))   # Fused QKV (512*3, 512)
         gemv_shapes.add((2048, 512))   # FFN Up
         gemv_shapes.add((512, 2048))   # FFN Down
         ffn_shapes.add((512, 2048))    # FFN fused
