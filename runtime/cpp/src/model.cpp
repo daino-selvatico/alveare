@@ -1011,7 +1011,7 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     // 1. Input RMSNorm, padded to K_padded (unused rows/cols stay zero).
     std::vector<bf16> x_norm_pad(size_t(B) * K_padded, bf16(0.0f));
     for (int b = 0; b < nrows; ++b)
-        run_rmsnorm_cpu(&x_batch[size_t(b) * K], attn_norm_w, &x_norm_pad[size_t(b) * K_padded], K);
+        run_rmsnorm_avx2(&x_batch[size_t(b) * K], attn_norm_w, &x_norm_pad[size_t(b) * K_padded], K, config_.rms_norm_eps);
 
     // 2. Fused Q/K/V projection (resident tiles or single resident GEMM).
     std::vector<bf16> q(size_t(B) * N_q, bf16(0.0f)), k(size_t(B) * N_kv, bf16(0.0f)), v(size_t(B) * N_kv, bf16(0.0f));
@@ -1055,22 +1055,12 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     if (has_kv && !is_sliding && config_.model_type != "gemma4-e4b")
         v = k;  // gemma4 12B global layers reuse K for V
 
-    // 3. QK-norm and V-norm (per head, per row).
-    std::vector<bf16> tmp(h_dim);
+    // 3. QK-norm and V-norm (per head, per row) using AVX2.
     for (int b = 0; b < nrows; ++b) {
-        for (int h = 0; h < n_heads; ++h) {
-            run_rmsnorm_cpu(&q[size_t(b) * N_q + h * h_dim], q_norm_w, tmp.data(), h_dim);
-            std::memcpy(&q[size_t(b) * N_q + h * h_dim], tmp.data(), h_dim * sizeof(bf16));
-        }
+        run_multihead_rmsnorm_avx2(&q[size_t(b) * N_q], q_norm_w, n_heads, h_dim, config_.rms_norm_eps);
         if (has_kv) {
-            for (int h = 0; h < n_kv_heads; ++h) {
-                run_rmsnorm_cpu(&k[size_t(b) * N_kv + h * h_dim], k_norm_w, tmp.data(), h_dim);
-                std::memcpy(&k[size_t(b) * N_kv + h * h_dim], tmp.data(), h_dim * sizeof(bf16));
-            }
-            for (int h = 0; h < n_kv_heads; ++h) {
-                run_rmsnorm_cpu(&v[size_t(b) * N_kv + h * h_dim], nullptr, tmp.data(), h_dim);
-                std::memcpy(&v[size_t(b) * N_kv + h * h_dim], tmp.data(), h_dim * sizeof(bf16));
-            }
+            run_multihead_rmsnorm_avx2(&k[size_t(b) * N_kv], k_norm_w, n_kv_heads, h_dim, config_.rms_norm_eps);
+            run_multihead_rmsnorm_avx2(&v[size_t(b) * N_kv], nullptr, n_kv_heads, h_dim, config_.rms_norm_eps);
         }
     }
 
@@ -1164,19 +1154,21 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
     }
     g_bprof.gemm += ms_since(t_bo);
 
-    // 8. Post-attention norm + residual.
+    // 8 & 9. Post-attention norm + residual + Pre-FFN norm (Fused AVX2).
     std::vector<bf16> x_post_attn(size_t(nrows) * K);
-    std::vector<bf16> normed(K);
-    for (int b = 0; b < nrows; ++b) {
-        run_rmsnorm_cpu(&attn_proj[size_t(b) * K], post_attn_w, normed.data(), K);
-        for (int i = 0; i < K; ++i)
-            x_post_attn[size_t(b) * K + i] = bf16(x_batch[size_t(b) * K + i].to_float() + normed[i].to_float());
-    }
-
-    // 9. Pre-FFN norm, padded to K_padded.
     std::vector<bf16> x_norm2_pad(size_t(B) * K_padded, bf16(0.0f));
-    for (int b = 0; b < nrows; ++b)
-        run_rmsnorm_cpu(&x_post_attn[size_t(b) * K], ffn_norm_w, &x_norm2_pad[size_t(b) * K_padded], K);
+    for (int b = 0; b < nrows; ++b) {
+        run_fused_residual_and_norm_avx2(
+            &x_batch[size_t(b) * K],
+            &attn_proj[size_t(b) * K],
+            post_attn_w,
+            ffn_norm_w,
+            &x_post_attn[size_t(b) * K],
+            &x_norm2_pad[size_t(b) * K_padded],
+            K,
+            config_.rms_norm_eps
+        );
+    }
 
     // 10. FFN: resident ONESHAPE tiles or streamed GEMM fallback
     std::vector<float> down_acc(size_t(nrows) * K, 0.0f);
@@ -1198,11 +1190,7 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
 
         std::vector<bf16> act(size_t(B) * I_rows, bf16(0.0f));
         for (int b = 0; b < nrows; ++b) {
-            for (int i = 0; i < I_rows; ++i) {
-                float g = gu_batch[size_t(b) * gu_rows + i].to_float();
-                float u = gu_batch[size_t(b) * gu_rows + size_t(I_rows) + i].to_float();
-                act[size_t(b) * I_rows + i] = bf16(0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f)) * u);
-            }
+            run_fast_geglu_avx2(&gu_batch[size_t(b) * gu_rows], &act[size_t(b) * I_rows], I_rows);
         }
 
         std::vector<bf16> chunk_in(size_t(B) * TK, bf16(0.0f));
@@ -1216,9 +1204,7 @@ void Model::run_layer_batch(const bf16* x_batch, int nrows, int pos_start,
             }
             reg_.run_gemm(B, TN, TK, lw.os_down[c], chunk_in.data(), down_tile.data());
             for (int b = 0; b < nrows; ++b) {
-                for (int i = 0; i < K; ++i) {
-                    down_acc[size_t(b) * K + i] += down_tile[size_t(b) * TN + i].to_float();
-                }
+                run_fused_down_accumulate_avx2(&down_tile[size_t(b) * TN], &down_acc[size_t(b) * K], K);
             }
         }
         g_bprof.ffn_cmp += ms_since(t_bdn);

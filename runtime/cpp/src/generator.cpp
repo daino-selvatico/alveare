@@ -449,11 +449,18 @@ GenerationStats Generator::generate(
             batch_ple.resize(static_cast<size_t>(max_B) * cfg.num_hidden_layers * cfg.per_layer_input);
         }
 
+        int consecutive_misses = 0;
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
-            std::vector<int> draft = drafter.draft(seq, K_draft);
-            while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
-                draft.pop_back();
+            std::vector<int> draft;
+            if (step > 0 && consecutive_misses == 0) {
+                draft = drafter.draft(seq, K_draft);
+                while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
+                    draft.pop_back();
+            } else {
+                // First token of a turn or miss cool-off: decode single token directly
+                consecutive_misses = 0;
+            }
             int nd = static_cast<int>(draft.size());
 
             if (nd == 0) {
@@ -508,6 +515,11 @@ GenerationStats Generator::generate(
             // Accept draft[j] while it matches the model's argmax at row j.
             int accept = 0;
             while (accept < nd && preds[accept] == draft[accept]) ++accept;
+            if (accept == 0) {
+                consecutive_misses++;
+            } else {
+                consecutive_misses = 0;
+            }
             double ms = std::chrono::duration<double, std::milli>(clock::now() - t0_step).count();
             tag() << "spec " << ++step << ": draft=" << nd << " accepted=" << accept
                   << " -> " << (accept + 1) << " tok in " << std::fixed << std::setprecision(1) << ms
