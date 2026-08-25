@@ -195,15 +195,17 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
       ws.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data);
-          if (data.text) {
-            setLiveTranscript(data.text);
+          if (data.type === 'partial' || data.type === 'final') {
+            if (data.text !== undefined && data.text !== null) {
+              setLiveTranscript(data.text);
+            }
             setStreamStats({
               language: data.language || 'auto',
               emotion: data.emotion || 'NEUTRAL',
               event: data.event || 'Speech',
               latency_ms: data.latency_ms || 0
             });
-            if (data.is_final) {
+            if (data.is_final && data.text && data.text.trim()) {
               setStreamHistory(prev => [...prev, {
                 text: data.text,
                 time: new Date().toLocaleTimeString(),

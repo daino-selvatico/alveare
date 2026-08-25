@@ -168,7 +168,19 @@ class SenseVoiceSTT:
         input_target = audio_input
 
         if isinstance(audio_input, bytes):
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+            suffix = ".wav"
+            if audio_input.startswith(b"RIFF"):
+                suffix = ".wav"
+            elif audio_input.startswith(b"\x1a\x45\xdf\xa3"):
+                suffix = ".webm"
+            elif audio_input.startswith(b"OggS"):
+                suffix = ".ogg"
+            elif audio_input.startswith(b"ID3") or audio_input.startswith(b"\xff\xfb") or audio_input.startswith(b"\xff\xf3"):
+                suffix = ".mp3"
+            elif audio_input.startswith(b"fLaC"):
+                suffix = ".flac"
+
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
                 tf.write(audio_input)
                 temp_path = tf.name
             input_target = temp_path

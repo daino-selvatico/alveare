@@ -15,6 +15,7 @@ import shutil
 import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import numpy as np
 
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, PlainTextResponse
@@ -941,10 +942,8 @@ async def api_stt_transcribe(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore STT: {e}")
 
-# Real-Time WebSocket Streaming STT Endpoint
-@app.websocket("/ws/stt")
-@app.websocket("/api/stt/stream")
-async def websocket_stt_stream(websocket: WebSocket):
+# Real-Time WebSocket Streaming STT Engine
+async def handle_stt_stream_connection(websocket: WebSocket):
     await websocket.accept()
     from runtime.py.sensevoice_stt import SenseVoiceSTT
     stt = SenseVoiceSTT.get_instance()
@@ -969,7 +968,7 @@ async def websocket_stt_stream(websocket: WebSocket):
                         usable_len = len(audio_buffer) - (len(audio_buffer) % 2)
                         if usable_len > 0:
                             pcm_arr = np.frombuffer(audio_buffer[:usable_len], dtype=np.int16).astype(np.float32) / 32768.0
-                            res = stt.transcribe(pcm_arr, language=stream_language)
+                            res = await asyncio.to_thread(stt.transcribe, pcm_arr, stream_language)
                             if res.get("status") == "success":
                                 await websocket.send_json({
                                     "type": "partial",
@@ -980,8 +979,8 @@ async def websocket_stt_stream(websocket: WebSocket):
                                     "latency_ms": res.get("latency_ms", 0.0),
                                     "is_final": False
                                 })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[WebSocket STT] Error in chunk transcribe: {e}")
             elif "text" in msg and msg["text"]:
                 try:
                     payload = json.loads(msg["text"])
@@ -994,7 +993,7 @@ async def websocket_stt_stream(websocket: WebSocket):
                                 usable_len = len(audio_buffer) - (len(audio_buffer) % 2)
                                 if usable_len > 0:
                                     pcm_arr = np.frombuffer(audio_buffer[:usable_len], dtype=np.int16).astype(np.float32) / 32768.0
-                                    res = stt.transcribe(pcm_arr, language=stream_language)
+                                    res = await asyncio.to_thread(stt.transcribe, pcm_arr, stream_language)
                                     await websocket.send_json({
                                         "type": "final",
                                         "text": res.get("text", ""),
@@ -1004,19 +1003,27 @@ async def websocket_stt_stream(websocket: WebSocket):
                                         "latency_ms": res.get("latency_ms", 0.0),
                                         "is_final": True
                                     })
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[WebSocket STT] Error in flush transcribe: {e}")
                             audio_buffer.clear()
                     elif action == "clear":
                         audio_buffer.clear()
                     elif action == "ping":
                         await websocket.send_json({"type": "pong"})
-                except Exception:
-                    pass
+                except Exception as err:
+                    print(f"[WebSocket STT] Error handling JSON payload: {err}")
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"[WebSocket STT] Error: {e}")
+        print(f"[WebSocket STT] Connection Exception: {e}")
+
+@app.websocket("/ws/stt")
+async def websocket_stt_root(websocket: WebSocket):
+    await handle_stt_stream_connection(websocket)
+
+@app.websocket("/api/stt/stream")
+async def websocket_stt_api(websocket: WebSocket):
+    await handle_stt_stream_connection(websocket)
 
 @app.post("/api/control/start")
 async def control_start(req: StartRequest):
