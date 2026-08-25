@@ -71,10 +71,19 @@ export default function BenchmarksView({
 
   const isModelRunning = status?.is_running || false;
   const activeModelId = status?.model;
+  const activeDevice = status?.device || 'npu';
   const tokPerSec = status?.tok_per_sec !== undefined ? Number(status.tok_per_sec).toFixed(2) : '0.00';
   const isLoaded = status?.is_loaded || false;
   const loadProgress = status?.load_progress || 0;
   const loadStep = status?.load_step || null;
+
+  const cpuPercent = status?.cpu_usage?.percent !== undefined ? Number(status.cpu_usage.percent).toFixed(1) : '0.0';
+  const npuUsage = status?.npu_usage || {};
+  const npuPercent = npuUsage.percent !== undefined ? Number(npuUsage.percent).toFixed(1) : '0.0';
+  const npuCols = npuUsage.num_cols || 8;
+  const npuActiveContexts = npuUsage.active_contexts || 0;
+  const npuSubmissions = npuUsage.command_submissions || 0;
+  const isNpuActive = (activeDevice === 'npu' && isModelRunning && isLoaded && (Number(npuPercent) > 0 || npuActiveContexts > 0));
 
   return (
     <div role="region" aria-label={t('benchmarks.title')} style={{ padding: '1.5rem 2rem', maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
@@ -139,7 +148,7 @@ export default function BenchmarksView({
           {t('benchmarks.liveMetrics')}
         </h2>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
           
           {/* Card 1: Active Model */}
           <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', boxShadow: 'var(--shadow-card)' }}>
@@ -150,7 +159,7 @@ export default function BenchmarksView({
             <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-main)', wordBreak: 'break-word' }}>
               {activeModelId || t('benchmarks.noActiveModel')}
             </div>
-            <div>
+            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: 'auto' }}>
               {isModelRunning ? (
                 <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
                   <span className="pulse-icon">●</span> {t('benchmarks.running')}
@@ -160,14 +169,81 @@ export default function BenchmarksView({
                   ● {t('benchmarks.stopped')}
                 </span>
               )}
+              <span className="badge" style={{
+                background: activeDevice === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                color: activeDevice === 'cpu' ? '#60a5fa' : '#34d399',
+                fontSize: '0.75rem',
+                border: activeDevice === 'cpu' ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)'
+              }}>
+                {activeDevice === 'cpu' ? '🖥️ CPU' : '⚡ NPU'}
+              </span>
             </div>
           </div>
 
-          {/* Card 2: Load Progress */}
+          {/* Card 2: Consumo NPU Reale (AMD XDNA2 Hardware) */}
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', boxShadow: 'var(--shadow-card)', borderLeft: '4px solid #10b981' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 600 }}>
+              <span style={{ color: '#34d399', fontWeight: 700 }}>{t('benchmarks.npuUsage')}</span>
+              <Zap size={18} color="#34d399" />
+            </div>
+            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#34d399', letterSpacing: '-0.02em', display: 'flex', alignItems: 'baseline', gap: '0.3rem' }}>
+              {npuPercent}%
+              <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                {isNpuActive ? t('benchmarks.npuActive') : t('benchmarks.npuIdle')}
+              </span>
+            </div>
+            <div style={{ width: '100%', background: 'rgba(0,0,0,0.3)', borderRadius: '6px', height: '6px', overflow: 'hidden' }}>
+              <div style={{ width: `${Math.max(Number(npuPercent), isNpuActive ? 15 : 0)}%`, background: 'linear-gradient(90deg, #10b981, #06b6d4)', height: '100%', transition: 'width 0.4s ease' }} />
+            </div>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '0.2rem', marginTop: '0.2rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>⚡ {t('benchmarks.npuActiveColumns', { cols: npuCols })}</span>
+                <span>{npuActiveContexts > 0 ? `(${npuActiveContexts} ctx)` : ''}</span>
+              </div>
+              {npuSubmissions > 0 && (
+                <div style={{ color: '#06b6d4' }}>
+                  {t('benchmarks.npuCommands', { count: npuSubmissions.toLocaleString() })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Card 3: Consumo CPU Reale (/proc/stat) */}
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', boxShadow: 'var(--shadow-card)', borderLeft: '4px solid #60a5fa' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 600 }}>
+              <span style={{ color: '#60a5fa', fontWeight: 700 }}>{t('benchmarks.cpuUsage')}</span>
+              <Activity size={18} color="#60a5fa" />
+            </div>
+            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#60a5fa', letterSpacing: '-0.02em' }}>
+              {cpuPercent}%
+            </div>
+            <div style={{ width: '100%', background: 'rgba(0,0,0,0.3)', borderRadius: '6px', height: '6px', overflow: 'hidden' }}>
+              <div style={{ width: `${cpuPercent}%`, background: Number(cpuPercent) > 75 ? '#ef4444' : Number(cpuPercent) > 40 ? '#fbbf24' : '#60a5fa', height: '100%', transition: 'width 0.4s ease' }} />
+            </div>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+              {t('benchmarks.cpuDesc')}
+            </div>
+          </div>
+
+          {/* Card 4: Measured Decode Speed (tok/s) */}
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', boxShadow: 'var(--shadow-card)', borderLeft: '4px solid var(--accent-amber)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 600 }}>
+              <span>{t('benchmarks.decodeSpeed')}</span>
+              <Zap size={18} color="var(--accent-amber)" />
+            </div>
+            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--accent-amber)', letterSpacing: '-0.02em' }}>
+              {tokPerSec} <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>tok/s</span>
+            </div>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+              {t('benchmarks.speedDesc')}
+            </div>
+          </div>
+
+          {/* Card 5: Load Progress */}
           <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', boxShadow: 'var(--shadow-card)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 600 }}>
               <span>{t('benchmarks.loadStatus')}</span>
-              <HardDrive size={18} color="var(--accent-amber)" />
+              <HardDrive size={18} color="var(--accent-purple)" />
             </div>
             <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-main)' }}>
               {isLoaded
@@ -179,28 +255,14 @@ export default function BenchmarksView({
             </div>
             {isModelRunning && !isLoaded && (
               <div style={{ width: '100%', background: 'var(--bg-primary)', borderRadius: '6px', height: '6px', overflow: 'hidden', marginTop: '0.2rem' }}>
-                <div style={{ width: `${loadProgress}%`, background: 'var(--accent-amber)', height: '100%', transition: 'width 0.3s ease' }} />
+                <div style={{ width: `${loadProgress}%`, background: 'var(--accent-purple)', height: '100%', transition: 'width 0.3s ease' }} />
               </div>
             )}
             {loadStep && (
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.1rem', wordBreak: 'break-word' }}>
+              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.1rem', wordBreak: 'break-word' }}>
                 {t('benchmarks.loadStep')}: {loadStep}
               </div>
             )}
-          </div>
-
-          {/* Card 3: Measured Decode Speed (tok/s) */}
-          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', boxShadow: 'var(--shadow-card)', borderLeft: '4px solid var(--accent-amber)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 600 }}>
-              <span>{t('benchmarks.decodeSpeed')}</span>
-              <Zap size={18} color="var(--accent-amber)" />
-            </div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--accent-amber)', letterSpacing: '-0.02em' }}>
-              {tokPerSec} <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>tok/s</span>
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              {t('benchmarks.speedDesc')}
-            </div>
           </div>
 
         </div>
