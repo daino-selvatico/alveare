@@ -337,6 +337,10 @@ void ApiServer::start(int port) {
                         std::string sse_buf;
                         sse_buf.reserve(512);
 
+                        // Send immediate initial SSE keepalive comment to flush HTTP 200 headers
+                        const char* initial_ping = ": ping\n\n";
+                        sink.write(initial_ping, 8);
+
                         if (is_gemma4 && enable_thinking) {
                             sse_buf = prefix;
                             append_escaped_json(sse_buf, "<|channel>thought\n");
@@ -345,12 +349,12 @@ void ApiServer::start(int port) {
                         }
 
                         generator_.generate(prompt, params, [&](const std::string& token) {
+                            if (sink.is_writable && !sink.is_writable()) return false;
                             sse_buf.clear();
                             sse_buf += prefix;
                             append_escaped_json(sse_buf, token);
                             sse_buf += suffix;
-                            sink.write(sse_buf.c_str(), sse_buf.size());
-                            return true; // continue
+                            return sink.write(sse_buf.c_str(), sse_buf.size());
                         }, all_visual_embeddings, all_audio_embeddings);
 
                         std::string stop_chunk = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
@@ -400,6 +404,10 @@ void ApiServer::start(int port) {
             res.set_content(err.dump(), "application/json");
         }
     });
+
+    svr.set_read_timeout(3600, 0);
+    svr.set_write_timeout(3600, 0);
+    svr.set_idle_interval(3600, 0);
 
     std::cout << "Starting OpenAI compatible API server on port " << port << "...\n";
     svr.listen("0.0.0.0", port);
