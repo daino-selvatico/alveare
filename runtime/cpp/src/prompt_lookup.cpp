@@ -9,7 +9,7 @@ std::vector<int> propose_draft(const std::vector<int>& tokens,
                                int max_ngram,
                                int min_ngram) {
     const int n = static_cast<int>(tokens.size());
-    if (n <= 1 || max_draft <= 0 || max_ngram < 1 || min_ngram < 1 || min_ngram > max_ngram) {
+    if (n <= 2 || max_draft <= 0 || max_ngram < 2 || min_ngram < 2 || min_ngram > max_ngram) {
         return {};
     }
 
@@ -31,7 +31,8 @@ std::vector<int> propose_draft(const std::vector<int>& tokens,
 
             if (match) {
                 int start = i + g;
-                int end = std::min(n - g, start + max_draft);
+                int allowed_draft = (g >= 4) ? max_draft : ((g == 3) ? std::min(max_draft, 4) : std::min(max_draft, 2));
+                int end = std::min(n - g, start + allowed_draft);
                 if (start >= end) {
                     return {};
                 }

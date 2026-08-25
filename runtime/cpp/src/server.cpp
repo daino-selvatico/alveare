@@ -348,7 +348,7 @@ void ApiServer::start(int port) {
                             sink.write(sse_buf.c_str(), sse_buf.size());
                         }
 
-                        generator_.generate(prompt, params, [&](const std::string& token) {
+                        GenerationStats stats = generator_.generate(prompt, params, [&](const std::string& token) {
                             if (sink.is_writable && !sink.is_writable()) return false;
                             sse_buf.clear();
                             sse_buf += prefix;
@@ -356,6 +356,12 @@ void ApiServer::start(int port) {
                             sse_buf += suffix;
                             return sink.write(sse_buf.c_str(), sse_buf.size());
                         }, all_visual_embeddings, all_audio_embeddings);
+
+                        double tps = (stats.completion_tokens > 0 && stats.decode_time_ms > 0)
+                                     ? (stats.completion_tokens * 1000.0 / stats.decode_time_ms) : 0.0;
+                        std::cout << "[server] Request completed: " << stats.completion_tokens
+                                  << " tokens in " << std::fixed << std::setprecision(1) << stats.decode_time_ms
+                                  << "ms (" << std::setprecision(2) << tps << " tok/s)\n" << std::flush;
 
                         std::string stop_chunk = "data: {\"id\":\"" + req_id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(created) + ",\"model\":\"" + model_name + "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
                         sink.write(stop_chunk.c_str(), stop_chunk.size());
@@ -375,6 +381,12 @@ void ApiServer::start(int port) {
                     full_response += token;
                     return true;
                 }, all_visual_embeddings, all_audio_embeddings);
+
+                double tps = (stats.completion_tokens > 0 && stats.decode_time_ms > 0)
+                             ? (stats.completion_tokens * 1000.0 / stats.decode_time_ms) : 0.0;
+                std::cout << "[server] Request completed: " << stats.completion_tokens
+                          << " tokens in " << std::fixed << std::setprecision(1) << stats.decode_time_ms
+                          << "ms (" << std::setprecision(2) << tps << " tok/s)\n" << std::flush;
                 
                 json resp = {
                     {"id", "chatcmpl-" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count())},

@@ -266,7 +266,8 @@ def discover_models() -> List[Dict[str, Any]]:
 
 # Regex patterns for parsing C++ / Python server stdout
 LAYER_LOAD_RE = re.compile(r'(?:Loading weights for layer|Loading layer|Pre-packing FFN fused weights for layer|layer)\s+(\d+)(?:/(\d+))?', re.IGNORECASE)
-TOKEN_SPEED_RE = re.compile(r'(?:Token\s+\d+/\d+\s+in|generated in)\s+([\d\.]+)\s*ms', re.IGNORECASE)
+TOKEN_SPEED_RE = re.compile(r'(?:Token\s+\d+/\d+\s+in|generated in|tok in)\s+([\d\.]+)\s*ms', re.IGNORECASE)
+MS_PER_TOK_RE = re.compile(r'\(([\d\.]+)\s*ms/tok\)', re.IGNORECASE)
 TPS_RE = re.compile(r'([\d\.]+)\s*tok/s', re.IGNORECASE)
 
 def parse_server_log_line(line_str: str):
@@ -289,6 +290,16 @@ def parse_server_log_line(line_str: str):
         state.status = "running"
 
     # 2. Parse tok/s speed metrics
+    m_ms_tok = MS_PER_TOK_RE.search(line_str)
+    if m_ms_tok:
+        try:
+            ms_tok = float(m_ms_tok.group(1))
+            if ms_tok > 0:
+                instant_tps = 1000.0 / ms_tok
+                state.tok_per_sec = round(instant_tps if state.tok_per_sec == 0 else (state.tok_per_sec * 0.7 + instant_tps * 0.3), 1)
+        except Exception:
+            pass
+
     m_token = TOKEN_SPEED_RE.search(line_str)
     if m_token:
         try:

@@ -444,7 +444,7 @@ GenerationStats Generator::generate(
 
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
-            std::vector<int> draft = propose_draft(seq, K_draft, 4, 2);
+            std::vector<int> draft = propose_draft(seq, K_draft, 5, 1);
             while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
                 draft.pop_back();
             int nd = static_cast<int>(draft.size());
