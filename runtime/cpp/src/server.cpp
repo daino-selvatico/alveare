@@ -98,7 +98,7 @@ void ApiServer::start(int port) {
             auto j_req = json::parse(req.body);
             std::string prompt = "";
             bool stream = false;
-            bool enable_thinking = (model_type != "gemma4-e4b" && model_type != "gemma4-e2b");
+            bool enable_thinking = false;
             
             if (j_req.contains("stream") && j_req["stream"].is_boolean()) {
                 stream = j_req["stream"].get<bool>();
@@ -278,10 +278,8 @@ void ApiServer::start(int port) {
                     }
                     if (enable_thinking) {
                         prompt += "<|turn>model\n<|channel>thought\n";
-                    } else if (model_type == "gemma4-e4b" || model_type == "gemma4-e2b") {
-                        prompt += "<|turn>model\n";
                     } else {
-                        prompt += "<|turn>model\n<|channel>thought\n<channel|>";
+                        prompt += "<|turn>model\n";
                     }
                 } else {
                     for (const auto& msg : j_req["messages"]) {
