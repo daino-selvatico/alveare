@@ -942,6 +942,7 @@ async def websocket_stt_stream(websocket: WebSocket):
     
     audio_buffer = bytearray()
     last_transcribe_time = time.time()
+    stream_language = "auto"
     
     try:
         while True:
@@ -955,39 +956,45 @@ async def websocket_stt_stream(websocket: WebSocket):
                 if len(audio_buffer) >= 9600 and (now - last_transcribe_time) >= 0.25:
                     last_transcribe_time = now
                     try:
-                        # Convert 16-bit PCM (16kHz mono) to float32
-                        pcm_arr = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
-                        res = stt.transcribe(pcm_arr)
-                        if res.get("status") == "success" and res.get("text"):
-                            await websocket.send_json({
-                                "type": "partial",
-                                "text": res.get("text", ""),
-                                "language": res.get("language", "auto"),
-                                "emotion": res.get("emotion", "NEUTRAL"),
-                                "event": res.get("event", "Speech"),
-                                "latency_ms": res.get("latency_ms", 0.0),
-                                "is_final": False
-                            })
+                        # Ensure even byte count for 16-bit PCM
+                        usable_len = len(audio_buffer) - (len(audio_buffer) % 2)
+                        if usable_len > 0:
+                            pcm_arr = np.frombuffer(audio_buffer[:usable_len], dtype=np.int16).astype(np.float32) / 32768.0
+                            res = stt.transcribe(pcm_arr, language=stream_language)
+                            if res.get("status") == "success":
+                                await websocket.send_json({
+                                    "type": "partial",
+                                    "text": res.get("text", ""),
+                                    "language": res.get("language", stream_language),
+                                    "emotion": res.get("emotion", "NEUTRAL"),
+                                    "event": res.get("event", "Speech"),
+                                    "latency_ms": res.get("latency_ms", 0.0),
+                                    "is_final": False
+                                })
                     except Exception:
                         pass
             elif "text" in msg and msg["text"]:
                 try:
                     payload = json.loads(msg["text"])
                     action = payload.get("action", "")
-                    if action in ("flush", "stop", "final"):
+                    if action == "set_language":
+                        stream_language = payload.get("language", "auto")
+                    elif action in ("flush", "stop", "final"):
                         if len(audio_buffer) > 0:
                             try:
-                                pcm_arr = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
-                                res = stt.transcribe(pcm_arr)
-                                await websocket.send_json({
-                                    "type": "final",
-                                    "text": res.get("text", ""),
-                                    "language": res.get("language", "auto"),
-                                    "emotion": res.get("emotion", "NEUTRAL"),
-                                    "event": res.get("event", "Speech"),
-                                    "latency_ms": res.get("latency_ms", 0.0),
-                                    "is_final": True
-                                })
+                                usable_len = len(audio_buffer) - (len(audio_buffer) % 2)
+                                if usable_len > 0:
+                                    pcm_arr = np.frombuffer(audio_buffer[:usable_len], dtype=np.int16).astype(np.float32) / 32768.0
+                                    res = stt.transcribe(pcm_arr, language=stream_language)
+                                    await websocket.send_json({
+                                        "type": "final",
+                                        "text": res.get("text", ""),
+                                        "language": res.get("language", stream_language),
+                                        "emotion": res.get("emotion", "NEUTRAL"),
+                                        "event": res.get("event", "Speech"),
+                                        "latency_ms": res.get("latency_ms", 0.0),
+                                        "is_final": True
+                                    })
                             except Exception:
                                 pass
                             audio_buffer.clear()

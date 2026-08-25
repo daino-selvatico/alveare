@@ -18,16 +18,32 @@ import {
   AlertCircle,
   Clock,
   Radio,
-  FileText
+  FileText,
+  Globe,
+  Sliders,
+  Server
 } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
 
-export default function AudioPlayground({ apiBase, status, activeModel, isServerRunning, models = [] }) {
+export default function AudioPlayground({ apiBase, status, activeModel, isServerRunning, models = [], onNavigateToControl }) {
   const { t } = useTranslation();
 
   // Mode: 'realtime' (Live mic stream) | 'file' (Audio upload)
   const [activeMode, setActiveMode] = useState('realtime');
   
+  // Language selection: 'auto' | 'it' | 'en' | 'zh' | 'ja' | 'ko' | 'yue'
+  const [selectedLanguage, setSelectedLanguage] = useState(() => {
+    return localStorage.getItem('alveare_stt_language') || 'auto';
+  });
+
+  const handleLanguageChange = (lang) => {
+    setSelectedLanguage(lang);
+    localStorage.setItem('alveare_stt_language', lang);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ action: "set_language", language: lang }));
+    }
+  };
+
   // Real-time streaming state
   const [isStreaming, setIsStreaming] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState('');
@@ -42,7 +58,6 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   // File upload state
   const [uploadedFile, setUploadedFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [isTranscribingFile, setIsTranscribingFile] = useState(false);
   const [fileTranscript, setFileTranscript] = useState(null);
   const [dragOver, setDragOver] = useState(false);
@@ -106,6 +121,10 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
   // Real-time stream starter
   const startRealtimeStream = async () => {
+    if (!isServerRunning) {
+      setErrorMsg(t('audioPlayground.serverOffBannerDesc'));
+      return;
+    }
     setErrorMsg('');
     try {
       // 1. Get user microphone stream
@@ -122,6 +141,9 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       // 2. Setup AudioContext and downsampling to 16kHz
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       const ctx = new AudioCtx({ sampleRate: 16000 });
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
       audioContextRef.current = ctx;
 
       const source = ctx.createMediaStreamSource(stream);
@@ -141,6 +163,9 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
       ws.onopen = () => {
         setIsStreaming(true);
+        if (selectedLanguage !== 'auto') {
+          ws.send(JSON.stringify({ action: "set_language", language: selectedLanguage }));
+        }
       };
 
       ws.onmessage = (evt) => {
@@ -201,7 +226,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
     } catch (err) {
       console.error("Microphone access error:", err);
-      setErrorMsg(`Impossibile accedere al microfono: ${err.message}`);
+      setErrorMsg(t('audioPlayground.micError', { error: err.message }));
       stopRealtimeStream();
     }
   };
@@ -257,6 +282,10 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   // File Upload Handlers
   const handleFileSelect = async (file) => {
     if (!file) return;
+    if (!isServerRunning) {
+      setErrorMsg(t('audioPlayground.serverOffBannerDesc'));
+      return;
+    }
     setErrorMsg('');
     setUploadedFile(file);
     const url = URL.createObjectURL(file);
@@ -267,6 +296,9 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     const formData = new FormData();
     formData.append('file', file);
     formData.append('model', 'sensevoice');
+    if (selectedLanguage !== 'auto') {
+      formData.append('language', selectedLanguage);
+    }
     formData.append('response_format', 'verbose_json');
 
     setIsTranscribingFile(true);
@@ -287,7 +319,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       });
     } catch (err) {
       console.error("Audio file transcription error:", err);
-      setErrorMsg(`Errore durante la trascrizione del file: ${err.message}`);
+      setErrorMsg(t('audioPlayground.micError', { error: err.message }));
     } finally {
       setIsTranscribingFile(false);
     }
@@ -295,29 +327,29 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
   const getEmotionBadge = (emo) => {
     switch ((emo || '').toUpperCase()) {
-      case 'HAPPY': return { label: '😄 Felice / Happy', color: '#10b981' };
-      case 'SAD': return { label: '😢 Triste / Sad', color: '#3b82f6' };
-      case 'ANGRY': return { label: '😡 Arrabbiato / Angry', color: '#ef4444' };
-      case 'FEARFUL': return { label: '😨 Timoroso', color: '#8b5cf6' };
-      case 'SURPRISED': return { label: '😲 Sorpreso', color: '#f59e0b' };
-      default: return { label: '😐 Neutro / Standard', color: 'var(--text-muted)' };
+      case 'HAPPY': return { label: t('audioPlayground.emotionHappy'), color: '#10b981' };
+      case 'SAD': return { label: t('audioPlayground.emotionSad'), color: '#3b82f6' };
+      case 'ANGRY': return { label: t('audioPlayground.emotionAngry'), color: '#ef4444' };
+      case 'FEARFUL': return { label: t('audioPlayground.emotionFearful'), color: '#8b5cf6' };
+      case 'SURPRISED': return { label: t('audioPlayground.emotionSurprised'), color: '#f59e0b' };
+      default: return { label: t('audioPlayground.emotionNeutral'), color: 'var(--text-muted)' };
     }
   };
 
   const getLanguageLabel = (lang) => {
     switch ((lang || '').toLowerCase()) {
-      case 'it': return '🇮🇹 Italiano';
-      case 'en': return '🇬🇧 English';
-      case 'zh': return '🇨🇳 Cinese';
-      case 'ja': return '🇯🇵 Giapponese';
-      case 'ko': return '🇰🇷 Coreano';
-      case 'yue': return '🇭🇰 Cantonese';
+      case 'it': return t('audioPlayground.langIt');
+      case 'en': return t('audioPlayground.langEn');
+      case 'zh': return t('audioPlayground.langZh');
+      case 'ja': return t('audioPlayground.langJa');
+      case 'ko': return t('audioPlayground.langKo');
+      case 'yue': return t('audioPlayground.langYue');
       default: return `🌐 ${lang || 'Auto'}`;
     }
   };
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)', overflow: 'hidden', background: 'var(--bg-primary)', position: 'relative' }}>
       
       {/* Header Banner */}
       <div style={{
@@ -346,60 +378,135 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               <h2 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
-                SenseVoice Small STT Workbench
+                {t('audioPlayground.title')}
               </h2>
-              <span className="badge badge-success" style={{ fontSize: '0.72rem' }}>
-                <span className="pulse-icon">●</span> Audio Real-Time
-              </span>
+              {isServerRunning ? (
+                <span className="badge badge-success" style={{ fontSize: '0.72rem' }}>
+                  <span className="pulse-icon">●</span> {t('audioPlayground.liveAudioBadge')}
+                </span>
+              ) : (
+                <span className="badge badge-danger" style={{ fontSize: '0.72rem' }}>
+                  ● {t('nav.serverStopped')}
+                </span>
+              )}
             </div>
             <p style={{ margin: '0.2rem 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-              Trascrizione vocale istantanea (&lt;30ms) non-autoregressiva con riconoscimento emozioni, eventi e multilingua.
+              {t('audioPlayground.subtitle')}
             </p>
           </div>
         </div>
 
-        {/* Mode Switcher Tabs */}
-        <div style={{ display: 'flex', background: 'var(--bg-secondary)', padding: '0.3rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
-          <button
-            onClick={() => { setActiveMode('realtime'); }}
-            style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '7px',
-              border: 'none',
-              background: activeMode === 'realtime' ? 'var(--gradient-brand)' : 'transparent',
-              color: activeMode === 'realtime' ? '#fff' : 'var(--text-muted)',
-              fontWeight: 600,
-              fontSize: '0.84rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              transition: 'all 0.2s ease'
-            }}
-          >
-            <Mic size={16} /> Streaming Live (Microfono)
-          </button>
-          <button
-            onClick={() => { setActiveMode('file'); stopRealtimeStream(); }}
-            style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '7px',
-              border: 'none',
-              background: activeMode === 'file' ? 'var(--gradient-brand)' : 'transparent',
-              color: activeMode === 'file' ? '#fff' : 'var(--text-muted)',
-              fontWeight: 600,
-              fontSize: '0.84rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              transition: 'all 0.2s ease'
-            }}
-          >
-            <FileAudio size={16} /> File Audio
-          </button>
+        {/* Controls Bar: Language Selector & Mode Switcher */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
+          
+          {/* Explicit Language Dropdown Selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'var(--bg-secondary)', padding: '0.3rem 0.65rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+            <Globe size={15} color="var(--accent-cyan)" />
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+              {t('audioPlayground.languageSelectLabel')}
+            </span>
+            <select
+              value={selectedLanguage}
+              onChange={(e) => handleLanguageChange(e.target.value)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-main)',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                outline: 'none'
+              }}
+            >
+              <option value="auto" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langAuto')}</option>
+              <option value="it" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langIt')}</option>
+              <option value="en" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langEn')}</option>
+              <option value="zh" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langZh')}</option>
+              <option value="ja" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langJa')}</option>
+              <option value="ko" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langKo')}</option>
+              <option value="yue" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langYue')}</option>
+            </select>
+          </div>
+
+          {/* Mode Switcher Tabs */}
+          <div style={{ display: 'flex', background: 'var(--bg-secondary)', padding: '0.3rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+            <button
+              onClick={() => { setActiveMode('realtime'); }}
+              style={{
+                padding: '0.45rem 0.85rem',
+                borderRadius: '7px',
+                border: 'none',
+                background: activeMode === 'realtime' ? 'var(--gradient-brand)' : 'transparent',
+                color: activeMode === 'realtime' ? '#fff' : 'var(--text-muted)',
+                fontWeight: 600,
+                fontSize: '0.82rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              <Mic size={15} /> {t('audioPlayground.liveStreamTab')}
+            </button>
+            <button
+              onClick={() => { setActiveMode('file'); stopRealtimeStream(); }}
+              style={{
+                padding: '0.45rem 0.85rem',
+                borderRadius: '7px',
+                border: 'none',
+                background: activeMode === 'file' ? 'var(--gradient-brand)' : 'transparent',
+                color: activeMode === 'file' ? '#fff' : 'var(--text-muted)',
+                fontWeight: 600,
+                fontSize: '0.82rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              <FileAudio size={15} /> {t('audioPlayground.fileTab')}
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Server Stopped Grayed-out Disabled Banner */}
+      {!isServerRunning && (
+        <div style={{
+          padding: '1rem 2rem',
+          background: 'linear-gradient(90deg, rgba(239, 68, 68, 0.15) 0%, rgba(245, 158, 11, 0.12) 100%)',
+          borderBottom: '1px solid rgba(239, 68, 68, 0.3)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '1rem',
+          zIndex: 20
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <AlertCircle size={20} color="#ef4444" />
+            <div>
+              <strong style={{ color: 'var(--text-main)', fontSize: '0.92rem' }}>
+                {t('audioPlayground.serverOffBannerTitle')}
+              </strong>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginTop: '0.1rem' }}>
+                {t('audioPlayground.serverOffBannerDesc')}
+              </div>
+            </div>
+          </div>
+          {onNavigateToControl && (
+            <button
+              className="btn-primary"
+              onClick={onNavigateToControl}
+              style={{ padding: '0.45rem 1rem', fontSize: '0.82rem', borderRadius: '8px' }}
+            >
+              <Server size={14} /> {t('audioPlayground.goToControlPanel')}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Error notification */}
       {errorMsg && (
@@ -409,8 +516,17 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
         </div>
       )}
 
-      {/* Main Body */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: '1.5rem 2rem', gap: '1.5rem' }}>
+      {/* Main Body with Disabled Dimming when server is stopped */}
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        overflow: 'hidden',
+        padding: '1.5rem 2rem',
+        gap: '1.5rem',
+        opacity: isServerRunning ? 1 : 0.45,
+        pointerEvents: isServerRunning ? 'auto' : 'none',
+        filter: isServerRunning ? 'none' : 'grayscale(0.6)'
+      }}>
         
         {/* Left Interactive Control Area */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1.25rem', overflowY: 'auto' }}>
@@ -449,6 +565,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               {/* Central Mic Button */}
               <button
                 onClick={isStreaming ? stopRealtimeStream : startRealtimeStream}
+                disabled={!isServerRunning}
                 style={{
                   width: '84px',
                   height: '84px',
@@ -458,7 +575,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                     ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
                     : 'linear-gradient(135deg, #06b6d4 0%, #8b5cf6 100%)',
                   color: 'white',
-                  cursor: 'pointer',
+                  cursor: isServerRunning ? 'pointer' : 'not-allowed',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -468,17 +585,17 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                   transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
                 }}
                 className={isStreaming ? 'pulse-icon' : ''}
-                title={isStreaming ? "Interrompi ascolto" : "Avvia ascolto real-time"}
+                title={isStreaming ? t('audioPlayground.stopListening') : t('audioPlayground.startListening')}
               >
                 {isStreaming ? <MicOff size={36} /> : <Mic size={36} />}
               </button>
 
               <div style={{ marginTop: '1rem', textAlign: 'center' }}>
                 <span style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-main)' }}>
-                  {isStreaming ? 'In ascolto continuo... Parla liberamente' : 'Clicca per avviare la trascrizione vocale in streaming'}
+                  {isStreaming ? t('audioPlayground.listeningPrompt') : t('audioPlayground.clickToListen')}
                 </span>
                 <p style={{ margin: '0.25rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {isStreaming ? 'Streaming continuo via WebSocket su /ws/stt a 16kHz' : 'Nessun ritardo: le parole appaiono in tempo reale'}
+                  {isStreaming ? t('audioPlayground.streamingSubtext') : t('audioPlayground.zeroDelaySubtext')}
                 </p>
               </div>
 
@@ -496,7 +613,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                   justifyContent: 'center'
                 }}>
                   <span style={{ fontSize: '0.78rem', color: 'var(--accent-cyan)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    <Activity size={13} /> {streamStats.latency_ms > 0 ? `${streamStats.latency_ms} ms` : '&lt;30 ms'} latenza
+                    <Activity size={13} /> {t('audioPlayground.latency', { latency: streamStats.latency_ms > 0 ? streamStats.latency_ms : '<30' })}
                   </span>
                   <span style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 600 }}>
                     {getLanguageLabel(streamStats.language)}
@@ -526,17 +643,17 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               justifyContent: 'center',
               position: 'relative',
               minHeight: '320px',
-              cursor: 'pointer',
+              cursor: isServerRunning ? 'pointer' : 'not-allowed',
               transition: 'all 0.2s ease'
             }}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragOver={(e) => { e.preventDefault(); if (isServerRunning) setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={(e) => {
               e.preventDefault();
               setDragOver(false);
-              if (e.dataTransfer.files?.[0]) handleFileSelect(e.dataTransfer.files[0]);
+              if (isServerRunning && e.dataTransfer.files?.[0]) handleFileSelect(e.dataTransfer.files[0]);
             }}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => isServerRunning && fileInputRef.current?.click()}
             >
               <input
                 ref={fileInputRef}
@@ -562,10 +679,10 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               </div>
 
               <span style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-main)' }}>
-                {uploadedFile ? uploadedFile.name : 'Trascina o carica un file audio'}
+                {uploadedFile ? uploadedFile.name : t('audioPlayground.dropFilePrompt')}
               </span>
               <p style={{ margin: '0.35rem 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                Supporta MP3, WAV, M4A, OGG, FLAC (elaborazione ultrarapida &lt;100ms)
+                {t('audioPlayground.supportedFormats')}
               </p>
 
               {uploadedFile && (
@@ -582,7 +699,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               {isTranscribingFile && (
                 <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--accent-cyan)', fontSize: '0.9rem', fontWeight: 600 }}>
                   <div className="pulse-icon" style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--accent-cyan)' }} />
-                  Trascrizione con SenseVoice Small in corso...
+                  {t('audioPlayground.transcribingFile')}
                 </div>
               )}
 
@@ -602,7 +719,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
                 <Sparkles size={16} color="var(--accent-cyan)" />
-                {activeMode === 'realtime' ? 'Trascrizione Live in Corso' : 'Testo Trascritto'}
+                {activeMode === 'realtime' ? t('audioPlayground.liveTranscriptTitle') : t('audioPlayground.fileTranscriptTitle')}
               </span>
 
               <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -613,7 +730,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                   disabled={!(activeMode === 'realtime' ? liveTranscript : fileTranscript?.text)}
                 >
                   {copied ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
-                  {copied ? 'Copiato!' : 'Copia'}
+                  {copied ? t('audioPlayground.copied') : t('audioPlayground.copy')}
                 </button>
                 <button
                   className="btn-secondary"
@@ -621,12 +738,13 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                   onClick={() => handleExport(activeMode === 'realtime' ? liveTranscript : fileTranscript?.text)}
                   disabled={!(activeMode === 'realtime' ? liveTranscript : fileTranscript?.text)}
                 >
-                  <Download size={14} /> Esporta
+                  <Download size={14} /> {t('audioPlayground.export')}
                 </button>
                 <button
                   className="btn-secondary"
                   style={{ padding: '0.35rem 0.65rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}
                   onClick={() => { setLiveTranscript(''); setFileTranscript(null); }}
+                  title={t('audioPlayground.clear')}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -647,8 +765,8 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               fontStyle: (activeMode === 'realtime' ? liveTranscript : fileTranscript?.text) ? 'normal' : 'italic'
             }}>
               {activeMode === 'realtime'
-                ? (liveTranscript || (isStreaming ? 'In attesa di audio...' : 'Premi il microfono e inizia a parlare.'))
-                : (fileTranscript?.text || (isTranscribingFile ? 'Trascrizione in corso...' : 'Carica un file per visualizzare il testo trascritto.'))}
+                ? (liveTranscript || (isStreaming ? t('audioPlayground.waitingForAudio') : t('audioPlayground.pressMicToSpeak')))
+                : (fileTranscript?.text || (isTranscribingFile ? t('audioPlayground.transcribingFile') : t('audioPlayground.uploadFileToTranscribe')))}
             </div>
 
             {/* File metadata card */}
@@ -689,14 +807,14 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-main)' }}>
               <Clock size={16} color="var(--accent-purple)" />
-              <span>Storico Trascrizioni</span>
+              <span>{t('audioPlayground.historyTitle')}</span>
             </div>
             {streamHistory.length > 0 && (
               <button
                 onClick={() => setStreamHistory([])}
                 style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.78rem' }}
               >
-                Svuota
+                {t('audioPlayground.clear')}
               </button>
             )}
           </div>
@@ -704,7 +822,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
           <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             {streamHistory.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', padding: '2rem 1rem' }}>
-                Nessuna frase registrata in questa sessione.
+                {t('audioPlayground.emptyHistory')}
               </div>
             ) : (
               streamHistory.map((item, idx) => (

@@ -21,8 +21,8 @@ describe('AudioPlayground', () => {
     );
 
     expect(screen.getByText(/SenseVoice Small STT Workbench/i)).toBeDefined();
-    expect(screen.getByText(/Streaming Live \(Microfono\)/i)).toBeDefined();
-    expect(screen.getByText(/File Audio/i)).toBeDefined();
+    expect(screen.getByText(/Streaming Live/i)).toBeDefined();
+    expect(screen.getByText(/Audio File|File Audio/i)).toBeDefined();
   });
 
   it('switches to File Audio mode and displays drag-and-drop zone', () => {
@@ -37,10 +37,25 @@ describe('AudioPlayground', () => {
       </I18nProvider>
     );
 
-    const fileTabBtn = screen.getByText(/File Audio/i);
+    const fileTabBtn = screen.getByText(/Audio File|File Audio/i);
     fireEvent.click(fileTabBtn);
 
-    expect(screen.getByText(/Trascina o carica un file audio/i)).toBeDefined();
-    expect(screen.getByText(/Supporta MP3, WAV, M4A, OGG, FLAC/i)).toBeDefined();
+    expect(screen.getByText(/Trascina o carica un file audio|Drag & drop or upload/i)).toBeDefined();
+    expect(screen.getByText(/Supporta MP3, WAV, M4A, OGG, FLAC|Supports MP3, WAV, M4A, OGG, FLAC/i)).toBeDefined();
+  });
+
+  it('renders disabled state when server is not running', () => {
+    render(
+      <I18nProvider>
+        <AudioPlayground
+          apiBase={mockApiBase}
+          status={{ is_running: false, model: 'sensevoice' }}
+          activeModel="sensevoice"
+          isServerRunning={false}
+        />
+      </I18nProvider>
+    );
+
+    expect(screen.getByText(/STT Server Not Running|Server STT Non Avviato/i)).toBeDefined();
   });
 });

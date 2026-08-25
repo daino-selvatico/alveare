@@ -372,6 +372,7 @@ export default function App() {
                 activeModel={status?.model || 'sensevoice'}
                 isServerRunning={status?.is_running || false}
                 models={models}
+                onNavigateToControl={() => setActiveTab('control')}
               />
             ) : (
               <ChatPlayground
