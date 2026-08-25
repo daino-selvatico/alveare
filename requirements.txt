@@ -9,6 +9,7 @@
 fastapi
 uvicorn
 pydantic
+python-multipart
 
 # Numerics / weights
 numpy

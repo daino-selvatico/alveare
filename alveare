@@ -255,8 +255,8 @@ cmd_setup() {
     echo "  [warn] cannot import 'aie' (install mlir_aie wheel; see docs/SETUP.md)"
   fi
 
-  if "$PY" -c 'import fastapi, uvicorn, pydantic' >/dev/null 2>&1; then
-    echo "  [ok]   server deps (fastapi/uvicorn/pydantic) present"
+  if "$PY" -c 'import fastapi, uvicorn, pydantic, multipart' >/dev/null 2>&1; then
+    echo "  [ok]   server deps (fastapi/uvicorn/pydantic/multipart) present"
   else
     echo "  [warn] server deps missing (pip install -r requirements.txt)"
   fi
