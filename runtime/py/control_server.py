@@ -161,6 +161,7 @@ class ServerState:
         self.active_model: str = "gemma4"
         self.host: str = "127.0.0.1"
         self.port: int = 8000
+        self.device: str = "npu"  # "npu" | "cpu"
         self.legacy: bool = False
         self.offline: bool = False
         self.start_time: float = 0
@@ -191,6 +192,7 @@ def load_config() -> Dict[str, Any]:
         "default_model": "gemma4",
         "host": "127.0.0.1",
         "port": 8000,
+        "device": "npu",
         "legacy": False,
         "offline": False
     }
@@ -217,6 +219,7 @@ _saved_cfg = load_config()
 state.active_model = _saved_cfg.get("default_model", "gemma4")
 state.host = _saved_cfg.get("host", "127.0.0.1")
 state.port = _saved_cfg.get("port", 8000)
+state.device = _saved_cfg.get("device", "npu")
 state.legacy = _saved_cfg.get("legacy", False)
 state.offline = _saved_cfg.get("offline", False)
 
@@ -359,7 +362,7 @@ def parse_server_log_line(line_str: str):
         state.last_error = line_str.strip()
 
 
-def start_inference_server(model: str, host: str, port: int, legacy: bool, offline: bool) -> bool:
+def start_inference_server(model: str, host: str, port: int, device: str = "npu", legacy: bool = False, offline: bool = False) -> bool:
     if state.process and state.process.poll() is None:
         stop_inference_server()
 
@@ -369,6 +372,7 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
         state.active_model = "sensevoice"
         state.host = host
         state.port = port
+        state.device = "cpu"
         state.legacy = legacy
         state.offline = offline
         state.load_progress = 15.0
@@ -394,11 +398,13 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
                 append_log(f"[SenseVoice] Errore avvio modello: {e}")
         
         threading.Thread(target=_load_stt_async, daemon=True).start()
-        save_config({"default_model": model, "host": host, "port": port})
+        save_config({"default_model": model, "host": host, "port": port, "device": "cpu"})
         return True
 
     alveare_bin = ROOT_DIR / "alveare"
     cmd = [str(alveare_bin), "serve", model, "--host", host, "--port", str(port)]
+    if device:
+        cmd.extend(["--device", device])
     if legacy:
         cmd.append("--legacy")
     if offline:
@@ -413,6 +419,7 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
     state.active_model = model
     state.host = host
     state.port = port
+    state.device = device
     state.legacy = legacy
     state.offline = offline
     state.load_progress = 0.0
@@ -540,6 +547,7 @@ class StartRequest(BaseModel):
     model: Optional[str] = None
     host: Optional[str] = "127.0.0.1"
     port: Optional[int] = 8000
+    device: Optional[str] = "npu"
     legacy: Optional[bool] = False
     offline: Optional[bool] = False
 
@@ -548,6 +556,7 @@ class ConfigUpdateRequest(BaseModel):
     default_model: Optional[str] = None
     host: Optional[str] = None
     port: Optional[int] = None
+    device: Optional[str] = None
     legacy: Optional[bool] = None
     offline: Optional[bool] = None
 
@@ -571,6 +580,7 @@ async def get_status():
         "load_step": state.load_step,
         "tok_per_sec": state.tok_per_sec,
         "model": state.active_model,
+        "device": "cpu" if state.active_model == "sensevoice" else getattr(state, "device", "npu"),
         "host": state.host,
         "port": state.port,
         "legacy": state.legacy,
@@ -1019,12 +1029,13 @@ async def control_start(req: StartRequest):
         model=model,
         host=req.host or "127.0.0.1",
         port=req.port or 8000,
+        device=req.device or "npu",
         legacy=bool(req.legacy),
         offline=bool(req.offline)
     )
     if not success:
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to start server")
-    return {"status": "ok", "message": f"Server starting with model {model}"}
+    return {"status": "ok", "message": f"Server starting with model {model} on {req.device or 'npu'}"}
 
 @app.post("/api/control/stop")
 async def control_stop():
@@ -1040,12 +1051,13 @@ async def control_restart(req: StartRequest):
         model=model,
         host=req.host or "127.0.0.1",
         port=req.port or 8000,
+        device=req.device or "npu",
         legacy=bool(req.legacy),
         offline=bool(req.offline)
     )
     if not success:
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to restart server")
-    return {"status": "ok", "message": f"Server restarted with model {model}"}
+    return {"status": "ok", "message": f"Server restarted with model {model} on {req.device or 'npu'}"}
 
 class BuildKernelsRequest(BaseModel):
     model: Optional[str] = None

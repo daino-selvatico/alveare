@@ -282,12 +282,16 @@ cmd_serve() {
   local model="$1"; shift
   local host="${ALVEARE_HOST:-127.0.0.1}"
   local port="${ALVEARE_PORT:-8000}"
+  local device="${ALVEARE_DEVICE:-npu}"
   local offline=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host) host="$2"; shift 2 ;;
       --port) port="$2"; shift 2 ;;
+      --device) device="$2"; shift 2 ;;
+      --cpu) device="cpu"; shift 1 ;;
+      --npu) device="npu"; shift 1 ;;
       --offline) offline=1; shift 1 ;;
       --legacy) legacy=1; shift 1 ;;
       *) echo "error: unknown serve option '$1'" >&2; exit 2 ;;

@@ -9,6 +9,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   const [targetModel, setTargetModel] = useState(status?.model || (models.length > 0 ? models[0].id : 'gemma4'));
   const [host, setHost] = useState(status?.host || '127.0.0.1');
   const [port, setPort] = useState(status?.port || 8000);
+  const [device, setDevice] = useState(status?.device || 'npu');
   const [legacy, setLegacy] = useState(status?.legacy || false);
   const [offline, setOffline] = useState(status?.offline || false);
 
@@ -78,7 +79,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       await fetch(`${apiBase}/api/control/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
       });
       setTimeout(() => {
         onRefresh();
@@ -113,7 +114,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       await fetch(`${apiBase}/api/control/restart`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
       });
       setTimeout(() => {
         onRefresh();
@@ -163,7 +164,19 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
               <Server size={26} color="var(--accent-purple)" aria-hidden="true" />
               <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>{t('serverControl.engineController')}</h2>
               
-              {status?.status === 'running' && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>}
+              {status?.status === 'running' && status?.is_loaded && (
+                <>
+                  <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>
+                  <span className="badge" style={{
+                    background: (status.device === 'cpu' || status.model === 'sensevoice') ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                    color: (status.device === 'cpu' || status.model === 'sensevoice') ? '#60a5fa' : '#34d399',
+                    border: (status.device === 'cpu' || status.model === 'sensevoice') ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                    fontWeight: 700
+                  }}>
+                    {(status.device === 'cpu' || status.model === 'sensevoice') ? '🖥️ CPU (AVX-512)' : '⚡ NPU (XDNA2)'}
+                  </span>
+                </>
+              )}
               {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
                 <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" aria-hidden="true" /> {t('serverControl.statusLoading', { progress: status?.load_progress || 0 })}</span>
               )}
@@ -421,20 +434,33 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                   )}
 
                   {/* Kernel Status Indicator */}
-                  <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{m.task === 'speech-to-text' || m.arch === 'sensevoice' ? 'Architettura / Task' : t('serverControl.hardwareKernels')}</span>
+                  <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
                     {m.task === 'speech-to-text' || m.arch === 'sensevoice' ? (
-                      <span style={{ color: '#06b6d4', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        🎙️ STT Multilingua (&lt;30ms)
-                      </span>
-                    ) : isKernelMatching ? (
-                      <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
-                      </span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Task & Motore:</span>
+                        <span style={{ color: '#06b6d4', fontWeight: 600 }}>🎙️ STT Native (CPU)</span>
+                      </div>
                     ) : (
-                      <span style={{ color: '#fbbf24', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        {t('serverControl.notCompiled')}
-                      </span>
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>⚡ Hardware NPU:</span>
+                          {isKernelMatching ? (
+                            <span style={{ color: '#34d399', fontWeight: 600 }}>
+                              {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
+                            </span>
+                          ) : (
+                            <span style={{ color: '#fbbf24', fontWeight: 600 }}>
+                              {t('serverControl.notCompiled')}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>🖥️ Fallback CPU:</span>
+                          <span style={{ color: '#60a5fa', fontWeight: 600 }}>
+                            {t('serverControl.cpuReady')}
+                          </span>
+                        </div>
+                      </>
                     )}
                   </div>
 
@@ -507,7 +533,29 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+              {t('serverControl.executionDevice')}
+            </label>
+            <select
+              value={device}
+              onChange={e => setDevice(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '0.65rem',
+                borderRadius: '8px',
+                background: 'rgba(0,0,0,0.4)',
+                border: '1px solid var(--border-color)',
+                color: 'white',
+                fontWeight: 600
+              }}
+            >
+              <option value="npu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.deviceNpu')}</option>
+              <option value="cpu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.deviceCpu')}</option>
+            </select>
+          </div>
+
           <div>
             <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
               {t('serverControl.hostAddress')}
