@@ -305,6 +305,14 @@ def discover_models() -> List[Dict[str, Any]]:
         })
     return models
 
+def is_active_stt_model() -> bool:
+    if state.active_model in ("whisper", "whisper-base", "sensevoice"):
+        return True
+    for m in discover_models():
+        if m["id"] == state.active_model and m.get("task") == "speech-to-text":
+            return True
+    return False
+
 # Regex patterns for parsing C++ / Python server stdout
 LAYER_LOAD_RE = re.compile(r'(?:Loading weights for layer|Loading layer|Pre-packing FFN fused weights for layer|layer)\s+(\d+)(?:/(\d+))?', re.IGNORECASE)
 TOKEN_SPEED_RE = re.compile(r'(?:Token\s+\d+/\d+\s+in|generated in|tok in)\s+([\d\.]+)\s*ms', re.IGNORECASE)
@@ -568,7 +576,7 @@ class ConfigUpdateRequest(BaseModel):
 
 @app.get("/api/status")
 async def get_status():
-    if state.active_model == "sensevoice":
+    if is_active_stt_model():
         is_running = (state.status in ("starting", "running"))
     else:
         is_running = state.process is not None and state.process.poll() is None
@@ -586,7 +594,7 @@ async def get_status():
         "load_step": state.load_step,
         "tok_per_sec": state.tok_per_sec,
         "model": state.active_model,
-        "device": "cpu" if state.active_model == "sensevoice" else getattr(state, "device", "npu"),
+        "device": "cpu" if is_active_stt_model() else getattr(state, "device", "npu"),
         "host": state.host,
         "port": state.port,
         "legacy": state.legacy,

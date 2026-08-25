@@ -18,11 +18,10 @@ from typing import Dict, Any, Optional, Union
 import numpy as np
 
 def find_torch_python() -> Optional[str]:
-    """Find a Python interpreter that has torch and funasr installed."""
+    """Find a Python interpreter that has torch installed."""
     # 1. Check current interpreter
     try:
         import torch
-        from funasr import AutoModel
         return sys.executable
     except Exception:
         pass
@@ -40,7 +39,7 @@ def find_torch_python() -> Optional[str]:
     for cand in candidates:
         if cand.exists():
             try:
-                res = subprocess.run([str(cand), "-c", "import torch, funasr; print('ok')"], capture_output=True, text=True, timeout=5, env=clean_env)
+                res = subprocess.run([str(cand), "-c", "import torch; print('ok')"], capture_output=True, text=True, timeout=5, env=clean_env)
                 if res.returncode == 0 and "ok" in res.stdout:
                     return str(cand)
             except Exception:
