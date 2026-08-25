@@ -50,7 +50,8 @@ import {
 import { useTranslation } from '../i18n/I18nContext';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { SlidingWindowTpsCalculator } from '../utils/tpsCalculator';
-import { extractDocumentText } from '../utils/documentParser';
+import { extractDocumentText, extractPdfPages, formatPdfDocumentText } from '../utils/documentParser';
+import DocumentConfigModal from './DocumentConfigModal';
 
 
 function parseThinking(content) {
@@ -206,6 +207,7 @@ export default function ChatPlayground({
   const [acceptFilter, setAcceptFilter] = useState('*/*');
   const [isDragging, setIsDragging] = useState(false);
   const [previewImageModal, setPreviewImageModal] = useState(null);
+  const [editingDocAttachment, setEditingDocAttachment] = useState(null);
 
   // Audio recording state
   const [isVoiceRecording, setIsVoiceRecording] = useState(false);
@@ -814,8 +816,20 @@ export default function ChatPlayground({
         }
       } else {
         try {
-          const content = await extractDocumentText(file);
-          item.textData = content;
+          if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+            const pdfData = await extractPdfPages(file);
+            item.pdfData = pdfData;
+            item.pageSelection = 'all';
+            item.cleanText = true;
+            item.customRange = pdfData.numPages > 3 ? `1-${Math.min(3, pdfData.numPages)}` : `1-${pdfData.numPages}`;
+            item.textData = formatPdfDocumentText(pdfData.pages, {
+              pageSelection: 'all',
+              cleanText: true
+            });
+          } else {
+            const content = await extractDocumentText(file, { cleanText: true });
+            item.textData = content;
+          }
         } catch (e) {
           console.error("Error extracting document text:", e);
           item.textData = `[Errore lettura documento ${file.name}]`;
@@ -830,6 +844,21 @@ export default function ChatPlayground({
 
   const removeAttachment = (id) => {
     setAttachments(prev => prev.filter(a => a.id !== id));
+  };
+
+  const handleSaveDocConfig = (updatedConfig) => {
+    setAttachments(prev => prev.map(a => {
+      if (a.id === updatedConfig.id) {
+        return {
+          ...a,
+          textData: updatedConfig.textData,
+          pageSelection: updatedConfig.pageSelection,
+          customRange: updatedConfig.customRange,
+          cleanText: updatedConfig.cleanText
+        };
+      }
+      return a;
+    }));
   };
 
   const handleDragOver = (e) => {
@@ -1671,7 +1700,22 @@ export default function ChatPlayground({
                     )}
                   </>
                 ) : (
-                  <FileText size={14} color="var(--accent-green)" />
+                  <>
+                    <FileText size={14} color="var(--accent-green)" />
+                    {att.pdfData && att.pdfData.numPages > 1 && (
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.08)', padding: '0.1rem 0.35rem', borderRadius: '4px' }}>
+                        {att.pageSelection === 'first3' ? '1-3 pag' : att.pageSelection === 'custom' ? `${att.customRange} pag` : `${att.pdfData.numPages} pag`}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => setEditingDocAttachment(att)}
+                      style={{ background: 'none', border: 'none', color: 'var(--accent-cyan)', cursor: 'pointer', padding: '0 2px', display: 'flex', alignItems: 'center' }}
+                      title="Configura pagine e pulizia testo PDF"
+                      aria-label="Configura documento"
+                    >
+                      <Sliders size={11} />
+                    </button>
+                  </>
                 )}
                 <span style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {att.name}
@@ -1956,6 +2000,15 @@ export default function ChatPlayground({
             style={{ maxWidth: '90%', maxHeight: '90%', borderRadius: '12px', boxShadow: '0 0 40px rgba(0,0,0,0.8)' }}
           />
         </div>
+      )}
+
+      {/* Document PDF Configuration Modal */}
+      {editingDocAttachment && (
+        <DocumentConfigModal
+          attachment={editingDocAttachment}
+          onSave={handleSaveDocConfig}
+          onClose={() => setEditingDocAttachment(null)}
+        />
       )}
 
       {/* Generation Settings Drawer/Modal */}
