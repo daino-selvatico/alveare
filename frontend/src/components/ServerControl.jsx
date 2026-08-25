@@ -9,14 +9,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   const [targetModel, setTargetModel] = useState(status?.model || (models.length > 0 ? models[0].id : 'gemma4'));
   const [host, setHost] = useState(status?.host || '127.0.0.1');
   const [port, setPort] = useState(status?.port || 8000);
-  const [device, setDevice] = useState(status?.device || 'npu');
   const [legacy, setLegacy] = useState(status?.legacy || false);
   const [offline, setOffline] = useState(status?.offline || false);
 
   // Kernel Build States
   const [kernelStatus, setKernelStatus] = useState(null);
   const [showBuildOptions, setShowBuildOptions] = useState(false);
-  const [buildTarget, setBuildTarget] = useState('all'); // 'all' | 'npu' | 'cpu'
   const [noGemm, setNoGemm] = useState(false);
   const [maxBatch, setMaxBatch] = useState(16);
   const [buildingModel, setBuildingModel] = useState(null);
@@ -52,19 +50,20 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     if (!confirm(t('serverControl.deleteConfirm', { modelId }))) {
       return;
     }
-    setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/api/models/${modelId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Error deleting model");
+      const res = await fetch(`${apiBase}/api/models/${encodeURIComponent(modelId)}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        alert(t('serverControl.deleteSuccess', { modelId }));
+        onRefresh();
+        fetchKernelStatus();
+      } else {
+        const err = await res.json();
+        alert(t('serverControl.deleteError', { error: err.detail || 'Failed' }));
       }
-      alert(t('serverControl.deleteSuccess', { modelId }));
-      onRefresh();
     } catch (e) {
-      alert(t('serverControl.deleteError', { error: e.message }));
-    } finally {
-      setLoading(false);
+      alert(t('serverControl.deleteError', { error: e }));
     }
   };
 
@@ -79,7 +78,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       await fetch(`${apiBase}/api/control/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, legacy, offline })
       });
       setTimeout(() => {
         onRefresh();
@@ -114,7 +113,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       await fetch(`${apiBase}/api/control/restart`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
+        body: JSON.stringify({ model: selected, host, port, legacy, offline })
       });
       setTimeout(() => {
         onRefresh();
@@ -128,8 +127,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   };
 
   const handleBuildKernels = async (modelId) => {
-    const targetLabel = buildTarget === 'npu' ? 'NPU' : buildTarget === 'cpu' ? 'CPU' : 'NPU + CPU';
-    if (!confirm(t('serverControl.buildKernelConfirm', { modelId, target: targetLabel }))) {
+    if (!confirm(t('serverControl.buildKernelConfirm', { modelId }))) {
       return;
     }
     setBuildingModel(modelId);
@@ -139,7 +137,6 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: modelId,
-          target: buildTarget,
           no_gemm: noGemm,
           max_batch: maxBatch
         })
@@ -168,12 +165,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 <>
                   <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>
                   <span className="badge" style={{
-                    background: (status.device === 'cpu' || status.model === 'sensevoice') ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                    color: (status.device === 'cpu' || status.model === 'sensevoice') ? '#60a5fa' : '#34d399',
-                    border: (status.device === 'cpu' || status.model === 'sensevoice') ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                    background: status.model === 'sensevoice' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                    color: status.model === 'sensevoice' ? '#60a5fa' : '#34d399',
+                    border: status.model === 'sensevoice' ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
                     fontWeight: 700
                   }}>
-                    {(status.device === 'cpu' || status.model === 'sensevoice') ? '🖥️ CPU (AVX-512)' : '⚡ NPU (XDNA2)'}
+                    {status.model === 'sensevoice' ? '🖥️ CPU (SenseVoice Engine)' : '⚡ NPU (XDNA2 Native)'}
                   </span>
                 </>
               )}
@@ -434,33 +431,18 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                   )}
 
                   {/* Kernel Status Indicator */}
-                  <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>{m.task === 'speech-to-text' || m.arch === 'sensevoice' ? 'Motore di Esecuzione' : t('serverControl.hardwareKernels')}</span>
                     {m.task === 'speech-to-text' || m.arch === 'sensevoice' ? (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Task & Motore:</span>
-                        <span style={{ color: '#06b6d4', fontWeight: 600 }}>🎙️ STT Native (CPU)</span>
-                      </div>
+                      <span style={{ color: '#06b6d4', fontWeight: 600 }}>🎙️ CPU (SenseVoice Engine)</span>
+                    ) : isKernelMatching ? (
+                      <span style={{ color: '#34d399', fontWeight: 600 }}>
+                        {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
+                      </span>
                     ) : (
-                      <>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ color: 'var(--text-muted)' }}>⚡ Hardware NPU:</span>
-                          {isKernelMatching ? (
-                            <span style={{ color: '#34d399', fontWeight: 600 }}>
-                              {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
-                            </span>
-                          ) : (
-                            <span style={{ color: '#fbbf24', fontWeight: 600 }}>
-                              {t('serverControl.notCompiled')}
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ color: 'var(--text-muted)' }}>🖥️ Fallback CPU:</span>
-                          <span style={{ color: '#60a5fa', fontWeight: 600 }}>
-                            {t('serverControl.cpuReady')}
-                          </span>
-                        </div>
-                      </>
+                      <span style={{ color: '#fbbf24', fontWeight: 600 }}>
+                        {t('serverControl.notCompiled')}
+                      </span>
                     )}
                   </div>
 
@@ -485,20 +467,22 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                       {isServed ? t('serverControl.restart') : t('serverControl.loadAndStart')}
                     </button>
 
-                    <button
-                      className="btn-secondary"
-                      style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTargetModel(m.id);
-                        handleBuildKernels(m.id);
-                      }}
-                      disabled={buildingModel === m.id}
-                      title={t('serverControl.compileKernelTitle')}
-                      aria-label={`Compila kernel NPU per ${m.id}`}
-                    >
-                      <Hammer size={14} /> {buildingModel === m.id ? t('serverControl.compiling') : t('serverControl.compileKernel')}
-                    </button>
+                    {m.task !== 'speech-to-text' && m.arch !== 'sensevoice' && (
+                      <button
+                        className="btn-secondary"
+                        style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTargetModel(m.id);
+                          handleBuildKernels(m.id);
+                        }}
+                        disabled={buildingModel === m.id}
+                        title={t('serverControl.compileKernelTitle')}
+                        aria-label={`Compila kernel NPU per ${m.id}`}
+                      >
+                        <Hammer size={14} /> {buildingModel === m.id ? t('serverControl.compiling') : t('serverControl.compileKernel')}
+                      </button>
+                    )}
 
                     <button
                       className="btn-danger"
@@ -533,29 +517,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
-              {t('serverControl.executionDevice')}
-            </label>
-            <select
-              value={device}
-              onChange={e => setDevice(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '0.65rem',
-                borderRadius: '8px',
-                background: 'rgba(0,0,0,0.4)',
-                border: '1px solid var(--border-color)',
-                color: 'white',
-                fontWeight: 600
-              }}
-            >
-              <option value="npu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.deviceNpu')}</option>
-              <option value="cpu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.deviceCpu')}</option>
-            </select>
-          </div>
-
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
           <div>
             <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
               {t('serverControl.hostAddress')}
@@ -612,19 +574,6 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         {/* Expandable Advanced Kernel Compilation Options */}
         {showBuildOptions && (
           <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.88rem' }}>
-              <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>{t('serverControl.targetHardware')}</span>
-              <select
-                value={buildTarget}
-                onChange={e => setBuildTarget(e.target.value)}
-                style={{ padding: '0.4rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.4)', border: '1px solid var(--border-color)', color: 'white', fontWeight: 600 }}
-              >
-                <option value="all" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.targetAll')}</option>
-                <option value="npu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.targetNpu')}</option>
-                <option value="cpu" style={{ background: '#1e293b', color: '#fff' }}>{t('serverControl.targetCpu')}</option>
-              </select>
-            </div>
-
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
               <input type="checkbox" checked={noGemm} onChange={e => setNoGemm(e.target.checked)} />
               <span>{t('serverControl.noGemmOption')}</span>

@@ -362,12 +362,12 @@ def parse_server_log_line(line_str: str):
         state.last_error = line_str.strip()
 
 
-def start_inference_server(model: str, host: str, port: int, device: str = "npu", legacy: bool = False, offline: bool = False) -> bool:
+def start_inference_server(model: str, host: str, port: int, legacy: bool = False, offline: bool = False) -> bool:
     if state.process and state.process.poll() is None:
         stop_inference_server()
 
     if model == "sensevoice":
-        append_log("Avvio del motore SenseVoice Small Speech-to-Text su CPU/NPU...")
+        append_log("Avvio del motore SenseVoice Small Speech-to-Text su CPU...")
         state.status = "starting"
         state.active_model = "sensevoice"
         state.host = host
@@ -391,20 +391,18 @@ def start_inference_server(model: str, host: str, port: int, device: str = "npu"
                 state.is_loaded = True
                 state.load_step = "Modello pronto"
                 state.status = "running"
-                append_log("[SenseVoice] Server STT attivo su CPU/NPU. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
+                append_log("[SenseVoice] Server STT attivo su CPU. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
             except Exception as e:
                 state.status = "error"
                 state.last_error = str(e)
                 append_log(f"[SenseVoice] Errore avvio modello: {e}")
         
         threading.Thread(target=_load_stt_async, daemon=True).start()
-        save_config({"default_model": model, "host": host, "port": port, "device": "cpu"})
+        save_config({"default_model": model, "host": host, "port": port})
         return True
 
     alveare_bin = ROOT_DIR / "alveare"
     cmd = [str(alveare_bin), "serve", model, "--host", host, "--port", str(port)]
-    if device:
-        cmd.extend(["--device", device])
     if legacy:
         cmd.append("--legacy")
     if offline:
@@ -419,7 +417,7 @@ def start_inference_server(model: str, host: str, port: int, device: str = "npu"
     state.active_model = model
     state.host = host
     state.port = port
-    state.device = device
+    state.device = "npu"
     state.legacy = legacy
     state.offline = offline
     state.load_progress = 0.0
@@ -547,7 +545,6 @@ class StartRequest(BaseModel):
     model: Optional[str] = None
     host: Optional[str] = "127.0.0.1"
     port: Optional[int] = 8000
-    device: Optional[str] = "npu"
     legacy: Optional[bool] = False
     offline: Optional[bool] = False
 
@@ -556,7 +553,6 @@ class ConfigUpdateRequest(BaseModel):
     default_model: Optional[str] = None
     host: Optional[str] = None
     port: Optional[int] = None
-    device: Optional[str] = None
     legacy: Optional[bool] = None
     offline: Optional[bool] = None
 
@@ -1029,13 +1025,12 @@ async def control_start(req: StartRequest):
         model=model,
         host=req.host or "127.0.0.1",
         port=req.port or 8000,
-        device=req.device or "npu",
         legacy=bool(req.legacy),
         offline=bool(req.offline)
     )
     if not success:
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to start server")
-    return {"status": "ok", "message": f"Server starting with model {model} on {req.device or 'npu'}"}
+    return {"status": "ok", "message": f"Server starting with model {model}"}
 
 @app.post("/api/control/stop")
 async def control_stop():
@@ -1051,17 +1046,15 @@ async def control_restart(req: StartRequest):
         model=model,
         host=req.host or "127.0.0.1",
         port=req.port or 8000,
-        device=req.device or "npu",
         legacy=bool(req.legacy),
         offline=bool(req.offline)
     )
     if not success:
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to restart server")
-    return {"status": "ok", "message": f"Server restarted with model {model} on {req.device or 'npu'}"}
+    return {"status": "ok", "message": f"Server restarted with model {model}"}
 
 class BuildKernelsRequest(BaseModel):
     model: Optional[str] = None
-    target: Optional[str] = "all"
     force_arch: Optional[str] = None
     no_gemm: Optional[bool] = False
     max_batch: Optional[int] = 16
@@ -1117,8 +1110,6 @@ async def control_build_kernels(req: BuildKernelsRequest):
 
     alveare_bin = ROOT_DIR / "alveare"
     cmd = [str(alveare_bin), "build-kernels", model]
-    if req.target:
-        cmd.extend(["--target", req.target])
     if req.no_gemm:
         cmd.append("--no-gemm")
     if req.max_batch and req.max_batch != 16:

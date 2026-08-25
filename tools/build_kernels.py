@@ -264,41 +264,14 @@ def compile_ffn_fused(H: int, I: int, activation: str, out: Path, force: bool = 
     return entry
 
 
-def build_cpu_runtime():
-    print("----------------------------------------------------------------------")
-    print("Building / Verifying Native C++ CPU Runtime & Kernels (AVX-512 / Zen SIMD)...")
-    cpp_dir = ROOT / "runtime" / "cpp"
-    build_dir = cpp_dir / "build"
-    build_dir.mkdir(parents=True, exist_ok=True)
-    cmake_cmd = ["cmake", "-B", str(build_dir), "-S", str(cpp_dir), "-DCMAKE_BUILD_TYPE=Release"]
-    res = subprocess.run(cmake_cmd, cwd=str(cpp_dir))
-    if res.returncode != 0:
-        raise RuntimeError("CMake configuration for CPU runtime failed.")
-    make_cmd = ["cmake", "--build", str(build_dir), "-j"]
-    res = subprocess.run(make_cmd, cwd=str(cpp_dir))
-    if res.returncode != 0:
-        raise RuntimeError("C++ runtime build failed.")
-    print("✓ Native C++ CPU Runtime & Kernels successfully built.")
-    print("----------------------------------------------------------------------")
-
-
 def main():
-    ap = argparse.ArgumentParser(description="AOT-harvest NPU/CPU kernels for the runtime")
+    ap = argparse.ArgumentParser(description="AOT-harvest NPU kernels for the C++ runtime")
     ap.add_argument("--weights-dir", required=True, type=Path)
     ap.add_argument("--out", type=Path, default=ROOT / "kernels" / "build")
-    ap.add_argument("--target", choices=["npu", "cpu", "all"], default="all", help="Hardware target: npu, cpu, or all (default: all)")
     ap.add_argument("--max-batch", type=int, default=16, help="prefill GEMM batch B")
     ap.add_argument("--no-gemm", action="store_true", help="skip prefill GEMM shapes")
     ap.add_argument("--force", action="store_true", help="recompile xclbin even if present")
     args = ap.parse_args()
-
-    # If CPU target requested, compile C++ runtime
-    if args.target in ("cpu", "all"):
-        build_cpu_runtime()
-
-    if args.target == "cpu":
-        print("Target CPU completed successfully.")
-        return
 
     # Initialize the IRON NPU device context for npu2
     import aie.iron as iron
