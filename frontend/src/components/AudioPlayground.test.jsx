@@ -20,8 +20,8 @@ describe('AudioPlayground', () => {
       </I18nProvider>
     );
 
-    expect(screen.getByText(/SenseVoice Small STT Workbench/i)).toBeDefined();
-    expect(screen.getByText(/Streaming Live/i)).toBeDefined();
+    expect(screen.getByText(/Whisper STT Workbench/i)).toBeDefined();
+    expect(screen.getByText(/Live Streaming|Streaming Live/i)).toBeDefined();
     expect(screen.getByText(/Audio File|File Audio/i)).toBeDefined();
   });
 

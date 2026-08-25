@@ -351,11 +351,12 @@ def parse_server_log_line(line_str: str):
         except Exception:
             pass
 
-    m_tps = TPS_RE.search(line_str)
-    if m_tps:
+    # 2. Performance detection
+    tps_match = re.search(r"(\d+\.?\d*)\s*tokens?/sec", line_str, re.IGNORECASE)
+    if tps_match:
         try:
-            state.tok_per_sec = round(float(m_tps.group(1)), 1)
-        except Exception:
+            state.tok_per_sec = float(tps_match.group(1))
+        except ValueError:
             pass
 
     # 3. Error detection
@@ -367,17 +368,24 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
     if state.process and state.process.poll() is None:
         stop_inference_server()
 
-    if model == "sensevoice":
-        append_log("Avvio del motore SenseVoice Small Speech-to-Text su CPU...")
+    is_stt = model in ("whisper", "whisper-base", "sensevoice")
+    if not is_stt:
+        for m in discover_models():
+            if m["id"] == model and m.get("task") == "speech-to-text":
+                is_stt = True
+                break
+
+    if is_stt:
+        append_log(f"Avvio del motore Speech-to-Text ({model}) su CPU...")
         state.status = "starting"
-        state.active_model = "sensevoice"
+        state.active_model = model
         state.host = host
         state.port = port
         state.device = "cpu"
         state.legacy = legacy
         state.offline = offline
         state.load_progress = 15.0
-        state.load_step = "Caricamento modello SenseVoice Small..."
+        state.load_step = f"Caricamento modello {model}..."
         state.is_loaded = False
         state.tok_per_sec = 0.0
         state.last_error = ""
@@ -385,18 +393,19 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool = Fals
         
         def _load_stt_async():
             try:
+                stt_id = "openai/whisper-base" if ("whisper" in model or model == "whisper-base") else ("FunAudioLLM/SenseVoiceSmall" if model == "sensevoice" else "openai/whisper-base")
                 from runtime.py.sensevoice_stt import SenseVoiceSTT
-                stt = SenseVoiceSTT.get_instance()
+                stt = SenseVoiceSTT.get_instance(model_id=stt_id)
                 stt._ensure_loaded()
                 state.load_progress = 100.0
                 state.is_loaded = True
                 state.load_step = "Modello pronto"
                 state.status = "running"
-                append_log("[SenseVoice] Server STT attivo su CPU. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
+                append_log(f"[STT Engine] Server STT attivo su CPU con {stt_id}. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
             except Exception as e:
                 state.status = "error"
                 state.last_error = str(e)
-                append_log(f"[SenseVoice] Errore avvio modello: {e}")
+                append_log(f"[STT Engine] Errore avvio modello: {e}")
         
         threading.Thread(target=_load_stt_async, daemon=True).start()
         save_config({"default_model": model, "host": host, "port": port})

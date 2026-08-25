@@ -165,12 +165,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 <>
                   <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>
                   <span className="badge" style={{
-                    background: status.model === 'sensevoice' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                    color: status.model === 'sensevoice' ? '#60a5fa' : '#34d399',
-                    border: status.model === 'sensevoice' ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                    background: (status.model === 'whisper-base' || status.model === 'sensevoice') ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                    color: (status.model === 'whisper-base' || status.model === 'sensevoice') ? '#60a5fa' : '#34d399',
+                    border: (status.model === 'whisper-base' || status.model === 'sensevoice') ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
                     fontWeight: 700
                   }}>
-                    {status.model === 'sensevoice' ? '🖥️ CPU (SenseVoice Engine)' : '⚡ NPU (XDNA2 Native)'}
+                    {(status.model === 'whisper-base' || status.model === 'sensevoice') ? '🖥️ CPU (Whisper STT)' : '⚡ NPU (XDNA2 Native)'}
                   </span>
                 </>
               )}
@@ -432,9 +432,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
                   {/* Kernel Status Indicator */}
                   <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{m.task === 'speech-to-text' || m.arch === 'sensevoice' ? 'Motore di Esecuzione' : t('serverControl.hardwareKernels')}</span>
-                    {m.task === 'speech-to-text' || m.arch === 'sensevoice' ? (
-                      <span style={{ color: '#06b6d4', fontWeight: 600 }}>🎙️ CPU (SenseVoice Engine)</span>
+                    <span>{m.task === 'speech-to-text' || m.arch === 'sensevoice' || m.arch === 'whisper' ? 'Motore di Esecuzione' : t('serverControl.hardwareKernels')}</span>
+                    {m.task === 'speech-to-text' || m.arch === 'sensevoice' || m.arch === 'whisper' ? (
+                      <span style={{ color: '#06b6d4', fontWeight: 600 }}>🎙️ CPU (Whisper STT)</span>
                     ) : isKernelMatching ? (
                       <span style={{ color: '#34d399', fontWeight: 600 }}>
                         {t('serverControl.compiledCount', { count: mKernel.kernels_count })}

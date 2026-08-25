@@ -89,7 +89,7 @@
     "attachmentsLabel": "Allegati ({count}):",
     "attachFile": "Allega file (Documenti, Audio, Immagini)",
     "image": "Immagine",
-    "audio": "Audio (SenseVoice STT)",
+    "audio": "Audio (Whisper STT)",
     "document": "Documento",
     "recordVoice": "Registra messaggio vocale",
     "recordingVoice": "Registrazione vocale in corso...",
@@ -340,8 +340,8 @@
     "close": "Chiudi"
   },
   "audioPlayground": {
-    "title": "SenseVoice Small STT Workbench",
-    "subtitle": "Trascrizione vocale istantanea (<30ms) non-autoregressiva con riconoscimento emozioni, eventi e multilingua.",
+    "title": "Whisper STT Workbench",
+    "subtitle": "Trascrizione vocale ad alta precisione con riconoscimento multilingua (Italiano, English, ecc.) su CPU.",
     "liveAudioBadge": "Audio Real-Time",
     "liveStreamTab": "Streaming Live (Microfono)",
     "fileTab": "File Audio",
@@ -377,7 +377,7 @@
     "historyTitle": "Storico Trascrizioni",
     "emptyHistory": "Nessuna frase registrata in questa sessione.",
     "serverOffBannerTitle": "Server STT Non Avviato",
-    "serverOffBannerDesc": "Per iniziare a trascrivere la tua voce o file audio, avvia prima il modello SenseVoice nel Control Panel.",
+    "serverOffBannerDesc": "Per iniziare a trascrivere la tua voce o file audio, avvia prima il modello STT nel Control Panel.",
     "goToControlPanel": "Vai al Control Panel",
     "emotionNeutral": "😐 Neutro",
     "emotionHappy": "😄 Felice",
