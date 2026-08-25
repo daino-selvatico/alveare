@@ -966,9 +966,9 @@ async def handle_stt_stream_connection(websocket: WebSocket):
     
     SILENCE_THRESHOLD_RMS = 140.0  # RMS threshold for 16-bit PCM silence detection
     MIN_UTTERANCE_BYTES = int(16000 * 2 * 0.35)  # 0.35s minimum audio (~11,200 bytes)
-    SILENCE_COMMIT_SECS = 0.65  # 650ms silence commits the sentence
-    MAX_PHRASE_BYTES = int(16000 * 2 * 6.0)  # 6.0s max phrase before auto-commit
-    PARTIAL_INTERVAL_SECS = 0.30  # Transcribe partial every 300ms
+    SILENCE_COMMIT_SECS = 5.5  # 5.5s silence commits and splits the sentence/paragraph into history
+    MAX_PHRASE_BYTES = int(16000 * 2 * 25.0)  # 25.0s max phrase before auto-commit (stays within Whisper 30s limit)
+    PARTIAL_INTERVAL_SECS = 0.35  # Transcribe partial every 350ms
     
     speech_active = False
     last_voice_time = time.time()
