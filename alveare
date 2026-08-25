@@ -211,6 +211,9 @@ cmd_check() {
 }
 
 cmd_setup() {
+  if [ "$#" -gt 0 ]; then
+    exec "$PY" "$ROOT/tools/setup_model.py" "$@"
+  fi
   echo "=== Alveare setup preflight ==="
   echo "Full, version-pinned instructions: docs/SETUP.md"
   echo
@@ -540,7 +543,7 @@ main() {
   # alveare-aie env (see ensure_runtime_env). 'install'/'setup'/'help' must NOT —
   # install creates the env, setup diagnoses it, help needs nothing.
   case "$cmd" in
-    serve|check|build-kernels|quantize|bench|test|chat|list|models|start)
+    serve|check|build-kernels|quantize|bench|test|chat|list|models|start|setup)
       ensure_runtime_env "$@" ;;
   esac
   [ "$#" -gt 0 ] && shift || true

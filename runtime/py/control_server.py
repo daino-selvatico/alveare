@@ -16,11 +16,13 @@ import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from runtime.py.sensevoice_stt import SenseVoiceSTT
 
 # Root directory of the repository
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -90,14 +92,33 @@ def parse_file_upload(file_name: str, content: bytes, mime_type: Optional[str] =
     ]:
         file_type = "document"
 
-    if file_type in ("image", "audio"):
-        raise ValueError(f"Input vision/audio non ancora supportato: '{file_name}' è un file {file_type}. Il runtime C++ è esclusivamente testuale.")
-
     preview_url = ""
     extracted_text = ""
     metadata = {}
 
-    if file_type == "document":
+    if file_type == "audio":
+        try:
+            stt = SenseVoiceSTT.get_instance()
+            res = stt.transcribe(content, language="auto")
+            text = res.get("text", "").strip()
+            lang = res.get("language", "auto").upper()
+            emo = res.get("emotion", "NEUTRAL")
+            if text:
+                extracted_text = f"[Trascrizione Audio ({lang}, {emo}) - '{file_name}']:\n\"{text}\""
+            else:
+                extracted_text = f"[Allegato File Audio: '{file_name}' ({size_str})]"
+            metadata["transcription"] = res
+            metadata["language"] = res.get("language", "auto")
+            metadata["emotion"] = res.get("emotion", "NEUTRAL")
+            metadata["latency_ms"] = res.get("latency_ms", 0.0)
+        except Exception as e:
+            extracted_text = f"[Allegato File Audio: '{file_name}' ({size_str}) - Errore trascrizione: {e}]"
+
+    elif file_type == "image":
+        preview_url = f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
+        extracted_text = f"[Allegato Immagine '{file_name}' ({size_str})]"
+
+    elif file_type == "document":
         full_text = extract_document_text(content, file_name)
         truncated_text = full_text[:12000]
         if len(full_text) > 12000:
@@ -783,6 +804,74 @@ async def upload_files(req: FileUploadRequest):
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Errore decodifica file '{item.filename}': {e}")
     return {"files": results}
+
+# OpenAI-compatible Audio Transcription API
+@app.post("/v1/audio/transcriptions")
+async def create_audio_transcription(
+    file: UploadFile = File(...),
+    model: Optional[str] = Form("sensevoice"),
+    language: Optional[str] = Form(None),
+    prompt: Optional[str] = Form(None),
+    response_format: Optional[str] = Form("json"),
+    temperature: Optional[float] = Form(0.0)
+):
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty audio file provided")
+
+        stt = SenseVoiceSTT.get_instance()
+        res = stt.transcribe(content, language=language or "auto")
+        
+        if res.get("status") == "error":
+            raise HTTPException(status_code=500, detail=res.get("error", "Transcription failed"))
+
+        if response_format == "text":
+            return PlainTextResponse(res.get("text", ""))
+        elif response_format == "verbose_json":
+            return {
+                "task": "transcribe",
+                "language": res.get("language", "auto"),
+                "duration": round(len(content) / 32000.0, 2),
+                "text": res.get("text", ""),
+                "emotion": res.get("emotion", "NEUTRAL"),
+                "event": res.get("event", "Speech"),
+                "latency_ms": res.get("latency_ms", 0.0)
+            }
+        else:
+            return {"text": res.get("text", "")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Audio transcription error: {e}")
+
+# Fast STT endpoint for React Web UI Microphone recording
+class SttJsonRequest(BaseModel):
+    audio_b64: Optional[str] = None
+    language: Optional[str] = "auto"
+
+@app.post("/api/stt")
+async def api_stt_transcribe(
+    file: Optional[UploadFile] = File(None),
+    audio_b64: Optional[str] = Form(None),
+    language: Optional[str] = Form("auto")
+):
+    try:
+        content = b""
+        if file is not None:
+            content = await file.read()
+        elif audio_b64:
+            content = base64.b64decode(audio_b64)
+        else:
+            raise HTTPException(status_code=400, detail="Nessun flusso audio inviato.")
+
+        stt = SenseVoiceSTT.get_instance()
+        res = stt.transcribe(content, language=language or "auto")
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore STT: {e}")
 
 @app.post("/api/control/start")
 async def control_start(req: StartRequest):

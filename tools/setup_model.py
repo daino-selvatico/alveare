@@ -58,6 +58,16 @@ SUPPORTED_MODELS = [
         "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
         "size_approx": "~0.8 GB",
         "description": "Meta Llama 3.2 1B instruct model."
+    },
+    {
+        "id": "sensevoice",
+        "name": "SenseVoice Small STT (Speech-to-Text)",
+        "arch": "sensevoice",
+        "default_url": "FunAudioLLM/SenseVoiceSmall",
+        "repo_id": "FunAudioLLM/SenseVoiceSmall",
+        "filename": "model.pt",
+        "size_approx": "~140 MB",
+        "description": "Ultra-fast (<30ms) multilingual speech-to-text with emotion & event recognition."
     }
 ]
 
@@ -144,7 +154,19 @@ def run_setup(
     log_progress("start", 0.0, f"Starting setup for model '{alias}' (Arch/Quantizer: {arch_or_quantizer})...")
 
     models_dir = ROOT_DIR / "models_cache"
-    models_dir.mkdir(parents=True, exist_ok=True)
+    if arch_or_quantizer == "sensevoice" or alias == "sensevoice":
+        log_progress("download", 30.0, "Downloading and validating SenseVoiceSmall speech-to-text model...")
+        from runtime.py.sensevoice_stt import SenseVoiceSTT
+        stt = SenseVoiceSTT.get_instance()
+        stt._ensure_loaded()
+        log_progress("complete", 100.0, "SenseVoice Small STT successfully initialized and ready!")
+        return {
+            "status": "success",
+            "alias": alias,
+            "weights_dir": str(models_dir / "sensevoice"),
+            "kernels_dir": "",
+            "config": {"model_type": "sensevoice", "task": "speech-to-text"}
+        }
 
     gguf_path: Optional[Path] = None
 
@@ -224,18 +246,25 @@ def run_setup(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Alveare Model Setup Pipeline")
-    parser.add_argument("alias", help="Alias for the model (e.g. gemma4, gemma3, mymodel)")
-    parser.add_argument("--arch", default="gemma4", help="Architecture or quantizer spec (gemma4, gemma4-e4b, gemma3, llama, custom)")
+    parser.add_argument("alias", help="Alias for the model (e.g. gemma4, gemma3, sensevoice, mymodel)")
+    parser.add_argument("--arch", default=None, help="Architecture or quantizer spec (gemma4, gemma4-e4b, gemma3, llama, sensevoice, custom)")
     parser.add_argument("--url", help="HuggingFace repository ID or direct GGUF URL")
     parser.add_argument("--filename", help="Filename to download from HF repo")
     parser.add_argument("--gguf", help="Path to local .gguf file")
     parser.add_argument("--custom-script", help="Path to custom quantizer Python script")
     args = parser.parse_args()
 
+    arch = args.arch
+    if not arch:
+        if args.alias == "sensevoice":
+            arch = "sensevoice"
+        else:
+            arch = args.alias
+
     source = "local" if args.gguf else "auto"
     run_setup(
         alias=args.alias,
-        arch_or_quantizer=args.arch,
+        arch_or_quantizer=arch,
         source_type=source,
         url_or_repo=args.url,
         filename=args.filename,

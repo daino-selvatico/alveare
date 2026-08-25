@@ -698,20 +698,40 @@ export default function ChatPlayground({
 
       if (finalSamples.length > 0) {
         const wavBlob = encodePCMToWAV(finalSamples, 16000);
+        const timestampStr = new Date().toISOString().replace(/[:.]/g, '-').slice(11, 19);
+        const fileName = `Registrazione_${timestampStr}.wav`;
         const reader = new FileReader();
-        reader.onload = () => {
+        reader.onload = async () => {
           const dataUrl = reader.result;
-          const timestampStr = new Date().toISOString().replace(/[:.]/g, '-').slice(11, 19);
           const attId = `rec_${Date.now()}`;
           const newAtt = {
             id: attId,
-            name: `Registrazione_${timestampStr}.wav`,
+            name: fileName,
             size: wavBlob.size,
             type: 'audio/wav',
             category: 'audio',
             url: dataUrl
           };
           setAttachments(prev => [...prev, newAtt]);
+
+          // Automatic transcription via SenseVoice STT endpoint
+          try {
+            const formData = new FormData();
+            formData.append('file', wavBlob, fileName);
+            formData.append('model', 'sensevoice');
+            const sttRes = await fetch(`${apiBase}/v1/audio/transcriptions`, {
+              method: 'POST',
+              body: formData
+            });
+            if (sttRes.ok) {
+              const sttData = await sttRes.json();
+              if (sttData && sttData.text) {
+                setInputPrompt(prev => prev ? `${prev} ${sttData.text}` : sttData.text);
+              }
+            }
+          } catch (sttErr) {
+            console.warn('[SenseVoiceSTT] Live voice transcription error:', sttErr);
+          }
         };
         reader.readAsDataURL(wavBlob);
       }
@@ -1806,6 +1826,18 @@ export default function ChatPlayground({
                 </div>
               )}
             </div>
+
+            {/* Direct Microphone STT Button */}
+            <button
+              className="btn-secondary"
+              onClick={handleStartVoiceRecording}
+              title="Registra messaggio vocale (SenseVoice STT)"
+              aria-label="Registra vocale"
+              disabled={!isServerRunning || isGenerating || isVoiceRecording}
+              style={{ padding: '0.75rem', borderRadius: '10px' }}
+            >
+              <Mic size={18} color="var(--accent-cyan)" />
+            </button>
 
             {/* Live Audio Recording Bar or Text Input */}
             {isVoiceRecording ? (

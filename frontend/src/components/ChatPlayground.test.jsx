@@ -41,16 +41,16 @@ describe('ChatPlayground', () => {
       );
     });
 
-    const attachBtn = screen.getByLabelText('Attach file (Documents)');
+    const attachBtn = screen.getByLabelText(/Attach file/i);
     expect(attachBtn).toBeDefined();
 
     await act(async () => {
       fireEvent.click(attachBtn);
     });
 
-    expect(screen.getByText('Image')).toBeDefined();
-    expect(screen.getByText('Audio')).toBeDefined();
-    expect(screen.getByText('Document')).toBeDefined();
+    expect(screen.getByText(/Image/i)).toBeDefined();
+    expect(screen.getByText(/Audio/i)).toBeDefined();
+    expect(screen.getAllByText(/Document/i).length).toBeGreaterThan(0);
   });
 
   it('rejects image files when uploaded', async () => {

@@ -18,6 +18,7 @@ venv/
 *.q4nx
 *.npy
 *.npz
+*.jsonl
 weights/
 models/
 quantized_weights*
