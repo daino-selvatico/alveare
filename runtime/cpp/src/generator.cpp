@@ -417,6 +417,12 @@ GenerationStats Generator::generate(
         std::vector<int> seq = input_tokens;  // committed sequence (drafter context)
         int generated = 0, step = 0;
 
+        DynamicDrafter drafter;
+        if (!cached_tokens_.empty()) {
+            drafter.feed_sequence(cached_tokens_);
+        }
+        drafter.feed_sequence(input_tokens);
+
         auto emit = [&](int t) -> bool {  // returns false to stop
             if (tokenizer_.is_stop_token(t)) return false;
             std::string text = tokenizer_.decode(t);
@@ -425,6 +431,7 @@ GenerationStats Generator::generate(
             }
             if (!on_token(text)) return false;
             seq.push_back(t);
+            drafter.feed_token(t);
             ++generated;
             return true;
         };
@@ -444,7 +451,7 @@ GenerationStats Generator::generate(
 
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
-            std::vector<int> draft = propose_draft(seq, K_draft, 5, 1);
+            std::vector<int> draft = drafter.draft(seq, K_draft);
             while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
                 draft.pop_back();
             int nd = static_cast<int>(draft.size());

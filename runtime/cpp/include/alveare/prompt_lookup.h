@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
+#include <memory>
 
 namespace alveare {
 
@@ -15,5 +17,22 @@ std::vector<int> propose_draft(const std::vector<int>& tokens,
                                int max_draft = 4,
                                int max_ngram = 3,
                                int min_ngram = 2);
+
+class DynamicDrafter {
+public:
+    DynamicDrafter();
+    ~DynamicDrafter();
+    void reset();
+    void feed_sequence(const std::vector<int>& tokens);
+    void feed_token(int t);
+    std::vector<int> draft(const std::vector<int>& context, int max_draft = 7);
+
+private:
+    std::vector<int> history_;
+    std::vector<uint64_t> bigram_keys_;
+    std::vector<int> bigram_vals_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 } // namespace alveare
