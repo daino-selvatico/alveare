@@ -419,8 +419,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
                   {/* Kernel Status Indicator */}
                   <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{t('serverControl.hardwareKernels')}</span>
-                    {isKernelMatching ? (
+                    <span>{m.task === 'speech-to-text' || m.arch === 'sensevoice' ? 'Architettura / Task' : t('serverControl.hardwareKernels')}</span>
+                    {m.task === 'speech-to-text' || m.arch === 'sensevoice' ? (
+                      <span style={{ color: '#06b6d4', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        🎙️ STT Multilingua (&lt;30ms)
+                      </span>
+                    ) : isKernelMatching ? (
                       <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                         {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
                       </span>

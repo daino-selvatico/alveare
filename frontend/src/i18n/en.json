@@ -2,7 +2,8 @@
   "nav": {
     "brandTitle": "ALVEARE NPU",
     "brandSubtitle": "AMD Ryzen AI (XDNA2) Control Dashboard",
-    "playground": "Playground Chat",
+    "playground": "Chat Playground",
+    "audioPlayground": "Audio STT Playground",
     "controlPanel": "Control Panel & Models",
     "logs": "Logs & Diagnostics",
     "benchmarks": "Models & Benchmarks",

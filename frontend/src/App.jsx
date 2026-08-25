@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw, BarChart2, Keyboard } from 'lucide-react';
+import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw, BarChart2, Keyboard, Radio } from 'lucide-react';
 import OnboardingWizard from './components/OnboardingWizard';
 import ChatPlayground from './components/ChatPlayground';
+import AudioPlayground from './components/AudioPlayground';
 import ServerControl from './components/ServerControl';
 import LogsViewer from './components/LogsViewer';
 import BenchmarksView from './components/BenchmarksView';
@@ -179,7 +180,15 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <MessageSquare size={16} aria-hidden="true" /> {t('nav.playground')}
+            {status?.model === 'sensevoice' ? (
+              <>
+                <Radio size={16} aria-hidden="true" /> {t('nav.audioPlayground')}
+              </>
+            ) : (
+              <>
+                <MessageSquare size={16} aria-hidden="true" /> {t('nav.playground')}
+              </>
+            )}
           </button>
 
           <button
@@ -356,17 +365,27 @@ export default function App() {
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         <ErrorBoundary onReset={handleRetryConnection}>
           <div id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
-            <ChatPlayground
-              apiBase={apiBase}
-              status={status}
-              activeModel={status?.model || (models.length > 0 ? models[0].id : t('nav.noModelsBadge'))}
-              isServerRunning={status?.is_running || false}
-              models={models}
-              modelsLoading={modelsLoading}
-              onNavigateToControl={() => setActiveTab('control')}
-              onNavigateToChat={() => setActiveTab('chat')}
-              onOpenShortcutsHelp={() => setShowShortcutsModal(true)}
-            />
+            {status?.model === 'sensevoice' ? (
+              <AudioPlayground
+                apiBase={apiBase}
+                status={status}
+                activeModel={status?.model || 'sensevoice'}
+                isServerRunning={status?.is_running || false}
+                models={models}
+              />
+            ) : (
+              <ChatPlayground
+                apiBase={apiBase}
+                status={status}
+                activeModel={status?.model || (models.length > 0 ? models[0].id : t('nav.noModelsBadge'))}
+                isServerRunning={status?.is_running || false}
+                models={models}
+                modelsLoading={modelsLoading}
+                onNavigateToControl={() => setActiveTab('control')}
+                onNavigateToChat={() => setActiveTab('chat')}
+                onOpenShortcutsHelp={() => setShowShortcutsModal(true)}
+              />
+            )}
           </div>
 
           <div id="panel-control" role="tabpanel" aria-labelledby="tab-control" style={{ flex: 1, display: activeTab === 'control' ? 'block' : 'none' }}>

@@ -251,12 +251,17 @@ def discover_models() -> List[Dict[str, Any]]:
             continue
 
         cfg_path = real_p / "config.json"
-        arch = "unknown"
+        task = "text-generation"
+        name = alias
+        description = ""
         if cfg_path.exists():
             try:
                 with open(cfg_path, "r") as f:
                     cdata = json.load(f)
                     arch = cdata.get("model_type", "unknown")
+                    task = cdata.get("task", "text-generation")
+                    name = cdata.get("name", alias)
+                    description = cdata.get("description", "")
             except Exception:
                 pass
         else:
@@ -274,10 +279,21 @@ def discover_models() -> List[Dict[str, Any]]:
 
         size_mb = round(size_bytes / (1024 * 1024), 1)
 
+        if alias == "sensevoice" or arch == "sensevoice":
+            task = "speech-to-text"
+            arch = "sensevoice"
+            name = "SenseVoice Small STT"
+            description = "Ultra-fast (<30ms) speech recognition, multilingual (IT/EN/ZH/JA/KO), emotion & event tagging."
+            if size_mb == 0:
+                size_mb = 140.0
+
         models.append({
             "id": alias,
             "alias": alias,
+            "name": name,
             "arch": arch,
+            "task": task,
+            "description": description,
             "path": str(real_p),
             "size_mb": size_mb,
             "has_config": cfg_path.exists(),
@@ -346,6 +362,40 @@ def parse_server_log_line(line_str: str):
 def start_inference_server(model: str, host: str, port: int, legacy: bool, offline: bool) -> bool:
     if state.process and state.process.poll() is None:
         stop_inference_server()
+
+    if model == "sensevoice":
+        append_log("Avvio del motore SenseVoice Small Speech-to-Text su CPU/NPU...")
+        state.status = "starting"
+        state.active_model = "sensevoice"
+        state.host = host
+        state.port = port
+        state.legacy = legacy
+        state.offline = offline
+        state.load_progress = 15.0
+        state.load_step = "Caricamento modello SenseVoice Small..."
+        state.is_loaded = False
+        state.tok_per_sec = 0.0
+        state.last_error = ""
+        state.start_time = time.time()
+        
+        def _load_stt_async():
+            try:
+                from runtime.py.sensevoice_stt import SenseVoiceSTT
+                stt = SenseVoiceSTT.get_instance()
+                stt._ensure_loaded()
+                state.load_progress = 100.0
+                state.is_loaded = True
+                state.load_step = "Modello pronto"
+                state.status = "running"
+                append_log("[SenseVoice] Server STT attivo su CPU/NPU. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
+            except Exception as e:
+                state.status = "error"
+                state.last_error = str(e)
+                append_log(f"[SenseVoice] Errore avvio modello: {e}")
+        
+        threading.Thread(target=_load_stt_async, daemon=True).start()
+        save_config({"default_model": model, "host": host, "port": port})
+        return True
 
     alveare_bin = ROOT_DIR / "alveare"
     cmd = [str(alveare_bin), "serve", model, "--host", host, "--port", str(port)]
@@ -458,6 +508,15 @@ def start_inference_server(model: str, host: str, port: int, legacy: bool, offli
         return False
 
 def stop_inference_server():
+    if state.active_model == "sensevoice":
+        state.status = "stopped"
+        state.is_loaded = False
+        state.load_progress = 0.0
+        state.tok_per_sec = 0.0
+        state.load_step = "Server arrestato"
+        append_log("[SenseVoice] Server STT arrestato.")
+        return
+
     if state.process and state.process.poll() is None:
         append_log("Stopping inference server process...")
         try:
@@ -872,6 +931,76 @@ async def api_stt_transcribe(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore STT: {e}")
+
+# Real-Time WebSocket Streaming STT Endpoint
+@app.websocket("/ws/stt")
+@app.websocket("/api/stt/stream")
+async def websocket_stt_stream(websocket: WebSocket):
+    await websocket.accept()
+    from runtime.py.sensevoice_stt import SenseVoiceSTT
+    stt = SenseVoiceSTT.get_instance()
+    
+    audio_buffer = bytearray()
+    last_transcribe_time = time.time()
+    
+    try:
+        while True:
+            msg = await websocket.receive()
+            if "bytes" in msg and msg["bytes"]:
+                chunk = msg["bytes"]
+                audio_buffer.extend(chunk)
+                
+                # Check every 250ms if at least 0.3s (9600 bytes of 16kHz 16-bit PCM) has accumulated
+                now = time.time()
+                if len(audio_buffer) >= 9600 and (now - last_transcribe_time) >= 0.25:
+                    last_transcribe_time = now
+                    try:
+                        # Convert 16-bit PCM (16kHz mono) to float32
+                        pcm_arr = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                        res = stt.transcribe(pcm_arr)
+                        if res.get("status") == "success" and res.get("text"):
+                            await websocket.send_json({
+                                "type": "partial",
+                                "text": res.get("text", ""),
+                                "language": res.get("language", "auto"),
+                                "emotion": res.get("emotion", "NEUTRAL"),
+                                "event": res.get("event", "Speech"),
+                                "latency_ms": res.get("latency_ms", 0.0),
+                                "is_final": False
+                            })
+                    except Exception:
+                        pass
+            elif "text" in msg and msg["text"]:
+                try:
+                    payload = json.loads(msg["text"])
+                    action = payload.get("action", "")
+                    if action in ("flush", "stop", "final"):
+                        if len(audio_buffer) > 0:
+                            try:
+                                pcm_arr = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                                res = stt.transcribe(pcm_arr)
+                                await websocket.send_json({
+                                    "type": "final",
+                                    "text": res.get("text", ""),
+                                    "language": res.get("language", "auto"),
+                                    "emotion": res.get("emotion", "NEUTRAL"),
+                                    "event": res.get("event", "Speech"),
+                                    "latency_ms": res.get("latency_ms", 0.0),
+                                    "is_final": True
+                                })
+                            except Exception:
+                                pass
+                            audio_buffer.clear()
+                    elif action == "clear":
+                        audio_buffer.clear()
+                    elif action == "ping":
+                        await websocket.send_json({"type": "pong"})
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[WebSocket STT] Error: {e}")
 
 @app.post("/api/control/start")
 async def control_start(req: StartRequest):
