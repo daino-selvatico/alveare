@@ -173,12 +173,11 @@ def main():
                         
                         layer.self_attn.out_proj = NPULinear(layer.self_attn.out_proj)
                         layer.encoder_attn.q_proj = NPULinear(layer.encoder_attn.q_proj)
-                        layer.encoder_attn.k_proj = NPULinear(layer.encoder_attn.k_proj)
-                        layer.encoder_attn.v_proj = NPULinear(layer.encoder_attn.v_proj)
+                        # Keep encoder_attn k_proj & v_proj on vectorized CPU since they only execute once during 1500-token prefill
                         layer.encoder_attn.out_proj = NPULinear(layer.encoder_attn.out_proj)
                         layer.fc1 = NPULinear(layer.fc1)
                         layer.fc2 = NPULinear(layer.fc2)
-                        converted_count += 7
+                        converted_count += 5
 
                     sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} decoder layers to AMD Ryzen AI NPU hardware (XDNA2)!\n")
     else:

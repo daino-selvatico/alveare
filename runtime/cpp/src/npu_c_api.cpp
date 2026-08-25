@@ -69,4 +69,27 @@ int alveare_npu_has_shape(void* registry_ptr, int N, int K) {
     return reg->has_gemv(N, K) ? 1 : 0;
 }
 
+int alveare_npu_has_ffn(void* registry_ptr, int H, int I, const char* activation) {
+    if (!registry_ptr) return 0;
+    auto* reg = static_cast<alveare::NpuRegistry*>(registry_ptr);
+    return reg->has_ffn_fused(H, I, std::string(activation ? activation : "gelu")) ? 1 : 0;
 }
+
+uint32_t alveare_npu_create_ffn_weight(void* registry_ptr, int H, int I, const char* activation, const void* packed_data, size_t nbytes) {
+    if (!registry_ptr) return alveare::kInvalidWeight;
+    auto* reg = static_cast<alveare::NpuRegistry*>(registry_ptr);
+    try {
+        return reg->create_ffn_fused_weight(H, I, std::string(activation ? activation : "gelu"), packed_data, nbytes);
+    } catch (const std::exception& e) {
+        std::cerr << "[NPU C-API] create_ffn_fused_weight failed: " << e.what() << std::endl;
+        return alveare::kInvalidWeight;
+    }
+}
+
+void alveare_npu_run_ffn_fused(void* registry_ptr, int H, int I, const char* activation, uint32_t weight_handle, const void* x_bf16, void* y_bf16) {
+    if (!registry_ptr) return;
+    auto* reg = static_cast<alveare::NpuRegistry*>(registry_ptr);
+    reg->run_ffn_fused(H, I, std::string(activation ? activation : "gelu"), weight_handle, x_bf16, y_bf16);
+}
+
+} // extern "C"
