@@ -49,6 +49,7 @@ def main():
             
             t0 = time.perf_counter()
             raw_text = ""
+            detected_lang = "it"
 
             if is_whisper:
                 import torch
@@ -64,19 +65,29 @@ def main():
                     inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
                     gen_kwargs = {
                         "max_new_tokens": 128,
-                        "no_repeat_ngram_size": 3
+                        "no_repeat_ngram_size": 3,
+                        "return_dict_in_generate": True
                     }
-                    if language and language not in ("auto", "unknown"):
-                        lang_map = {
-                            "it": "italian", "en": "english", "es": "spanish", "fr": "french",
-                            "de": "german", "zh": "chinese", "ja": "japanese", "ko": "korean",
-                            "pt": "portuguese", "ru": "russian"
-                        }
-                        gen_kwargs["language"] = lang_map.get(language, language)
+                    if language and language not in ("auto", "unknown", ""):
+                        try:
+                            forced_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
+                            gen_kwargs["forced_decoder_ids"] = forced_ids
+                            detected_lang = language
+                        except Exception:
+                            pass
                     
                     with torch.no_grad():
-                        gen_ids = model.generate(inputs.input_features.to(device), **gen_kwargs)
-                    raw_text = processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip()
+                        gen_out = model.generate(inputs.input_features.to(device), **gen_kwargs)
+                    
+                    seq = gen_out.sequences[0].tolist()
+                    if len(seq) > 1 and (not language or language in ("auto", "unknown", "")):
+                        token_str = processor.tokenizer.decode([seq[1]]).strip()
+                        if token_str.startswith("<|") and token_str.endswith("|>"):
+                            detected_lang = token_str[2:-2]
+                    elif language and language not in ("auto", "unknown", ""):
+                        detected_lang = language
+
+                    raw_text = processor.batch_decode(gen_out.sequences, skip_special_tokens=True)[0].strip()
             else:
                 res = model.generate(
                     input=audio_target,
@@ -92,6 +103,7 @@ def main():
             ipc_out.write(json.dumps({
                 "status": "success",
                 "raw_text": raw_text,
+                "language": detected_lang,
                 "latency_ms": round(elapsed_ms, 2)
             }) + "\n")
             ipc_out.flush()

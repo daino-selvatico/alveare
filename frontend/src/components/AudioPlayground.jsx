@@ -63,9 +63,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   }, [streamHistory]);
 
   const [streamStats, setStreamStats] = useState({
-    language: 'it',
-    emotion: 'NEUTRAL',
-    event: 'Speech',
+    language: 'auto',
     latency_ms: 0
   });
 
@@ -215,8 +213,6 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
             }
             setStreamStats({
               language: data.language || 'auto',
-              emotion: data.emotion || 'NEUTRAL',
-              event: data.event || 'Speech',
               latency_ms: data.latency_ms || 0
             });
             if (data.is_final && data.text && data.text.trim()) {
@@ -224,9 +220,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                 id: Date.now() + '-' + Math.random().toString(36).substring(2, 7),
                 text: data.text.trim(),
                 time: new Date().toLocaleTimeString(),
-                emotion: data.emotion || 'NEUTRAL',
-                event: data.event || 'Speech',
-                language: data.language || 'it',
+                language: data.language || 'auto',
                 latency_ms: data.latency_ms || 0
               };
               setStreamHistory(prev => [newEntry, ...prev]);
@@ -372,26 +366,24 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
     }
   };
 
-  const getEmotionBadge = (emo) => {
-    switch ((emo || '').toUpperCase()) {
-      case 'HAPPY': return { label: t('audioPlayground.emotionHappy'), color: '#10b981' };
-      case 'SAD': return { label: t('audioPlayground.emotionSad'), color: '#3b82f6' };
-      case 'ANGRY': return { label: t('audioPlayground.emotionAngry'), color: '#ef4444' };
-      case 'FEARFUL': return { label: t('audioPlayground.emotionFearful'), color: '#8b5cf6' };
-      case 'SURPRISED': return { label: t('audioPlayground.emotionSurprised'), color: '#f59e0b' };
-      default: return { label: t('audioPlayground.emotionNeutral'), color: 'var(--text-muted)' };
-    }
-  };
-
   const getLanguageLabel = (lang) => {
     switch ((lang || '').toLowerCase()) {
-      case 'it': return t('audioPlayground.langIt');
-      case 'en': return t('audioPlayground.langEn');
-      case 'zh': return t('audioPlayground.langZh');
-      case 'ja': return t('audioPlayground.langJa');
-      case 'ko': return t('audioPlayground.langKo');
-      case 'yue': return t('audioPlayground.langYue');
-      default: return `🌐 ${lang || 'Auto'}`;
+      case 'it': return '🇮🇹 Italiano (IT)';
+      case 'en': return '🇬🇧 English (EN)';
+      case 'es': return '🇪🇸 Español (ES)';
+      case 'fr': return '🇫🇷 Français (FR)';
+      case 'de': return '🇩🇪 Deutsch (DE)';
+      case 'pt': return '🇵🇹 Português (PT)';
+      case 'zh': return '🇨🇳 中文 (ZH)';
+      case 'ja': return '🇯🇵 日本語 (JA)';
+      case 'ko': return '🇰🇷 한국어 (KO)';
+      case 'ru': return '🇷🇺 Русский (RU)';
+      case 'ar': return '🇸🇦 العربية (AR)';
+      case 'nl': return '🇳🇱 Nederlands (NL)';
+      case 'pl': return '🇵🇱 Polski (PL)';
+      case 'tr': return '🇹🇷 Türkçe (TR)';
+      case 'auto': return '🌐 Auto-Detect';
+      default: return `🌐 ${lang ? lang.toUpperCase() : 'Auto'}`;
     }
   };
 
@@ -465,13 +457,21 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                 outline: 'none'
               }}
             >
-              <option value="auto" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langAuto')}</option>
-              <option value="it" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langIt')}</option>
-              <option value="en" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langEn')}</option>
-              <option value="zh" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langZh')}</option>
-              <option value="ja" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langJa')}</option>
-              <option value="ko" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langKo')}</option>
-              <option value="yue" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>{t('audioPlayground.langYue')}</option>
+              <option value="auto" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🌐 Auto (Rilevamento)</option>
+              <option value="it" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇮🇹 Italiano</option>
+              <option value="en" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇬🇧 English</option>
+              <option value="es" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇪🇸 Español</option>
+              <option value="fr" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇫🇷 Français</option>
+              <option value="de" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇩🇪 Deutsch</option>
+              <option value="pt" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇵🇹 Português</option>
+              <option value="zh" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇨🇳 中文</option>
+              <option value="ja" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇯🇵 日本語</option>
+              <option value="ko" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇰🇷 한국어</option>
+              <option value="ru" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇷🇺 Русский</option>
+              <option value="ar" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇸🇦 العربية</option>
+              <option value="nl" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇳🇱 Nederlands</option>
+              <option value="pl" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇵🇱 Polski</option>
+              <option value="tr" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇹🇷 Türkçe</option>
             </select>
           </div>
 
@@ -657,22 +657,15 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                   borderRadius: '20px',
                   border: '1px solid var(--border-color)',
                   flexWrap: 'wrap',
-                  justifyContent: 'center'
+                  justifyContent: 'center',
+                  alignItems: 'center'
                 }}>
                   <span style={{ fontSize: '0.78rem', color: 'var(--accent-cyan)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    <Activity size={13} /> {t('audioPlayground.latency', { latency: streamStats.latency_ms > 0 ? streamStats.latency_ms : '<30' })}
+                    <Activity size={13} /> {t('audioPlayground.latency', { latency: streamStats.latency_ms > 0 ? streamStats.latency_ms : '<300' })}
                   </span>
-                  <span style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 600 }}>
-                    {getLanguageLabel(streamStats.language)}
+                  <span style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <Globe size={13} /> {getLanguageLabel(streamStats.language)}
                   </span>
-                  <span style={{ fontSize: '0.78rem', color: getEmotionBadge(streamStats.emotion).color, fontWeight: 600 }}>
-                    {getEmotionBadge(streamStats.emotion).label}
-                  </span>
-                  {streamStats.event && streamStats.event !== 'Speech' && (
-                    <span style={{ fontSize: '0.78rem', color: 'var(--accent-purple)', fontWeight: 600 }}>
-                      🎵 {streamStats.event}
-                    </span>
-                  )}
                 </div>
               )}
 
@@ -845,9 +838,6 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                 <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
                   {getLanguageLabel(fileTranscript.language)}
                 </span>
-                <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
-                  {getEmotionBadge(fileTranscript.emotion).label}
-                </span>
                 <span className="badge badge-secondary" style={{ fontSize: '0.75rem' }}>
                   ⏱️ {fileTranscript.latency_ms} ms latenza
                 </span>
@@ -937,8 +927,8 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                       <span style={{ fontWeight: 600 }}>{item.time}</span>
                       {item.language && (
-                        <span style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', padding: '0.1rem 0.35rem', borderRadius: '4px', textTransform: 'uppercase', fontSize: '0.65rem' }}>
-                          {item.language}
+                        <span style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', padding: '0.1rem 0.35rem', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600 }}>
+                          {getLanguageLabel(item.language)}
                         </span>
                       )}
                       {item.latency_ms > 0 && (

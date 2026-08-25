@@ -103,14 +103,12 @@ def parse_file_upload(file_name: str, content: bytes, mime_type: Optional[str] =
             res = stt.transcribe(content, language="auto")
             text = res.get("text", "").strip()
             lang = res.get("language", "auto").upper()
-            emo = res.get("emotion", "NEUTRAL")
             if text:
-                extracted_text = f"[Trascrizione Audio ({lang}, {emo}) - '{file_name}']:\n\"{text}\""
+                extracted_text = f"[Trascrizione Audio ({lang}) - '{file_name}']:\n\"{text}\""
             else:
                 extracted_text = f"[Allegato File Audio: '{file_name}' ({size_str})]"
             metadata["transcription"] = res
             metadata["language"] = res.get("language", "auto")
-            metadata["emotion"] = res.get("emotion", "NEUTRAL")
             metadata["latency_ms"] = res.get("latency_ms", 0.0)
         except Exception as e:
             extracted_text = f"[Allegato File Audio: '{file_name}' ({size_str}) - Errore trascrizione: {e}]"
@@ -920,8 +918,6 @@ async def create_audio_transcription(
                 "language": res.get("language", "auto"),
                 "duration": round(len(content) / 32000.0, 2),
                 "text": res.get("text", ""),
-                "emotion": res.get("emotion", "NEUTRAL"),
-                "event": res.get("event", "Speech"),
                 "latency_ms": res.get("latency_ms", 0.0)
             }
         else:
@@ -994,8 +990,6 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                     "type": "final" if is_final else "partial",
                     "text": text,
                     "language": res.get("language", stream_language),
-                    "emotion": res.get("emotion", "NEUTRAL"),
-                    "event": res.get("event", "Speech"),
                     "latency_ms": res.get("latency_ms", 0.0),
                     "is_final": is_final
                 })

@@ -112,28 +112,11 @@ class WhisperSTT:
             self._loading = False
 
     @staticmethod
-    def clean_text(raw_text: str, fallback_lang: str = "it") -> Dict[str, Any]:
-        """Parse language, emotion, event tags and return clean text."""
-        lang_match = re.search(r"<\|([a-z]{2,5})\|>", raw_text)
-        detected_lang = lang_match.group(1) if lang_match else (fallback_lang if fallback_lang != "auto" else "it")
-
-        emo_match = re.search(r"<\|(EMO_[A-Z_]+|NEUTRAL|HAPPY|SAD|ANGRY|FEARFUL|DISGUSTED|SURPRISED)\|>", raw_text, re.IGNORECASE)
-        emotion = emo_match.group(1) if emo_match else "NEUTRAL"
-
-        event_match = re.search(r"<\|(BGM|Speech|Applause|Laughter|Cry|Sneeze|Breath|Cough)\|>", raw_text, re.IGNORECASE)
-        event = event_match.group(1) if event_match else "Speech"
-
-        # Strip all special tokens <|...|>
+    def clean_text(raw_text: str) -> str:
+        """Strip special tokens and clean whitespace."""
         clean = re.sub(r"<\|[^|>]+(?:\|>)?", "", raw_text).strip()
-        # Clean any remaining extra whitespace
         clean = re.sub(r"\s+", " ", clean).strip()
-
-        return {
-            "text": clean,
-            "language": detected_lang,
-            "emotion": emotion,
-            "event": event
-        }
+        return clean
 
     def transcribe(
         self,
@@ -187,6 +170,8 @@ class WhisperSTT:
 
         try:
             raw_text = ""
+            detected_lang = language if language not in ("auto", "unknown", "") else "it"
+
             if self._model is not None:
                 res = self._model.generate(
                     input=input_target,
@@ -213,15 +198,19 @@ class WhisperSTT:
                     if data.get("status") == "error":
                         raise RuntimeError(data.get("error", "Worker error"))
                     raw_text = data.get("raw_text", "")
+                    detected_lang = data.get("language", detected_lang)
             else:
                 raise RuntimeError("No STT model or worker available.")
 
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            parsed = self.clean_text(raw_text, fallback_lang=language)
-            parsed["raw_text"] = raw_text
-            parsed["latency_ms"] = round(elapsed_ms, 2)
-            parsed["status"] = "success"
-            return parsed
+            clean = self.clean_text(raw_text)
+            return {
+                "text": clean,
+                "raw_text": raw_text,
+                "language": detected_lang,
+                "latency_ms": round(elapsed_ms, 2),
+                "status": "success"
+            }
 
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -229,8 +218,6 @@ class WhisperSTT:
                 "text": "",
                 "raw_text": "",
                 "language": "unknown",
-                "emotion": "unknown",
-                "event": "unknown",
                 "latency_ms": round(elapsed_ms, 2),
                 "status": "error",
                 "error": str(e)
