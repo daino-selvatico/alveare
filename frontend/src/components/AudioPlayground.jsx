@@ -688,10 +688,13 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac"
+                accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.webm"
                 style={{ display: 'none' }}
                 onChange={(e) => {
-                  if (e.target.files?.[0]) handleFileSelect(e.target.files[0]);
+                  if (e.target.files?.[0]) {
+                    handleFileSelect(e.target.files[0]);
+                  }
+                  e.target.value = '';
                 }}
               />
 
@@ -716,13 +719,33 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
               </p>
 
               {uploadedFile && (
-                <div style={{ marginTop: '1.5rem', width: '100%', maxWidth: '400px' }} onClick={(e) => e.stopPropagation()}>
+                <div style={{ marginTop: '1.5rem', width: '100%', maxWidth: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }} onClick={(e) => e.stopPropagation()}>
                   <audio
                     ref={audioElementRef}
                     src={audioUrl}
                     controls
                     style={{ width: '100%', height: '40px', borderRadius: '8px' }}
                   />
+                  <div style={{ display: 'flex', gap: '0.6rem' }}>
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <Upload size={14} /> {t('audioPlayground.replaceAudio')}
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#f87171' }}
+                      onClick={() => {
+                        setUploadedFile(null);
+                        setAudioUrl(null);
+                        setFileTranscript(null);
+                      }}
+                    >
+                      <Trash2 size={14} /> {t('audioPlayground.removeAudio')}
+                    </button>
+                  </div>
                 </div>
               )}
 

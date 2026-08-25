@@ -55,14 +55,19 @@ class SenseVoiceSTT:
     _loading = False
     _external_py = None
 
-    def __init__(self, model_id: str = "FunAudioLLM/SenseVoiceSmall", device: str = "cpu"):
+    def __init__(self, model_id: str = "openai/whisper-base", device: str = "cpu"):
         self.model_id = model_id
         self.device = device
         self._external_py = None
 
     @classmethod
-    def get_instance(cls, model_id: str = "FunAudioLLM/SenseVoiceSmall", device: str = "cpu"):
-        if cls._instance is None:
+    def get_instance(cls, model_id: str = "openai/whisper-base", device: str = "cpu"):
+        if cls._instance is None or cls._instance.model_id != model_id:
+            if cls._instance and cls._instance._worker_proc:
+                try:
+                    cls._instance._worker_proc.terminate()
+                except Exception:
+                    pass
             cls._instance = cls(model_id=model_id, device=device)
         return cls._instance
 
@@ -77,47 +82,30 @@ class SenseVoiceSTT:
         self._loading = True
         try:
             print(f"[SenseVoiceSTT] Initializing {self.model_id} on {self.device}...")
-            # 1. Try in-process if torch is importable
-            try:
-                import torch
-                from funasr import AutoModel
-                self._model = AutoModel(
-                    model=self.model_id,
-                    hub="hf",
-                    device=self.device,
-                    disable_update=True
-                )
-                print("[SenseVoiceSTT] SenseVoiceSmall loaded in-process.")
+            ext_py = find_torch_python() or sys.executable
+            self._external_py = ext_py
+            worker_script = str(Path(__file__).resolve().parent / "stt_worker.py")
+            clean_env = os.environ.copy()
+            clean_env.pop("PYTHONPATH", None)
+            cmd = [ext_py, worker_script, self.model_id, self.device]
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                env=clean_env
+            )
+            # Wait for worker to load weights and output READY
+            ready_line = proc.stdout.readline().strip()
+            if "READY" in ready_line:
+                self._worker_proc = proc
+                print(f"[STT Engine] Persistent STT worker started with {ext_py} (model {self.model_id} ready in RAM).")
                 return
-            except BaseException as in_proc_err:
-                # 2. Try persistent external python worker
-                ext_py = find_torch_python()
-                if ext_py and ext_py != sys.executable:
-                    self._external_py = ext_py
-                    worker_script = str(Path(__file__).resolve().parent / "stt_worker.py")
-                    clean_env = os.environ.copy()
-                    clean_env.pop("PYTHONPATH", None)
-                    cmd = [ext_py, worker_script, self.model_id, self.device]
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        bufsize=1,
-                        env=clean_env
-                    )
-                    # Wait for worker to load weights and output READY
-                    ready_line = proc.stdout.readline().strip()
-                    if "READY" in ready_line:
-                        self._worker_proc = proc
-                        print(f"[SenseVoiceSTT] Persistent STT worker started with {ext_py} (model ready in RAM).")
-                        return
-                    else:
-                        err_out = proc.stderr.read()
-                        raise RuntimeError(f"STT worker failed to start: {err_out}")
-                else:
-                    raise in_proc_err
+            else:
+                err_out = proc.stderr.read()
+                raise RuntimeError(f"STT worker failed to start: {err_out}")
         except BaseException as e:
             print(f"[SenseVoiceSTT] Error loading SenseVoice model: {e}")
             raise e
@@ -125,10 +113,10 @@ class SenseVoiceSTT:
             self._loading = False
 
     @staticmethod
-    def clean_text(raw_text: str) -> Dict[str, Any]:
+    def clean_text(raw_text: str, fallback_lang: str = "it") -> Dict[str, Any]:
         """Parse language, emotion, event tags and return clean text."""
         lang_match = re.search(r"<\|([a-z]{2,5})\|>", raw_text)
-        detected_lang = lang_match.group(1) if lang_match else "unknown"
+        detected_lang = lang_match.group(1) if lang_match else (fallback_lang if fallback_lang != "auto" else "it")
 
         emo_match = re.search(r"<\|(EMO_[A-Z_]+|NEUTRAL|HAPPY|SAD|ANGRY|FEARFUL|DISGUSTED|SURPRISED)\|>", raw_text, re.IGNORECASE)
         emotion = emo_match.group(1) if emo_match else "NEUTRAL"
@@ -230,7 +218,7 @@ class SenseVoiceSTT:
                 raise RuntimeError("No STT model or worker available.")
 
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            parsed = self.clean_text(raw_text)
+            parsed = self.clean_text(raw_text, fallback_lang=language)
             parsed["raw_text"] = raw_text
             parsed["latency_ms"] = round(elapsed_ms, 2)
             parsed["status"] = "success"
