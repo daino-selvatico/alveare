@@ -360,26 +360,41 @@ void NpuRegistry::run_gemv_batch(int N, int K, const std::vector<WeightHandle>& 
     }
 
     LoadedKernel& lk = impl_->ensure_loaded("gemv", N, K, 0);
+    const size_t num_tiles = weights.size();
+    const size_t out_bytes = size_t(N) * sizeof(uint16_t);
+
+    if (lk.y_bos.size() < num_tiles) {
+        while (lk.y_bos.size() < num_tiles) {
+            lk.y_bos.emplace_back(impl_->device, out_bytes, XRT_BO_FLAGS_HOST_ONLY, lk.kernel.group_id(5));
+        }
+    }
 
     // 1. Upload activation ONCE for all tiles
     void* x_map = lk.x_bo.map<void*>();
     std::memcpy(x_map, x_bf16, size_t(K) * sizeof(uint16_t));
     lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-    // 2. Run each weight tile sequentially (sharing x_bo)
-    uint16_t* dst = static_cast<uint16_t*>(y_bf16_concat);
-    const void* y_map = lk.y_bo.map<void*>();
-    const size_t out_bytes = size_t(N) * sizeof(uint16_t);
-
-    for (size_t i = 0; i < weights.size(); ++i) {
+    // 2. One-shot asynchronous launch of all tiles
+    std::vector<xrt::run> runs;
+    runs.reserve(num_tiles);
+    for (size_t i = 0; i < num_tiles; ++i) {
         WeightHandle w = weights[i];
         if (w >= impl_->weights.size())
             throw std::runtime_error("npu: invalid weight handle in run_gemv_batch");
         const ResidentWeight& rw = impl_->weights[w];
-        auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bo);
-        run.wait();
-        lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        std::memcpy(dst + i * N, y_map, out_bytes);
+        runs.push_back(lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bos[i]));
+    }
+
+    // 3. Wait for all tiles to complete
+    for (size_t i = 0; i < num_tiles; ++i) {
+        runs[i].wait();
+    }
+
+    // 4. Download and concatenate outputs
+    uint16_t* dst = static_cast<uint16_t*>(y_bf16_concat);
+    for (size_t i = 0; i < num_tiles; ++i) {
+        lk.y_bos[i].sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        std::memcpy(dst + i * N, lk.y_bos[i].map<void*>(), out_bytes);
     }
 }
 
@@ -392,27 +407,48 @@ void NpuRegistry::run_gemv_multi_in_batch(int N, int K, const std::vector<Weight
     }
 
     LoadedKernel& lk = impl_->ensure_loaded("gemv", N, K, 0);
-
-    void* x_map = lk.x_bo.map<void*>();
-    const void* y_map = lk.y_bo.map<void*>();
+    const size_t num_tiles = weights.size();
     const size_t in_bytes = size_t(K) * sizeof(uint16_t);
     const size_t out_bytes = size_t(N) * sizeof(uint16_t);
-    uint16_t* dst = static_cast<uint16_t*>(y_bf16_concat);
 
-    for (size_t i = 0; i < weights.size(); ++i) {
+    if (lk.x_bos.size() < num_tiles) {
+        while (lk.x_bos.size() < num_tiles) {
+            lk.x_bos.emplace_back(impl_->device, in_bytes, XRT_BO_FLAGS_HOST_ONLY, lk.kernel.group_id(4));
+        }
+    }
+    if (lk.y_bos.size() < num_tiles) {
+        while (lk.y_bos.size() < num_tiles) {
+            lk.y_bos.emplace_back(impl_->device, out_bytes, XRT_BO_FLAGS_HOST_ONLY, lk.kernel.group_id(5));
+        }
+    }
+
+    // 1. Upload all input chunks
+    for (size_t i = 0; i < num_tiles; ++i) {
+        std::memcpy(lk.x_bos[i].map<void*>(), x_ptrs[i], in_bytes);
+        lk.x_bos[i].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    }
+
+    // 2. One-shot asynchronous launch of all tiles
+    std::vector<xrt::run> runs;
+    runs.reserve(num_tiles);
+    for (size_t i = 0; i < num_tiles; ++i) {
         WeightHandle w = weights[i];
         if (w >= impl_->weights.size())
             throw std::runtime_error("npu: invalid weight handle in run_gemv_multi_in_batch");
         const ResidentWeight& rw = impl_->weights[w];
+        runs.push_back(lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bos[i], lk.y_bos[i]));
+    }
 
-        std::memcpy(x_map, x_ptrs[i], in_bytes);
-        lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    // 3. Wait for all tiles to complete
+    for (size_t i = 0; i < num_tiles; ++i) {
+        runs[i].wait();
+    }
 
-        auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bo);
-        run.wait();
-
-        lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        std::memcpy(dst + i * N, y_map, out_bytes);
+    // 4. Download and concatenate outputs
+    uint16_t* dst = static_cast<uint16_t*>(y_bf16_concat);
+    for (size_t i = 0; i < num_tiles; ++i) {
+        lk.y_bos[i].sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        std::memcpy(dst + i * N, lk.y_bos[i].map<void*>(), out_bytes);
     }
 }
 
