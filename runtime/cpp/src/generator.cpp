@@ -1,5 +1,6 @@
 #include "alveare/generator.h"
 #include "alveare/prompt_lookup.h"
+#include <immintrin.h>
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
@@ -124,20 +125,28 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
     if (!weights_.lm_head_chunks.empty()) {
         int K = weights_.lm_head_K;
         int chunk_N = weights_.lm_head_chunk_N;
-        if (logits.size() != static_cast<size_t>(weights_.lm_head_vocab)) {
-            logits.resize(weights_.lm_head_vocab);
+        int vocab = weights_.lm_head_vocab;
+        if (logits.size() != static_cast<size_t>(vocab)) {
+            logits.resize(vocab);
+        }
+        if (lm_y_.size() < static_cast<size_t>(vocab)) {
+            lm_y_.resize(vocab);
         }
 
         std::fill(lm_x_pad_.begin(), lm_x_pad_.end(), bf16(0.0f));
         for (int i = 0; i < hidden_size && i < K; ++i) lm_x_pad_[i] = x[i];
 
-        for (size_t c = 0; c < weights_.lm_head_chunks.size(); ++c) {
-            model_.registry().run_gemv(chunk_N, K, weights_.lm_head_chunks[c],
-                                       lm_x_pad_.data(), lm_y_.data());
-            int base = static_cast<int>(c) * chunk_N;
-            for (int i = 0; i < chunk_N; ++i) {
-                logits[base + i] = lm_y_[i].to_float(); // raw logits
-            }
+        model_.registry().run_gemv_batch(chunk_N, K, weights_.lm_head_chunks,
+                                         lm_x_pad_.data(), lm_y_.data());
+
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i <= vocab - 8; i += 8) {
+            __m128i raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&lm_y_[i]));
+            __m256 wide = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(raw), 16));
+            _mm256_storeu_ps(&logits[i], wide);
+        }
+        for (int i = (vocab / 8) * 8; i < vocab; ++i) {
+            logits[i] = lm_y_[i].to_float();
         }
         return;
     }
@@ -435,7 +444,7 @@ GenerationStats Generator::generate(
 
         while (generated < params.max_tokens) {
             auto t0_step = clock::now();
-            std::vector<int> draft = propose_draft(seq, K_draft, 3, 3);
+            std::vector<int> draft = propose_draft(seq, K_draft, 4, 2);
             while (!draft.empty() && pos + static_cast<int>(draft.size()) >= max_seq_len)
                 draft.pop_back();
             int nd = static_cast<int>(draft.size());

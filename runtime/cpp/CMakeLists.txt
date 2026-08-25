@@ -73,6 +73,7 @@ set(ALVEARE_CORE_SRC
     src/generator.cpp
     src/vision_embedder.cpp
     src/audio_embedder.cpp
+    src/fused_ops.cpp
     src/server.cpp
 )
 

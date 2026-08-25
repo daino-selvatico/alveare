@@ -1,4 +1,5 @@
 #include "alveare/model.h"
+#include "alveare/fused_ops.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -186,6 +187,16 @@ Model::Model(const ModelConfig& config, const ModelWeights& weights, NpuRegistry
     init_kv_caches();
     init_scratch();
     precompute_rope();
+
+    for (const auto& lw : weights_.layers) {
+        if (lw.w_ffn_fused != kInvalidWeight) {
+            int H_padded = config_.get_padded_hidden_size();
+            int I_padded = config_.get_padded_intermediate_size();
+            std::string act_type = (config_.model_type == "gemma3" || config_.is_gemma4()) ? "gelu" : "silu";
+            reg_.pin_ffn_fused(H_padded, I_padded, act_type);
+            break;
+        }
+    }
 }
 
 void Model::compute_per_layer_inputs(int token_id, const float* inpL, float* out_per_layer) {
@@ -314,6 +325,7 @@ void Model::init_scratch() {
     scratch_.act.assign(max_I * 2, bf16(0.0f));
     scratch_.acc_f.assign(max_N, 0.0f);
     scratch_.part_bf16.assign(max_N, bf16(0.0f));
+    scratch_.down_parts.assign(max_I * 4, bf16(0.0f));
     scratch_.chunk_in.assign(max_N, bf16(0.0f));
     scratch_.geglu.assign(max_I * 2, 0.0f);
     scratch_.x_norm2_f.assign(max_N, 0.0f);
@@ -425,19 +437,7 @@ void Model::precompute_rope() {
 
 void Model::run_rmsnorm_cpu(const bf16* x, const float* w, bf16* out, int override_K) {
     int K = override_K > 0 ? override_K : config_.hidden_size;
-    float variance = 0.0f;
-    for (int i = 0; i < K; ++i) {
-        float val = x[i].to_float();
-        variance += val * val;
-    }
-    variance /= K;
-    float inv_denom = 1.0f / std::sqrt(variance + config_.rms_norm_eps);
-
-    for (int i = 0; i < K; ++i) {
-        float val = x[i].to_float() * inv_denom;
-        if (w) val *= w[i];
-        out[i] = bf16(val);
-    }
+    run_rmsnorm_avx2(x, w, out, K, config_.rms_norm_eps);
 }
 
 void Model::run_rope_cpu_llama(const bf16* x, int pos, int num_heads, bf16* out) {
@@ -691,9 +691,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
             const bool os_q = (!lw.os_qkv_tiles.empty() && lw.os_n > 0);
             bf16* qkv_ptr = scratch_.qkv.data();
             if (os_q) {
-                for (size_t t = 0; t < lw.os_qkv_tiles.size(); ++t)
-                    reg_.run_gemv(lw.os_n, lw.os_k, lw.os_qkv_tiles[t],
-                                  scratch_.x_norm.data(), qkv_ptr + t * lw.os_n);
+                reg_.run_gemv_batch(lw.os_n, lw.os_k, lw.os_qkv_tiles,
+                                    scratch_.x_norm.data(), qkv_ptr);
             } else {
                 reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, scratch_.x_norm.data(), qkv_ptr);
             }
@@ -729,9 +728,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
             const bool os_q = (!lw.os_qkv_tiles.empty() && lw.os_n > 0);
             bf16* qkv_ptr = scratch_.qkv.data();
             if (os_q) {
-                for (size_t t = 0; t < lw.os_qkv_tiles.size(); ++t)
-                    reg_.run_gemv(lw.os_n, lw.os_k, lw.os_qkv_tiles[t],
-                                  scratch_.x_norm.data(), qkv_ptr + t * lw.os_n);
+                reg_.run_gemv_batch(lw.os_n, lw.os_k, lw.os_qkv_tiles,
+                                    scratch_.x_norm.data(), qkv_ptr);
             } else {
                 reg_.run_gemv(lw.n_qkv, K_padded, lw.w_qkv, scratch_.x_norm.data(), qkv_ptr);
             }
@@ -746,25 +744,13 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
 
     // 3. QK-Norm & V-Norm (Gemma only)
     if (config_.model_type == "gemma3" || config_.is_gemma4()) {
-        for (int h = 0; h < n_q_heads; ++h) {
-            int head_dim_cur = config_.head_dim;
-            if (config_.is_gemma4()) head_dim_cur = is_sliding ? config_.head_dim : config_.head_dim_global;
-            run_rmsnorm_cpu(&scratch_.q[h * head_dim_cur], lw.q_norm.empty() ? nullptr : lw.q_norm.data(), scratch_.q_h.data(), head_dim_cur);
-            std::memcpy(&scratch_.q[h * head_dim_cur], scratch_.q_h.data(), head_dim_cur * sizeof(bf16));
-        }
+        int head_dim_cur = config_.head_dim;
+        if (config_.is_gemma4()) head_dim_cur = is_sliding ? config_.head_dim : config_.head_dim_global;
+        run_multihead_rmsnorm_avx2(scratch_.q.data(), lw.q_norm.empty() ? nullptr : lw.q_norm.data(), n_q_heads, head_dim_cur, config_.rms_norm_eps);
         if (has_kv) {
-            for (int h = 0; h < n_kv_heads; ++h) {
-                int head_dim_cur = config_.head_dim;
-                if (config_.is_gemma4()) head_dim_cur = is_sliding ? config_.head_dim : config_.head_dim_global;
-                run_rmsnorm_cpu(&scratch_.k[h * head_dim_cur], lw.k_norm.empty() ? nullptr : lw.k_norm.data(), scratch_.k_h.data(), head_dim_cur);
-                std::memcpy(&scratch_.k[h * head_dim_cur], scratch_.k_h.data(), head_dim_cur * sizeof(bf16));
-            }
+            run_multihead_rmsnorm_avx2(scratch_.k.data(), lw.k_norm.empty() ? nullptr : lw.k_norm.data(), n_kv_heads, head_dim_cur, config_.rms_norm_eps);
             if (config_.is_gemma4()) {
-                for (int h = 0; h < n_kv_heads; ++h) {
-                    int head_dim_cur = is_sliding ? config_.head_dim : config_.head_dim_global;
-                    run_rmsnorm_cpu(&scratch_.v[h * head_dim_cur], nullptr, scratch_.v_h.data(), head_dim_cur);
-                    std::memcpy(&scratch_.v[h * head_dim_cur], scratch_.v_h.data(), head_dim_cur * sizeof(bf16));
-                }
+                run_multihead_rmsnorm_avx2(scratch_.v.data(), nullptr, n_kv_heads, head_dim_cur, config_.rms_norm_eps);
             }
         }
     }
@@ -829,9 +815,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
                 }
                 reg_.run_gemv(lw.os_n, lw.os_k, lw.os_o_tiles[c],
                               scratch_.chunk_in.data(), scratch_.part_bf16.data());
-                for (int i = 0; i < K; ++i) {
-                    scratch_.acc_f[i] += scratch_.part_bf16[i].to_float();
-                }
+                run_fused_down_accumulate_avx2(scratch_.part_bf16.data(), scratch_.acc_f.data(), K);
             }
             for (int i = 0; i < K; ++i) {
                 scratch_.attn_proj[i] = bf16(scratch_.acc_f[i]);
@@ -839,10 +823,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
         } else {
             std::fill(scratch_.attn_out_padded.begin(), scratch_.attn_out_padded.begin() + lw.os_k, bf16(0.0f));
             std::memcpy(scratch_.attn_out_padded.data(), scratch_.attn_out.data(), size_t(N_q) * sizeof(bf16));
-            for (size_t t = 0; t < lw.os_o_tiles.size(); ++t) {
-                reg_.run_gemv(lw.os_n, lw.os_k, lw.os_o_tiles[t],
-                              scratch_.attn_out_padded.data(), scratch_.attn_proj.data() + t * lw.os_n);
-            }
+            reg_.run_gemv_batch(lw.os_n, lw.os_k, lw.os_o_tiles,
+                                scratch_.attn_out_padded.data(), scratch_.attn_proj.data());
         }
     } else {
         std::fill(scratch_.attn_out_padded.begin(), scratch_.attn_out_padded.begin() + N_q_padded, bf16(0.0f));
@@ -851,22 +833,26 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     }
     g_prof.npu_o += ms_since(t_o);
 
-    // 8. Post-attention norm and residual
+    // 8 & 9. Post-attention norm and residual + Pre-FFN norm (Fused AVX2)
     if (config_.model_type == "gemma3" || config_.is_gemma4()) {
-        run_rmsnorm_cpu(scratch_.attn_proj.data(), lw.post_attention_norm.empty() ? nullptr : lw.post_attention_norm.data(), scratch_.attn_proj_normed.data());
-        for (int i = 0; i < K; ++i) {
-            scratch_.x_post_attn[i] = bf16(x_bf16[i].to_float() + scratch_.attn_proj_normed[i].to_float());
-        }
+        run_fused_residual_and_norm_avx2(
+            x_bf16,
+            scratch_.attn_proj.data(),
+            lw.post_attention_norm.empty() ? nullptr : lw.post_attention_norm.data(),
+            lw.ffn_norm.empty() ? nullptr : lw.ffn_norm.data(),
+            scratch_.x_post_attn.data(),
+            scratch_.x_norm2.data(),
+            K,
+            config_.rms_norm_eps
+        );
     } else {
         for (int i = 0; i < K; ++i) {
             scratch_.x_post_attn[i] = bf16(x_bf16[i].to_float() + scratch_.attn_proj[i].to_float());
         }
+        run_rmsnorm_cpu(scratch_.x_post_attn.data(), lw.ffn_norm.empty() ? nullptr : lw.ffn_norm.data(), scratch_.x_norm2.data());
     }
 
-    // 9. Pre-FFN norm
-    run_rmsnorm_cpu(scratch_.x_post_attn.data(), lw.ffn_norm.empty() ? nullptr : lw.ffn_norm.data(), scratch_.x_norm2.data());
-
-    // 10. FFN (Fused NPU or CPU/q4_0 fallback)
+    // 10. FFN (Fused NPU or ONESHAPE fallback)
     int H_padded = config_.get_padded_hidden_size();
     int I_padded = config_.get_padded_intermediate_size();
     std::string act_type = (config_.model_type == "gemma3" || config_.is_gemma4()) ? "gelu" : "silu";
@@ -877,19 +863,19 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
         // then the down projection as K-chunks whose partials the host sums.
         const int TN = lw.os_n, TK = lw.os_k;
         const int I_rows = int(lw.os_down.size()) * TK;  // == I_padded (matches the tiles)
-        for (size_t t = 0; t < lw.os_gateup.size(); ++t)
-            reg_.run_gemv(TN, TK, lw.os_gateup[t], scratch_.x_norm2.data(), scratch_.gu.data() + t * TN);
+        reg_.run_gemv_batch(TN, TK, lw.os_gateup, scratch_.x_norm2.data(), scratch_.gu.data());
 
-        for (int i = 0; i < I_rows; ++i) {
-            float g = scratch_.gu[i].to_float();
-            float u = scratch_.gu[size_t(I_rows) + i].to_float();
-            scratch_.act[i] = bf16(0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f)) * u);
+        run_fast_geglu_avx2(scratch_.gu.data(), scratch_.act.data(), I_rows);
+
+        std::vector<const void*> act_chunks(lw.os_down.size());
+        for (size_t c = 0; c < lw.os_down.size(); ++c) {
+            act_chunks[c] = scratch_.act.data() + c * TK;
         }
+        reg_.run_gemv_multi_in_batch(TN, TK, lw.os_down, act_chunks, scratch_.down_parts.data());
 
         std::fill(scratch_.acc_f.begin(), scratch_.acc_f.begin() + K, 0.0f);
         for (size_t c = 0; c < lw.os_down.size(); ++c) {
-            reg_.run_gemv(TN, TK, lw.os_down[c], scratch_.act.data() + c * TK, scratch_.part_bf16.data());
-            for (int i = 0; i < K; ++i) scratch_.acc_f[i] += scratch_.part_bf16[i].to_float();
+            run_fused_down_accumulate_avx2(scratch_.down_parts.data() + c * TN, scratch_.acc_f.data(), K);
         }
         for (int i = 0; i < K; ++i) scratch_.down[i] = bf16(scratch_.acc_f[i]);
     } else if (lw.w_ffn_fused != kInvalidWeight) {

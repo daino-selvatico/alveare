@@ -85,6 +85,17 @@ public:
     void run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
                   void* y_bf16);
 
+    // Asynchronously pipelined multi-tile GEMV execution: uploads activation once,
+    // enqueues all kernel runs to the NPU command queue, and syncs output in batch.
+    void run_gemv_batch(int N, int K, const std::vector<WeightHandle>& weights,
+                        const void* x_bf16, void* y_bf16_concat);
+
+    // Asynchronously pipelined multi-tile GEMV with distinct input chunks per tile
+    // (e.g. for K-chunked down projections): uploads input chunks, enqueues all runs,
+    // and syncs output in batch.
+    void run_gemv_multi_in_batch(int N, int K, const std::vector<WeightHandle>& weights,
+                                 const std::vector<const void*>& x_ptrs, void* y_bf16_concat);
+
     // Batched matmul Y[B,N] = X[B,K] @ W^T, for prefill. w is a gemv weight of
     // the same (N, K) (the Q4_0 packing is shared); this runs the gemm kernel of
     // shape (B, N, K). x_bf16 points at B*K bf16 values, y_bf16 receives B*N.

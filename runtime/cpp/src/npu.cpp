@@ -99,7 +99,9 @@ struct LoadedKernel {
     xrt::bo instr;
     uint32_t ninstr = 0;
     xrt::bo x_bo;   // pinned bf16 activation buffer
+    std::vector<xrt::bo> x_bos; // pool of pinned input buffers for async multi-input batching
     xrt::bo y_bo;   // pinned bf16 output buffer
+    std::vector<xrt::bo> y_bos; // pool of pinned output buffers for async batching
     xrt::bo w_scratch;          // streamed (non-resident) weight, for run_gemm_streamed
     size_t w_scratch_bytes = 0; // current allocation of w_scratch
     bool pinned = false;
@@ -346,6 +348,62 @@ void NpuRegistry::run_gemv(int N, int K, WeightHandle w, const void* x_bf16,
             return std::chrono::duration<double, std::milli>(b - a).count();
         };
         npu_gemv_prof_add(ms(t0, t1), ms(t1, t2), ms(t2, t3));
+    }
+}
+
+void NpuRegistry::run_gemv_batch(int N, int K, const std::vector<WeightHandle>& weights,
+                                 const void* x_bf16, void* y_bf16_concat) {
+    if (weights.empty()) return;
+    if (weights.size() == 1) {
+        run_gemv(N, K, weights[0], x_bf16, y_bf16_concat);
+        return;
+    }
+
+    LoadedKernel& lk = impl_->ensure_loaded("gemv", N, K, 0);
+
+    // 1. Upload activation ONCE for all tiles
+    std::memcpy(lk.x_bo.map<void*>(), x_bf16, size_t(K) * sizeof(uint16_t));
+    lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+    // 2. Run each weight tile sequentially (sharing x_bo)
+    uint16_t* dst = static_cast<uint16_t*>(y_bf16_concat);
+    for (size_t i = 0; i < weights.size(); ++i) {
+        WeightHandle w = weights[i];
+        if (w >= impl_->weights.size())
+            throw std::runtime_error("npu: invalid weight handle in run_gemv_batch");
+        const ResidentWeight& rw = impl_->weights[w];
+        auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bo);
+        run.wait();
+        lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        std::memcpy(dst + i * N, lk.y_bo.map<void*>(), size_t(N) * sizeof(uint16_t));
+    }
+}
+
+void NpuRegistry::run_gemv_multi_in_batch(int N, int K, const std::vector<WeightHandle>& weights,
+                                         const std::vector<const void*>& x_ptrs, void* y_bf16_concat) {
+    if (weights.empty()) return;
+    if (weights.size() == 1) {
+        run_gemv(N, K, weights[0], x_ptrs[0], y_bf16_concat);
+        return;
+    }
+
+    LoadedKernel& lk = impl_->ensure_loaded("gemv", N, K, 0);
+
+    uint16_t* dst = static_cast<uint16_t*>(y_bf16_concat);
+    for (size_t i = 0; i < weights.size(); ++i) {
+        WeightHandle w = weights[i];
+        if (w >= impl_->weights.size())
+            throw std::runtime_error("npu: invalid weight handle in run_gemv_multi_in_batch");
+        const ResidentWeight& rw = impl_->weights[w];
+
+        std::memcpy(lk.x_bo.map<void*>(), x_ptrs[i], size_t(K) * sizeof(uint16_t));
+        lk.x_bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+        auto run = lk.kernel(impl_->opcode, lk.instr, lk.ninstr, rw.bo, lk.x_bo, lk.y_bo);
+        run.wait();
+
+        lk.y_bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        std::memcpy(dst + i * N, lk.y_bo.map<void*>(), size_t(N) * sizeof(uint16_t));
     }
 }
 
