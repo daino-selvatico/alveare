@@ -1114,9 +1114,9 @@ async def handle_stt_stream_connection(websocket: WebSocket):
     stream_language = "auto"
     utterance_buffer = bytearray()
     
-    SILENCE_THRESHOLD_RMS = 140.0  # RMS threshold for 16-bit PCM silence detection
+    SILENCE_THRESHOLD_RMS = 40.0  # Sensitive RMS threshold for 16-bit PCM silence detection
     MIN_UTTERANCE_BYTES = int(16000 * 2 * 0.35)  # 0.35s minimum audio (~11,200 bytes)
-    SILENCE_COMMIT_SECS = 4.5  # Silence commits and splits sentence into history
+    SILENCE_COMMIT_SECS = 2.0  # 2.0s silence commits and splits sentence into history
     MAX_PHRASE_BYTES = int(16000 * 2 * 25.0)  # 25.0s max phrase before auto-commit
     
     speech_active = False

@@ -160,13 +160,13 @@ def main():
                         "no_repeat_ngram_size": 3,
                         "return_dict_in_generate": True
                     }
-                    if language and language not in ("auto", "unknown", ""):
-                        try:
-                            forced_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
-                            gen_kwargs["forced_decoder_ids"] = forced_ids
-                            detected_lang = language
-                        except Exception:
-                            pass
+                    target_lang = language if (language and language not in ("auto", "unknown", "")) else "it"
+                    try:
+                        forced_ids = processor.get_decoder_prompt_ids(language=target_lang, task="transcribe")
+                        gen_kwargs["forced_decoder_ids"] = forced_ids
+                        detected_lang = target_lang
+                    except Exception:
+                        pass
                     
                     with torch.no_grad():
                         gen_out = model.generate(inputs.input_features, **gen_kwargs)
