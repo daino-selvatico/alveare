@@ -49,20 +49,19 @@ def init_npu_lib():
         sys.stderr.write(f"[WhisperSTT] NPU lib load failed: {e}\n")
         return None
 
-def extract_acoustic_emotion(audio_arr, sr=16000):
+def extract_multimodal_emotion(text, audio_arr, sr=16000):
     if len(audio_arr) < 1600:
         return {"emotion": "neutral", "tone": "calmo", "confidence": 0.85, "pitch_hz": 0.0}
     try:
-        rms = float(np.sqrt(np.mean(audio_arr ** 2)))
+        # 1. Acoustic Prosodic Analysis
+        rms = float(np.sqrt(np.mean(audio_arr ** 2))) if len(audio_arr) > 0 else 0.0
         win_len = int(sr * 0.025)
         hop_len = int(sr * 0.010)
-        n_frames = (len(audio_arr) - win_len) // hop_len
-        if n_frames < 2:
-            return {"emotion": "neutral", "tone": "calmo", "confidence": 0.85, "pitch_hz": 0.0}
-
+        n_frames = max(1, (len(audio_arr) - win_len) // hop_len)
+        
         frame_energies = []
         pitches = []
-
+        
         for i in range(n_frames):
             frame = audio_arr[i*hop_len : i*hop_len + win_len]
             f_rms = np.sqrt(np.mean(frame ** 2))
@@ -75,37 +74,76 @@ def extract_acoustic_emotion(audio_arr, sr=16000):
                 max_lag = int(sr / 70)
                 if max_lag < len(corr):
                     peak_lag = min_lag + np.argmax(corr[min_lag:max_lag])
-                    if corr[peak_lag] > 0.3 * corr[0]:
+                    if corr[peak_lag] > 0.35 * corr[0]:
                         pitches.append(sr / peak_lag)
 
-        frame_energies = np.array(frame_energies)
-        energy_var = float(np.std(frame_energies) / (np.mean(frame_energies) + 1e-6))
-
-        valid_pitches = np.array(pitches) if len(pitches) > 0 else np.array([160.0])
+        valid_pitches = np.array(pitches) if len(pitches) >= 3 else np.array([150.0])
         mean_pitch = float(np.mean(valid_pitches))
-        pitch_var = float(np.std(valid_pitches))
-        pitch_range = float(np.percentile(valid_pitches, 90) - np.percentile(valid_pitches, 10)) if len(valid_pitches) >= 5 else 0.0
+        pitch_std = float(np.std(valid_pitches))
+        pitch_cv = pitch_std / (mean_pitch + 1e-6)
 
-        if (pitch_var > 32.0 or pitch_range > 55.0 or mean_pitch > 210.0) and energy_var > 0.45:
-            emotion = "happy"
-            tone = "frizzante"
-            confidence = 0.88
-        elif mean_pitch > 200.0 and rms > 0.08 and energy_var > 0.75:
-            emotion = "angry"
-            tone = "deciso"
-            confidence = 0.82
-        elif mean_pitch < 125.0 and rms < 0.03 and pitch_var < 16.0:
-            emotion = "sad"
-            tone = "sommesso"
-            confidence = 0.85
-        elif pitch_range > 80.0:
-            emotion = "surprised"
-            tone = "esclamativo"
-            confidence = 0.80
+        # 2. Text Lexical Sentiment
+        lower_text = (text or "").lower()
+        pos_words = [
+            'bello', 'bella', 'grazie', 'ottimo', 'ottima', 'felice', 'perfetto', 'perfetta', 
+            'super', 'frizzante', 'carina', 'carino', 'piace', 'fantastico', 'fantastica', 
+            'evviva', 'amore', 'meraviglia', 'eccellente', 'gioia', 'contento', 'contenta', 
+            'bravo', 'brava', 'splendido', 'splendida', 'great', 'awesome', 'happy', 'love', 
+            'good', 'thank', 'thanks', 'wonderful', 'amazing'
+        ]
+        neg_words = [
+            'brutto', 'brutta', 'pessimo', 'pessima', 'male', 'triste', 'arrabbiato', 'arrabbiata', 
+            'schifo', 'errore', 'fastidio', 'problema', 'stanco', 'stanca', 'stufo', 'stufa', 
+            'noioso', 'noiosa', 'peccato', 'odioso', 'odiosa', 'difficile', 'fallito', 'rabbia', 
+            'paura', 'dolore', 'bad', 'sad', 'angry', 'terrible', 'horrible', 'hate', 'tired', 
+            'broken', 'error', 'fail', 'pain'
+        ]
+        
+        pos_score = sum(1 for w in pos_words if w in lower_text)
+        neg_score = sum(1 for w in neg_words if w in lower_text)
+        has_excl = '!' in (text or '') or '?' in (text or '')
+        
+        # Default baseline is ALWAYS Neutral / Calmo
+        emotion = 'neutral'
+        tone = 'calmo'
+        confidence = 0.85
+
+        if neg_score > pos_score and neg_score >= 1:
+            if rms > 0.08 or pitch_cv > 0.30:
+                emotion = 'angry'
+                tone = 'deciso'
+                confidence = 0.88
+            else:
+                emotion = 'sad'
+                tone = 'sommesso'
+                confidence = 0.85
+        elif pos_score > neg_score and pos_score >= 1:
+            if pitch_cv > 0.22 or mean_pitch > 210.0 or has_excl:
+                emotion = 'happy'
+                tone = 'frizzante'
+                confidence = 0.90
+            else:
+                emotion = 'happy'
+                tone = 'cordiale'
+                confidence = 0.84
         else:
-            emotion = "neutral"
-            tone = "calmo"
-            confidence = 0.85
+            # Pure acoustic features for utterances without explicit emotional keywords
+            if (mean_pitch > 240.0 or pitch_cv > 0.38) and rms > 0.10:
+                emotion = 'surprised' if has_excl else 'happy'
+                tone = 'esclamativo' if has_excl else 'vivace'
+                confidence = 0.80
+            elif mean_pitch > 210.0 and rms > 0.12 and pitch_cv > 0.28:
+                emotion = 'angry'
+                tone = 'deciso'
+                confidence = 0.78
+            elif (mean_pitch < 120.0 or rms < 0.025) and pitch_cv < 0.10:
+                emotion = 'sad'
+                tone = 'sommesso'
+                confidence = 0.80
+            else:
+                emotion = 'neutral'
+                tone = 'calmo'
+                confidence = 0.88
 
         return {
             "emotion": emotion,
@@ -321,10 +359,10 @@ def main():
 
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             
-            # Extract acoustic vocal emotion and tone in parallel if enabled
+            # Extract multimodal vocal emotion and tone in parallel if enabled
             emotion_res = None
             if detect_emotion and is_whisper and 'speech_np' in locals():
-                emotion_res = extract_acoustic_emotion(speech_np)
+                emotion_res = extract_multimodal_emotion(raw_text, speech_np)
                 
             resp_dict = {
                 "status": "success",
