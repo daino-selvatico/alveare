@@ -200,6 +200,10 @@ class WhisperSTT:
                         raise RuntimeError(data.get("error", "Worker error"))
                     raw_text = data.get("raw_text", "")
                     detected_lang = data.get("language", detected_lang)
+                    emotion = data.get("emotion", "neutral")
+                    tone = data.get("tone", "calmo")
+                    pitch_hz = data.get("pitch_hz", 0.0)
+                    emotion_confidence = data.get("emotion_confidence", 0.85)
             else:
                 raise RuntimeError("No STT model or worker available.")
 
@@ -210,6 +214,10 @@ class WhisperSTT:
                 "raw_text": raw_text,
                 "language": detected_lang,
                 "latency_ms": round(elapsed_ms, 2),
+                "emotion": emotion if 'emotion' in locals() else "neutral",
+                "tone": tone if 'tone' in locals() else "calmo",
+                "pitch_hz": pitch_hz if 'pitch_hz' in locals() else 0.0,
+                "emotion_confidence": emotion_confidence if 'emotion_confidence' in locals() else 0.85,
                 "status": "success"
             }
 

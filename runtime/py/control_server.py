@@ -1160,6 +1160,10 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                     "text": text,
                     "language": res.get("language", stream_language),
                     "latency_ms": res.get("latency_ms", 0.0),
+                    "emotion": res.get("emotion", "neutral"),
+                    "tone": res.get("tone", "calmo"),
+                    "pitch_hz": res.get("pitch_hz", 0.0),
+                    "emotion_confidence": res.get("emotion_confidence", 0.85),
                     "is_final": is_final
                 })
         except Exception as e:
