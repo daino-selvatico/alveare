@@ -68,6 +68,26 @@ SUPPORTED_MODELS = [
         "filename": "model.safetensors",
         "size_approx": "~145 MB",
         "description": "High-accuracy multilingual speech-to-text with support for Italian, English, and 90+ languages."
+    },
+    {
+        "id": "whisper-large-v3-turbo",
+        "name": "Whisper Large v3 Turbo STT",
+        "arch": "whisper",
+        "default_url": "openai/whisper-large-v3-turbo",
+        "repo_id": "openai/whisper-large-v3-turbo",
+        "filename": "model.safetensors",
+        "size_approx": "~1.6 GB",
+        "description": "State-of-the-art multilingual speech-to-text with maximum accuracy and high speed on AMD NPU and CPU."
+    },
+    {
+        "id": "whisper-large-v3",
+        "name": "Whisper Large v3 STT",
+        "arch": "whisper",
+        "default_url": "openai/whisper-large-v3",
+        "repo_id": "openai/whisper-large-v3",
+        "filename": "model.safetensors",
+        "size_approx": "~3.1 GB",
+        "description": "Full 32-layer Whisper Large v3 model for maximum depth transcription accuracy."
     }
 ]
 
@@ -154,18 +174,41 @@ def run_setup(
     log_progress("start", 0.0, f"Starting setup for model '{alias}' (Arch/Quantizer: {arch_or_quantizer})...")
 
     models_dir = ROOT_DIR / "models_cache"
-    if arch_or_quantizer in ("whisper", "whisper-base") or alias in ("whisper", "whisper-base"):
-        log_progress("download", 30.0, "Downloading and validating Whisper Base speech-to-text model...")
+    if "whisper" in arch_or_quantizer.lower() or "whisper" in alias.lower():
+        hf_model_id = "openai/whisper-base"
+        if "large-v3-turbo" in alias.lower() or "large-v3-turbo" in arch_or_quantizer.lower() or "turbo" in alias.lower():
+            hf_model_id = "openai/whisper-large-v3-turbo"
+        elif "large-v3" in alias.lower() or "large" in alias.lower():
+            hf_model_id = "openai/whisper-large-v3"
+        elif url_or_repo and ("/" in url_or_repo):
+            hf_model_id = url_or_repo
+
+        log_progress("download", 30.0, f"Downloading and validating {hf_model_id} speech-to-text model...")
         from runtime.py.whisper_stt import WhisperSTT
-        stt = WhisperSTT.get_instance(model_id="openai/whisper-base")
+        stt = WhisperSTT.get_instance(model_id=hf_model_id)
         stt._ensure_loaded()
-        log_progress("complete", 100.0, "Whisper Base STT successfully initialized and ready!")
+
+        # Save model descriptor config
+        model_out_dir = ROOT_DIR / f"quantized_weights_{alias}"
+        model_out_dir.mkdir(parents=True, exist_ok=True)
+        with open(model_out_dir / "config.json", "w") as cf:
+            json.dump({
+                "model_type": "whisper",
+                "architecture": "whisper",
+                "task": "speech-to-text",
+                "name": f"Whisper {alias.replace('whisper-', '').replace('-', ' ').title()} STT",
+                "hf_model_id": hf_model_id,
+                "supported_devices": ["npu", "cpu"],
+                "default_device": "npu"
+            }, cf, indent=2)
+
+        log_progress("complete", 100.0, f"{hf_model_id} STT successfully initialized and ready!")
         return {
             "status": "success",
             "alias": alias,
-            "weights_dir": str(models_dir / "whisper-base"),
-            "kernels_dir": "",
-            "config": {"model_type": "whisper", "task": "speech-to-text"}
+            "weights_dir": str(model_out_dir),
+            "kernels_dir": str(ROOT_DIR / "kernels" / "build"),
+            "config": {"model_type": "whisper", "task": "speech-to-text", "hf_model_id": hf_model_id}
         }
 
     gguf_path: Optional[Path] = None

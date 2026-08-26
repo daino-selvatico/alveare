@@ -379,15 +379,23 @@ def discover_models() -> List[Dict[str, Any]]:
 
         size_mb = round(size_bytes / (1024 * 1024), 1)
 
-        if alias in ("whisper", "whisper-base") or arch == "whisper" or task == "speech-to-text":
+        if "whisper" in alias or arch == "whisper" or task == "speech-to-text":
             task = "speech-to-text"
             arch = "whisper"
-            name = "Whisper Base STT"
-            description = "High-accuracy multilingual speech recognition (Italian, English, European & Asian languages) on CPU."
+            if not name or name == alias:
+                if "turbo" in alias:
+                    name = "Whisper Large v3 Turbo STT"
+                    description = "State-of-the-art multilingual speech recognition with maximum accuracy and high speed on AMD NPU and CPU."
+                elif "large" in alias:
+                    name = "Whisper Large v3 STT"
+                    description = "Full Whisper Large v3 model for maximum depth transcription accuracy on AMD NPU and CPU."
+                else:
+                    name = "Whisper Base STT"
+                    description = "High-accuracy multilingual speech recognition with AMD Ryzen AI NPU acceleration (XDNA2) and CPU fallback."
             if size_mb == 0:
-                size_mb = 145.0
+                size_mb = 1600.0 if "large" in alias else 145.0
 
-        supported_devices = ["npu", "cpu"] if (alias in ("whisper", "whisper-base") or arch == "whisper" or task == "speech-to-text") else ["npu"]
+        supported_devices = ["npu", "cpu"] if ("whisper" in alias or arch == "whisper" or task == "speech-to-text") else ["npu"]
         models.append({
             "id": alias,
             "alias": alias,
@@ -405,7 +413,7 @@ def discover_models() -> List[Dict[str, Any]]:
     return models
 
 def is_active_stt_model() -> bool:
-    if state.active_model in ("whisper", "whisper-base"):
+    if state.active_model and "whisper" in state.active_model.lower():
         return True
     for m in discover_models():
         if m["id"] == state.active_model and m.get("task") == "speech-to-text":
@@ -476,7 +484,7 @@ def start_inference_server(model: str, host: str, port: int, device: str = "npu"
     if state.process and state.process.poll() is None:
         stop_inference_server()
 
-    is_stt = model in ("whisper", "whisper-base")
+    is_stt = "whisper" in model.lower()
     if not is_stt:
         for m in discover_models():
             if m["id"] == model and m.get("task") == "speech-to-text":
@@ -503,6 +511,21 @@ def start_inference_server(model: str, host: str, port: int, device: str = "npu"
         def _load_stt_async():
             try:
                 stt_id = "openai/whisper-base"
+                if "large-v3-turbo" in model.lower() or "turbo" in model.lower():
+                    stt_id = "openai/whisper-large-v3-turbo"
+                elif "large-v3" in model.lower() or "large" in model.lower():
+                    stt_id = "openai/whisper-large-v3"
+                else:
+                    cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
+                    if cfg_path.exists():
+                        try:
+                            with open(cfg_path) as cf:
+                                cdata = json.load(cf)
+                                if "hf_model_id" in cdata:
+                                    stt_id = cdata["hf_model_id"]
+                        except Exception:
+                            pass
+
                 from runtime.py.whisper_stt import WhisperSTT
                 stt = WhisperSTT.get_instance(model_id=stt_id, device=device)
                 stt._ensure_loaded()

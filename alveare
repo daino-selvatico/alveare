@@ -188,6 +188,8 @@ resolve_weights_dir() {
     gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
     gemma4-e4b|e4b)                echo "$ROOT/quantized_weights_gemma4-e4b" ;;
     whisper|whisper-base)          echo "$ROOT/quantized_weights_whisper-base" ;;
+    whisper-large-v3-turbo|whisper-turbo) echo "$ROOT/quantized_weights_whisper-large-v3-turbo" ;;
+    whisper-large|whisper-large-v3)       echo "$ROOT/quantized_weights_whisper-large-v3" ;;
     *)
       if [ -d "$model" ]; then
         echo "$model"
@@ -361,7 +363,7 @@ cmd_serve() {
     exec "$PY" -c "
 import sys, uvicorn
 from runtime.py.control_server import app, start_inference_server
-start_inference_server(model='whisper-base', host='$host', port=$port, device='$device')
+start_inference_server(model='$model', host='$host', port=$port, device='$device')
 uvicorn.run(app, host='$host', port=$port, log_level='info')
 "
   fi

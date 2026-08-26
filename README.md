@@ -29,7 +29,9 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 | **Gemma 4 12B** | `gemma4` | 48 layers, 32-core unified GEMV | ~6.8 GB | **696–705 ms/tok (1.43–1.94 tok/s)**, full 12.8B model |
 | **Gemma 3 1B** | `gemma3` | SentencePiece SPM, 26 layers | ~0.8 GB | **7–12 tok/s**, lightweight edge model |
 | **Llama 3.2 1B** | `llama` | Llama architecture, GQA attention | ~0.8 GB | **10–15 tok/s**, fast conversational model |
-| **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **High-accuracy audio transcription**, runs isolated with 0 VRAM |
+| **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **High-accuracy audio transcription**, AMD NPU (XDNA2) + CPU fallback |
+| **Whisper Large v3 Turbo** | `whisper-large-v3-turbo` | State-of-the-art accuracy & speed, 90+ langs | ~1.6 GB | **Maximum accuracy SOTA speech recognition**, AMD NPU (XDNA2) + CPU |
+| **Whisper Large v3** | `whisper-large-v3` | Full 32-layer deep multilingual STT | ~3.1 GB | **Ultra-deep audio transcription**, AMD NPU (XDNA2) + CPU |
 
 > **⚡ Performance Transparency**: All models execute natively across all 32 AIE2 cores with zero-bubble asynchronous pipelining, saturating the physical memory bandwidth of the AMD Ryzen AI 300 series processor.
 

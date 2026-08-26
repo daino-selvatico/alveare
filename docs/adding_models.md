@@ -13,8 +13,9 @@ Alveare includes native Q4_0 quantizer pipelines for the following model archite
 | `gemma4` | Gemma 4 12B Instruct | `gemma4` | `unsloth/gemma-4-12b-it-GGUF` | ~9.7 GB | 48 layers, fused NPU FFN, multi-tile GEMV |
 | `gemma4-e4b` | Gemma 4 E4B (Edge 4B) | `gemma4-e4b` | `unsloth/gemma-4-e4b-it-GGUF` | ~3.8 GB | Per-Layer Embedding (PLE) injection |
 | `gemma3` | Gemma 3 1B Instruct | `gemma3` | `unsloth/gemma-3-1b-it-GGUF` | ~0.8 GB | 26 layers, SentencePiece SPM, NPU FFN |
-| `llama` | Llama 3.2 1B Instruct | `llama` | `bartowski/Llama-3.2-1B-Instruct-GGUF` | ~0.8 GB | Llama architecture, GQA attention |
 | `whisper-base` | Whisper Base STT | `whisper` | `openai/whisper-base` | ~145 MB | High-accuracy speech-to-text, Italian & 90+ langs |
+| `whisper-large-v3-turbo` | Whisper Large v3 Turbo STT | `whisper` | `openai/whisper-large-v3-turbo` | ~1.6 GB | State-of-the-art multilingual STT, max accuracy & speed on NPU/CPU |
+| `whisper-large-v3` | Whisper Large v3 STT | `whisper` | `openai/whisper-large-v3` | ~3.1 GB | Full 32-layer Whisper Large v3 for maximum depth transcription |
 
 ---
 
