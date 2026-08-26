@@ -359,9 +359,6 @@
     "clickToListen": "Clicca per avviare la trascrizione vocale in streaming",
     "streamingSubtext": "Streaming continuo via WebSocket su /ws/stt a 16kHz",
     "zeroDelaySubtext": "Nessun ritardo: le parole appaiono in tempo reale",
-    "emotionToggle": "Tonalità ed Emozioni",
-    "emotionOn": "Tonalità & Emozioni: ON",
-    "emotionOff": "Tonalità & Emozioni: OFF",
     "stopListening": "Interrompi ascolto",
     "startListening": "Avvia ascolto real-time",
     "latency": "{latency} ms latenza",
@@ -392,12 +389,6 @@
     "serverOffBannerTitle": "Server STT Non Avviato",
     "serverOffBannerDesc": "Per iniziare a trascrivere la tua voce o file audio, avvia prima il modello STT nel Control Panel.",
     "goToControlPanel": "Vai al Control Panel",
-    "emotionNeutral": "😐 Neutro",
-    "emotionHappy": "😄 Felice",
-    "emotionSad": "😢 Triste",
-    "emotionAngry": "😡 Arrabbiato",
-    "emotionFearful": "😨 Timoroso",
-    "emotionSurprised": "😲 Sorpreso",
     "micError": "Impossibile accedere al microfono: {error}"
   }
 }

@@ -36,20 +36,6 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     return localStorage.getItem('alveare_stt_language') || 'auto';
   });
 
-  // Optional Emotion & Tone Detection Flag (User preference)
-  const [detectEmotion, setDetectEmotion] = useState(() => {
-    const saved = localStorage.getItem('alveare_stt_detect_emotion');
-    return saved !== null ? saved === 'true' : true;
-  });
-
-  const handleDetectEmotionToggle = (val) => {
-    setDetectEmotion(val);
-    localStorage.setItem('alveare_stt_detect_emotion', val ? 'true' : 'false');
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ action: "set_detect_emotion", enabled: val }));
-    }
-  };
-
   const handleLanguageChange = (lang) => {
     setSelectedLanguage(lang);
     localStorage.setItem('alveare_stt_language', lang);
@@ -80,10 +66,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
   const [streamStats, setStreamStats] = useState({
     language: 'auto',
-    latency_ms: 0,
-    emotion: 'neutral',
-    tone: 'calmo',
-    pitch_hz: 0
+    latency_ms: 0
   });
 
   // File upload state
@@ -149,23 +132,6 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
     renderFrame();
   }, []);
-
-  const getEmotionDetails = (emotion, tone) => {
-    const key = (emotion || '').toLowerCase();
-    switch (key) {
-      case 'happy':
-        return { emoji: '😄', label: t('audioPlayground.emotionHappy') || 'Felice / Frizzante', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.3)' };
-      case 'angry':
-        return { emoji: '😡', label: t('audioPlayground.emotionAngry') || 'Deciso / Acceso', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.3)' };
-      case 'sad':
-        return { emoji: '😢', label: t('audioPlayground.emotionSad') || 'Sommesso / Calmo', color: '#6366f1', bg: 'rgba(99, 102, 241, 0.15)', border: 'rgba(99, 102, 241, 0.3)' };
-      case 'surprised':
-        return { emoji: '😲', label: t('audioPlayground.emotionSurprised') || 'Sorpreso / Vivace', color: '#ec4899', bg: 'rgba(236, 72, 153, 0.15)', border: 'rgba(236, 72, 153, 0.3)' };
-      case 'neutral':
-      default:
-        return { emoji: '😐', label: t('audioPlayground.emotionNeutral') || 'Neutro / Naturale', color: '#06b6d4', bg: 'rgba(6, 182, 212, 0.15)', border: 'rgba(6, 182, 212, 0.3)' };
-    }
-  };
 
 function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
   if (outSampleRate >= sampleRate) {
@@ -240,7 +206,6 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
         if (selectedLanguage !== 'auto') {
           ws.send(JSON.stringify({ action: "set_language", language: selectedLanguage }));
         }
-        ws.send(JSON.stringify({ action: "set_detect_emotion", enabled: detectEmotion }));
       };
 
       ws.onmessage = (evt) => {
@@ -252,10 +217,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
             }
             setStreamStats({
               language: data.language || 'auto',
-              latency_ms: data.latency_ms || 0,
-              emotion: data.emotion || 'neutral',
-              tone: data.tone || 'calmo',
-              pitch_hz: data.pitch_hz || 0
+              latency_ms: data.latency_ms || 0
             });
             if (data.is_final) {
               setIsFinalizing(false);
@@ -265,10 +227,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                   text: data.text.trim(),
                   time: new Date().toLocaleTimeString(),
                   language: data.language || 'auto',
-                  latency_ms: data.latency_ms || 0,
-                  emotion: data.emotion || 'neutral',
-                  tone: data.tone || 'calmo',
-                  pitch_hz: data.pitch_hz || 0
+                  latency_ms: data.latency_ms || 0
                 };
                 setStreamHistory(prev => [newEntry, ...prev]);
               }
@@ -403,7 +362,6 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
     if (selectedLanguage !== 'auto') {
       formData.append('language', selectedLanguage);
     }
-    formData.append('detect_emotion', detectEmotion ? 'true' : 'false');
     formData.append('response_format', 'verbose_json');
 
     setIsTranscribingFile(true);
@@ -538,29 +496,6 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
               <option value="tr" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇹🇷 Türkçe</option>
             </select>
           </div>
-
-          {/* Optional Tone & Emotion Toggle Button */}
-          <button
-            onClick={() => handleDetectEmotionToggle(!detectEmotion)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.45rem',
-              background: detectEmotion ? 'rgba(16, 185, 129, 0.15)' : 'var(--bg-secondary)',
-              color: detectEmotion ? '#10b981' : 'var(--text-muted)',
-              border: `1px solid ${detectEmotion ? 'rgba(16, 185, 129, 0.4)' : 'var(--border-color)'}`,
-              padding: '0.45rem 0.75rem',
-              borderRadius: '10px',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.2s ease'
-            }}
-            title={detectEmotion ? 'Riconoscimento tonalità ed emozioni attivo' : 'Riconoscimento tonalità disattivato'}
-          >
-            <Sparkles size={15} color={detectEmotion ? '#10b981' : 'var(--text-muted)'} />
-            <span>{detectEmotion ? t('audioPlayground.emotionOn') : t('audioPlayground.emotionOff')}</span>
-          </button>
 
           {/* Mode Switcher Tabs */}
           <div style={{ display: 'flex', background: 'var(--bg-secondary)', padding: '0.3rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
@@ -761,24 +696,6 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                   <span style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                     <Globe size={13} /> {getLanguageLabel(streamStats.language)}
                   </span>
-                  {detectEmotion && streamStats.emotion && streamStats.emotion !== 'unknown' && (
-                    <span style={{
-                      fontSize: '0.78rem',
-                      color: getEmotionDetails(streamStats.emotion, streamStats.tone).color,
-                      background: getEmotionDetails(streamStats.emotion, streamStats.tone).bg,
-                      border: `1px solid ${getEmotionDetails(streamStats.emotion, streamStats.tone).border}`,
-                      padding: '0.15rem 0.55rem',
-                      borderRadius: '12px',
-                      fontWeight: 600,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.35rem'
-                    }}>
-                      <span>{getEmotionDetails(streamStats.emotion, streamStats.tone).emoji}</span>
-                      <span>{getEmotionDetails(streamStats.emotion, streamStats.tone).label}</span>
-                      {streamStats.pitch_hz > 0 && <span style={{ opacity: 0.7, fontSize: '0.7rem' }}>({Math.round(streamStats.pitch_hz)} Hz)</span>}
-                    </span>
-                  )}
                 </div>
               )}
 
@@ -947,31 +864,13 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
 
             {/* File metadata card */}
             {activeMode === 'file' && fileTranscript && (
-              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', paddingTop: '0.25rem', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', paddingTop: '0.25rem' }}>
                 <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
                   {getLanguageLabel(fileTranscript.language)}
                 </span>
                 <span className="badge badge-secondary" style={{ fontSize: '0.75rem' }}>
                   ⏱️ {fileTranscript.latency_ms} ms latenza
                 </span>
-                {detectEmotion && fileTranscript.emotion && (
-                  <span style={{
-                    fontSize: '0.75rem',
-                    color: getEmotionDetails(fileTranscript.emotion, fileTranscript.tone).color,
-                    background: getEmotionDetails(fileTranscript.emotion, fileTranscript.tone).bg,
-                    border: `1px solid ${getEmotionDetails(fileTranscript.emotion, fileTranscript.tone).border}`,
-                    padding: '0.15rem 0.55rem',
-                    borderRadius: '12px',
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.35rem'
-                  }}>
-                    <span>{getEmotionDetails(fileTranscript.emotion, fileTranscript.tone).emoji}</span>
-                    <span>{getEmotionDetails(fileTranscript.emotion, fileTranscript.tone).label}</span>
-                    {fileTranscript.pitch_hz > 0 && <span style={{ opacity: 0.7, fontSize: '0.68rem' }}>({Math.round(fileTranscript.pitch_hz)} Hz)</span>}
-                  </span>
-                )}
               </div>
             )}
 
@@ -1055,28 +954,11 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                       <span style={{ fontWeight: 600 }}>{item.time}</span>
                       {item.language && (
                         <span style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', padding: '0.1rem 0.35rem', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600 }}>
                           {getLanguageLabel(item.language)}
-                        </span>
-                      )}
-                      {detectEmotion && item.emotion && (
-                        <span style={{
-                          background: getEmotionDetails(item.emotion, item.tone).bg,
-                          color: getEmotionDetails(item.emotion, item.tone).color,
-                          border: `1px solid ${getEmotionDetails(item.emotion, item.tone).border}`,
-                          padding: '0.05rem 0.35rem',
-                          borderRadius: '4px',
-                          fontSize: '0.65rem',
-                          fontWeight: 600,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '0.2rem'
-                        }}>
-                          <span>{getEmotionDetails(item.emotion, item.tone).emoji}</span>
-                          <span>{getEmotionDetails(item.emotion, item.tone).label}</span>
                         </span>
                       )}
                       {item.latency_ms > 0 && (

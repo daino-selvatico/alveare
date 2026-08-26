@@ -49,111 +49,6 @@ def init_npu_lib():
         sys.stderr.write(f"[WhisperSTT] NPU lib load failed: {e}\n")
         return None
 
-def extract_multimodal_emotion(text, audio_arr, sr=16000):
-    if len(audio_arr) < 1600:
-        return {"emotion": "neutral", "tone": "calmo", "confidence": 0.85, "pitch_hz": 0.0}
-    try:
-        # 1. Acoustic Prosodic Analysis
-        rms = float(np.sqrt(np.mean(audio_arr ** 2))) if len(audio_arr) > 0 else 0.0
-        win_len = int(sr * 0.025)
-        hop_len = int(sr * 0.010)
-        n_frames = max(1, (len(audio_arr) - win_len) // hop_len)
-        
-        frame_energies = []
-        pitches = []
-        
-        for i in range(n_frames):
-            frame = audio_arr[i*hop_len : i*hop_len + win_len]
-            f_rms = np.sqrt(np.mean(frame ** 2))
-            frame_energies.append(f_rms)
-            if f_rms > 0.015:
-                frame_centered = frame - np.mean(frame)
-                corr = np.correlate(frame_centered, frame_centered, mode='full')
-                corr = corr[len(corr)//2:]
-                min_lag = int(sr / 400)
-                max_lag = int(sr / 70)
-                if max_lag < len(corr):
-                    peak_lag = min_lag + np.argmax(corr[min_lag:max_lag])
-                    if corr[peak_lag] > 0.35 * corr[0]:
-                        pitches.append(sr / peak_lag)
-
-        valid_pitches = np.array(pitches) if len(pitches) >= 3 else np.array([150.0])
-        mean_pitch = float(np.mean(valid_pitches))
-        pitch_std = float(np.std(valid_pitches))
-        pitch_cv = pitch_std / (mean_pitch + 1e-6)
-
-        # 2. Text Lexical Sentiment
-        lower_text = (text or "").lower()
-        pos_words = [
-            'bello', 'bella', 'grazie', 'ottimo', 'ottima', 'felice', 'perfetto', 'perfetta', 
-            'super', 'frizzante', 'carina', 'carino', 'piace', 'fantastico', 'fantastica', 
-            'evviva', 'amore', 'meraviglia', 'eccellente', 'gioia', 'contento', 'contenta', 
-            'bravo', 'brava', 'splendido', 'splendida', 'great', 'awesome', 'happy', 'love', 
-            'good', 'thank', 'thanks', 'wonderful', 'amazing'
-        ]
-        neg_words = [
-            'brutto', 'brutta', 'pessimo', 'pessima', 'male', 'triste', 'arrabbiato', 'arrabbiata', 
-            'schifo', 'errore', 'fastidio', 'problema', 'stanco', 'stanca', 'stufo', 'stufa', 
-            'noioso', 'noiosa', 'peccato', 'odioso', 'odiosa', 'difficile', 'fallito', 'rabbia', 
-            'paura', 'dolore', 'bad', 'sad', 'angry', 'terrible', 'horrible', 'hate', 'tired', 
-            'broken', 'error', 'fail', 'pain'
-        ]
-        
-        pos_score = sum(1 for w in pos_words if w in lower_text)
-        neg_score = sum(1 for w in neg_words if w in lower_text)
-        has_excl = '!' in (text or '') or '?' in (text or '')
-        
-        # Default baseline is ALWAYS Neutral / Calmo
-        emotion = 'neutral'
-        tone = 'calmo'
-        confidence = 0.85
-
-        if neg_score > pos_score and neg_score >= 1:
-            if rms > 0.08 or pitch_cv > 0.30:
-                emotion = 'angry'
-                tone = 'deciso'
-                confidence = 0.88
-            else:
-                emotion = 'sad'
-                tone = 'sommesso'
-                confidence = 0.85
-        elif pos_score > neg_score and pos_score >= 1:
-            if pitch_cv > 0.22 or mean_pitch > 210.0 or has_excl:
-                emotion = 'happy'
-                tone = 'frizzante'
-                confidence = 0.90
-            else:
-                emotion = 'happy'
-                tone = 'cordiale'
-                confidence = 0.84
-        else:
-            # Pure acoustic features for utterances without explicit emotional keywords
-            if (mean_pitch > 240.0 or pitch_cv > 0.38) and rms > 0.10:
-                emotion = 'surprised' if has_excl else 'happy'
-                tone = 'esclamativo' if has_excl else 'vivace'
-                confidence = 0.80
-            elif mean_pitch > 210.0 and rms > 0.12 and pitch_cv > 0.28:
-                emotion = 'angry'
-                tone = 'deciso'
-                confidence = 0.78
-            elif (mean_pitch < 120.0 or rms < 0.025) and pitch_cv < 0.10:
-                emotion = 'sad'
-                tone = 'sommesso'
-                confidence = 0.80
-            else:
-                emotion = 'neutral'
-                tone = 'calmo'
-                confidence = 0.88
-
-        return {
-            "emotion": emotion,
-            "tone": tone,
-            "confidence": confidence,
-            "pitch_hz": round(mean_pitch, 1)
-        }
-    except Exception:
-        return {"emotion": "neutral", "tone": "calmo", "confidence": 0.85, "pitch_hz": 0.0}
-
 def main():
     model_id = "openai/whisper-base"
     device = "npu"
@@ -303,7 +198,6 @@ def main():
             audio_target = req.get("input")
             language = req.get("language", "auto")
             use_itn = req.get("use_itn", True)
-            detect_emotion = req.get("detect_emotion", True)
             
             t0 = time.perf_counter()
             raw_text = ""
@@ -323,24 +217,22 @@ def main():
                     inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
                     gen_kwargs = {
                         "max_new_tokens": 128,
-                        "num_beams": 1,
-                        "no_repeat_ngram_size": 3,
-                        "return_dict_in_generate": True
+                        "return_dict_in_generate": True,
+                        "output_scores": False,
+                        "do_sample": False,
+                        "num_beams": 1
                     }
-                    target_lang = language if (language and language not in ("auto", "unknown", "")) else "it"
-                    try:
-                        forced_ids = processor.get_decoder_prompt_ids(language=target_lang, task="transcribe")
-                        gen_kwargs["forced_decoder_ids"] = forced_ids
-                        detected_lang = target_lang
-                    except Exception:
-                        pass
-                    
+                    if language and language not in ("auto", "unknown", ""):
+                        gen_kwargs["language"] = language
+                        gen_kwargs["task"] = "transcribe"
+
                     with torch.no_grad():
                         gen_out = model.generate(inputs.input_features, **gen_kwargs)
                     
-                    seq = gen_out.sequences[0].tolist()
-                    if len(seq) > 1 and (not language or language in ("auto", "unknown", "")):
-                        token_str = processor.tokenizer.decode([seq[1]]).strip()
+                    # Extract detected language token if auto-detected
+                    if language in ("auto", "unknown", "") and hasattr(gen_out, "sequences") and gen_out.sequences.shape[1] > 1:
+                        first_tok = gen_out.sequences[0, 1].item()
+                        token_str = processor.tokenizer.decode([first_tok]).strip()
                         if token_str.startswith("<|") and token_str.endswith("|>"):
                             detected_lang = token_str[2:-2]
                     elif language and language not in ("auto", "unknown", ""):
@@ -358,25 +250,13 @@ def main():
                     raw_text = res[0].get("text", "")
 
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            
-            # Extract multimodal vocal emotion and tone in parallel if enabled
-            emotion_res = None
-            if detect_emotion and is_whisper and 'speech_np' in locals():
-                emotion_res = extract_multimodal_emotion(raw_text, speech_np)
                 
-            resp_dict = {
+            ipc_out.write(json.dumps({
                 "status": "success",
                 "raw_text": raw_text,
                 "language": detected_lang,
                 "latency_ms": round(elapsed_ms, 2)
-            }
-            if emotion_res:
-                resp_dict["emotion"] = emotion_res.get("emotion", "neutral")
-                resp_dict["tone"] = emotion_res.get("tone", "calmo")
-                resp_dict["pitch_hz"] = emotion_res.get("pitch_hz", 0.0)
-                resp_dict["emotion_confidence"] = emotion_res.get("confidence", 0.85)
-
-            ipc_out.write(json.dumps(resp_dict) + "\n")
+            }) + "\n")
             ipc_out.flush()
         except Exception as e:
             ipc_out.write(json.dumps({

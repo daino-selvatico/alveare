@@ -1031,31 +1031,23 @@ async def upload_files(req: FileUploadRequest):
 
 # OpenAI-compatible Audio Transcription API
 @app.post("/v1/audio/transcriptions")
-async def create_audio_transcription(
+async def audio_transcriptions(
     file: UploadFile = File(...),
     model: Optional[str] = Form("whisper-base"),
     language: Optional[str] = Form(None),
     prompt: Optional[str] = Form(None),
     response_format: Optional[str] = Form("json"),
-    temperature: Optional[float] = Form(0.0),
-    detect_emotion: Optional[Any] = Form(True)
+    temperature: Optional[float] = Form(0.0)
 ):
     try:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Empty audio file provided")
 
-        do_emotion = True
-        if detect_emotion is not None:
-            if isinstance(detect_emotion, bool):
-                do_emotion = detect_emotion
-            elif isinstance(detect_emotion, str):
-                do_emotion = detect_emotion.lower() in ("true", "1", "yes")
-
         stt = WhisperSTT.get_instance()
         state.is_transcribing = True
         try:
-            res = await asyncio.to_thread(stt.transcribe, content, language=language or "auto", detect_emotion=do_emotion)
+            res = await asyncio.to_thread(stt.transcribe, content, language or "auto")
         finally:
             state.is_transcribing = False
             state.last_transcribe_time = time.time()
@@ -1066,25 +1058,15 @@ async def create_audio_transcription(
         if response_format == "text":
             return PlainTextResponse(res.get("text", ""))
         elif response_format == "verbose_json":
-            ret = {
+            return {
                 "task": "transcribe",
                 "language": res.get("language", "auto"),
                 "duration": round(len(content) / 32000.0, 2),
                 "text": res.get("text", ""),
                 "latency_ms": res.get("latency_ms", 0.0)
             }
-            if do_emotion and "emotion" in res:
-                ret["emotion"] = res.get("emotion")
-                ret["tone"] = res.get("tone")
-                ret["pitch_hz"] = res.get("pitch_hz", 0.0)
-                ret["emotion_confidence"] = res.get("emotion_confidence", 0.85)
-            return ret
         else:
-            ret = {"text": res.get("text", "")}
-            if do_emotion and "emotion" in res:
-                ret["emotion"] = res.get("emotion")
-                ret["tone"] = res.get("tone")
-            return ret
+            return {"text": res.get("text", "")}
     except HTTPException:
         raise
     except Exception as e:
@@ -1099,8 +1081,7 @@ class SttJsonRequest(BaseModel):
 async def api_stt_transcribe(
     file: Optional[UploadFile] = File(None),
     audio_b64: Optional[str] = Form(None),
-    language: Optional[str] = Form("auto"),
-    detect_emotion: Optional[Any] = Form(True)
+    language: Optional[str] = Form("auto")
 ):
     try:
         content = b""
@@ -1111,17 +1092,10 @@ async def api_stt_transcribe(
         else:
             raise HTTPException(status_code=400, detail="Nessun flusso audio inviato.")
 
-        do_emotion = True
-        if detect_emotion is not None:
-            if isinstance(detect_emotion, bool):
-                do_emotion = detect_emotion
-            elif isinstance(detect_emotion, str):
-                do_emotion = detect_emotion.lower() in ("true", "1", "yes")
-
         stt = WhisperSTT.get_instance()
         state.is_transcribing = True
         try:
-            res = await asyncio.to_thread(stt.transcribe, content, language=language or "auto", detect_emotion=do_emotion)
+            res = await asyncio.to_thread(stt.transcribe, content, language=language or "auto")
         finally:
             state.is_transcribing = False
             state.last_transcribe_time = time.time()
@@ -1138,7 +1112,6 @@ async def handle_stt_stream_connection(websocket: WebSocket):
     stt = WhisperSTT.get_instance()
     
     stream_language = "auto"
-    stream_detect_emotion = True
     utterance_buffer = bytearray()
     
     SILENCE_THRESHOLD_RMS = 15.0  # Sensitive RMS threshold for 16-bit PCM silence detection
@@ -1179,23 +1152,16 @@ async def handle_stt_stream_connection(websocket: WebSocket):
         try:
             usable_len = len(pcm_bytes) - (len(pcm_bytes) % 2)
             pcm_arr = np.frombuffer(pcm_bytes[:usable_len], dtype=np.int16).astype(np.float32) / 32768.0
-            res = await asyncio.to_thread(stt.transcribe, pcm_arr, stream_language, detect_emotion=stream_detect_emotion)
+            res = await asyncio.to_thread(stt.transcribe, pcm_arr, stream_language)
             text = res.get("text", "").strip()
             if text or is_final:
-                msg_payload = {
+                await websocket.send_json({
                     "type": "final" if is_final else "partial",
                     "text": text,
                     "language": res.get("language", stream_language),
                     "latency_ms": res.get("latency_ms", 0.0),
                     "is_final": is_final
-                }
-                if stream_detect_emotion:
-                    msg_payload["emotion"] = res.get("emotion", "neutral")
-                    msg_payload["tone"] = res.get("tone", "calmo")
-                    msg_payload["pitch_hz"] = res.get("pitch_hz", 0.0)
-                    msg_payload["emotion_confidence"] = res.get("emotion_confidence", 0.85)
-
-                await websocket.send_json(msg_payload)
+                })
         except Exception as e:
             print(f"[WebSocket STT] Transcription error: {e}")
         finally:
@@ -1233,8 +1199,6 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                         action = payload.get("action", "")
                         if action == "set_language":
                             stream_language = payload.get("language", "auto")
-                        elif action == "set_detect_emotion":
-                            stream_detect_emotion = bool(payload.get("enabled", True))
                         elif action in ("flush", "stop", "final"):
                             if len(utterance_buffer) >= 3200:
                                 current_pcm = bytes(utterance_buffer)

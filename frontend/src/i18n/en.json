@@ -359,9 +359,6 @@
     "clickToListen": "Click to start real-time speech streaming",
     "streamingSubtext": "Continuous streaming over WebSocket at /ws/stt (16kHz)",
     "zeroDelaySubtext": "Low latency: spoken words transcribed in real time",
-    "emotionToggle": "Tone & Emotions",
-    "emotionOn": "Tone & Emotions: ON",
-    "emotionOff": "Tone & Emotions: OFF",
     "stopListening": "Stop listening",
     "startListening": "Start real-time listening",
     "latency": "{latency} ms latency",
@@ -392,12 +389,6 @@
     "serverOffBannerTitle": "STT Server Not Running",
     "serverOffBannerDesc": "To transcribe voice or audio files, start the STT model in the Control Panel first.",
     "goToControlPanel": "Go to Control Panel",
-    "emotionNeutral": "😐 Neutral",
-    "emotionHappy": "😄 Happy",
-    "emotionSad": "😢 Sad",
-    "emotionAngry": "😡 Angry",
-    "emotionFearful": "😨 Fearful",
-    "emotionSurprised": "😲 Surprised",
     "micError": "Unable to access microphone: {error}"
   }
 }

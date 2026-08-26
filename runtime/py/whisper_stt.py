@@ -1,8 +1,8 @@
 """
 Whisper Speech-to-Text (STT) Engine for Alveare.
 
-Provides high-accuracy speech transcription, multilingual recognition (Italian, English,
-Spanish, French, German, Chinese, Japanese, etc.), emotion detection, and audio event detection.
+Provides high-accuracy speech transcription and multilingual recognition (Italian, English,
+Spanish, French, German, Chinese, Japanese, etc.) accelerated on AMD NPU.
 """
 import os
 import sys
@@ -123,8 +123,7 @@ class WhisperSTT:
         self,
         audio_input: Union[str, bytes, np.ndarray, Path],
         language: str = "auto",
-        use_itn: bool = True,
-        detect_emotion: bool = True
+        use_itn: bool = True
     ) -> Dict[str, Any]:
         """
         Transcribe audio input to text.
@@ -173,10 +172,6 @@ class WhisperSTT:
         try:
             raw_text = ""
             detected_lang = language if language not in ("auto", "unknown", "") else "it"
-            emotion = None
-            tone = None
-            pitch_hz = 0.0
-            emotion_confidence = 0.0
 
             if self._model is not None:
                 res = self._model.generate(
@@ -195,8 +190,7 @@ class WhisperSTT:
                     req_line = json.dumps({
                         "input": input_target,
                         "language": language if language != "auto" else "auto",
-                        "use_itn": use_itn,
-                        "detect_emotion": detect_emotion
+                        "use_itn": use_itn
                     })
                     self._worker_proc.stdin.write(req_line + "\n")
                     self._worker_proc.stdin.flush()
@@ -206,29 +200,18 @@ class WhisperSTT:
                         raise RuntimeError(data.get("error", "Worker error"))
                     raw_text = data.get("raw_text", "")
                     detected_lang = data.get("language", detected_lang)
-                    if detect_emotion:
-                        emotion = data.get("emotion", "neutral")
-                        tone = data.get("tone", "calmo")
-                        pitch_hz = data.get("pitch_hz", 0.0)
-                        emotion_confidence = data.get("emotion_confidence", 0.85)
             else:
                 raise RuntimeError("No STT model or worker available.")
 
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             clean = self.clean_text(raw_text)
-            ret_payload = {
+            return {
                 "text": clean,
                 "raw_text": raw_text,
                 "language": detected_lang,
                 "latency_ms": round(elapsed_ms, 2),
                 "status": "success"
             }
-            if detect_emotion and emotion is not None:
-                ret_payload["emotion"] = emotion
-                ret_payload["tone"] = tone
-                ret_payload["pitch_hz"] = pitch_hz
-                ret_payload["emotion_confidence"] = emotion_confidence
-            return ret_payload
 
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
