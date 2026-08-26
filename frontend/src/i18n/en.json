@@ -350,11 +350,12 @@
   },
   "audioPlayground": {
     "title": "Whisper STT Workbench",
-    "subtitle": "High-accuracy speech recognition with multilingual support (Italian, English, European & Asian languages) on CPU.",
+    "subtitle": "High-accuracy speech recognition with multilingual support on NPU / CPU.",
     "liveAudioBadge": "Live Audio Real-Time",
     "liveStreamTab": "Live Streaming (Microphone)",
     "fileTab": "Audio File",
     "listeningPrompt": "Listening continuously... Speak freely",
+    "finalizing": "Finalizing transcription in progress...",
     "clickToListen": "Click to start real-time speech streaming",
     "streamingSubtext": "Continuous streaming over WebSocket at /ws/stt (16kHz)",
     "zeroDelaySubtext": "Low latency: spoken words transcribed in real time",

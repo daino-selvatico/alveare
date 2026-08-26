@@ -350,11 +350,12 @@
   },
   "audioPlayground": {
     "title": "Whisper STT Workbench",
-    "subtitle": "Trascrizione vocale ad alta precisione con riconoscimento multilingua (Italiano, English, ecc.) su CPU.",
+    "subtitle": "Trascrizione vocale ad alta precisione con riconoscimento multilingua su NPU / CPU.",
     "liveAudioBadge": "Audio Real-Time",
     "liveStreamTab": "Streaming Live (Microfono)",
     "fileTab": "File Audio",
     "listeningPrompt": "In ascolto continuo... Parla liberamente",
+    "finalizing": "Elaborazione trascrizione finale in corso...",
     "clickToListen": "Clicca per avviare la trascrizione vocale in streaming",
     "streamingSubtext": "Streaming continuo via WebSocket su /ws/stt a 16kHz",
     "zeroDelaySubtext": "Nessun ritardo: le parole appaiono in tempo reale",

@@ -1105,7 +1105,7 @@ async def api_stt_transcribe(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore STT: {e}")
 
-# Real-Time WebSocket Streaming STT Engine with Voice Activity Detection (VAD) & Sentence Segmentation
+# Real-Time WebSocket Streaming STT Engine with Voice Activity Detection (VAD) & Continuous Sentence Segmentation
 async def handle_stt_stream_connection(websocket: WebSocket):
     await websocket.accept()
     from runtime.py.whisper_stt import WhisperSTT
@@ -1114,19 +1114,39 @@ async def handle_stt_stream_connection(websocket: WebSocket):
     stream_language = "auto"
     utterance_buffer = bytearray()
     
-    SILENCE_THRESHOLD_RMS = 40.0  # Sensitive RMS threshold for 16-bit PCM silence detection
+    SILENCE_THRESHOLD_RMS = 15.0  # Sensitive RMS threshold for 16-bit PCM silence detection
     MIN_UTTERANCE_BYTES = int(16000 * 2 * 0.35)  # 0.35s minimum audio (~11,200 bytes)
-    SILENCE_COMMIT_SECS = 2.0  # 2.0s silence commits and splits sentence into history
+    SILENCE_COMMIT_SECS = 1.8  # 1.8s silence commits and splits sentence into history
     MAX_PHRASE_BYTES = int(16000 * 2 * 25.0)  # 25.0s max phrase before auto-commit
+    PARTIAL_INTERVAL_SECS = 1.0  # Emits live partial every 1.0s if speaking
     
     speech_active = False
     last_voice_time = time.time()
+    last_partial_time = time.time()
     is_busy = False
 
     async def _transcribe_audio(pcm_bytes: bytes, is_final: bool):
         nonlocal is_busy
         if len(pcm_bytes) < 3200:  # < 100ms
+            if is_final:
+                try:
+                    await websocket.send_json({
+                        "type": "final",
+                        "text": "",
+                        "language": stream_language,
+                        "latency_ms": 0.0,
+                        "is_final": True
+                    })
+                except Exception:
+                    pass
             return
+            
+        if is_final:
+            while is_busy:
+                await asyncio.sleep(0.05)
+        elif is_busy:
+            return
+            
         is_busy = True
         state.is_transcribing = True
         try:
@@ -1151,9 +1171,9 @@ async def handle_stt_stream_connection(websocket: WebSocket):
 
     try:
         while True:
-            # Check timeout every 100ms so silence can commit even during mic pauses
+            # Check timeout every 50ms so silence and partials update responsively
             try:
-                msg = await asyncio.wait_for(websocket.receive(), timeout=0.10)
+                msg = await asyncio.wait_for(websocket.receive(), timeout=0.05)
             except asyncio.TimeoutError:
                 msg = None
 
@@ -1171,7 +1191,7 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                             last_voice_time = now
                             utterance_buffer.extend(chunk)
                         elif speech_active:
-                            # User was speaking, now a short trailing silent frame
+                            # Short pause/silence while user is in active conversation
                             utterance_buffer.extend(chunk)
                 elif "text" in msg and msg["text"]:
                     try:
@@ -1181,7 +1201,18 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                             stream_language = payload.get("language", "auto")
                         elif action in ("flush", "stop", "final"):
                             if len(utterance_buffer) >= 3200:
-                                await _transcribe_audio(bytes(utterance_buffer), is_final=True)
+                                current_pcm = bytes(utterance_buffer)
+                                utterance_buffer.clear()
+                                speech_active = False
+                                await _transcribe_audio(current_pcm, is_final=True)
+                            else:
+                                await websocket.send_json({
+                                    "type": "final",
+                                    "text": "",
+                                    "language": stream_language,
+                                    "latency_ms": 0.0,
+                                    "is_final": True
+                                })
                             utterance_buffer.clear()
                             speech_active = False
                         elif action == "clear":
@@ -1192,7 +1223,7 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                     except Exception as err:
                         print(f"[WebSocket STT] JSON error: {err}")
 
-            # Check if current utterance needs finalization (sentence finished by pause or reached max duration)
+            # Check if current utterance needs partial update or finalization
             if speech_active and len(utterance_buffer) >= MIN_UTTERANCE_BYTES:
                 time_since_voice = now - last_voice_time
                 phrase_too_long = len(utterance_buffer) >= MAX_PHRASE_BYTES
@@ -1202,7 +1233,12 @@ async def handle_stt_stream_connection(websocket: WebSocket):
                     current_pcm = bytes(utterance_buffer)
                     utterance_buffer.clear()
                     speech_active = False
+                    last_partial_time = now
                     asyncio.create_task(_transcribe_audio(current_pcm, is_final=True))
+                elif (now - last_partial_time >= PARTIAL_INTERVAL_SECS) and not is_busy:
+                    last_partial_time = now
+                    current_pcm = bytes(utterance_buffer)
+                    asyncio.create_task(_transcribe_audio(current_pcm, is_final=False))
 
     except WebSocketDisconnect:
         pass

@@ -46,6 +46,8 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
   // Real-time streaming state
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const isStreamingRef = useRef(false);
   const [liveTranscript, setLiveTranscript] = useState('');
   const [streamHistory, setStreamHistory] = useState(() => {
     try {
@@ -162,6 +164,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
       return;
     }
     setErrorMsg('');
+    setIsFinalizing(false);
     try {
       // 1. Get user microphone stream
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -199,6 +202,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
 
       ws.onopen = () => {
         setIsStreaming(true);
+        isStreamingRef.current = true;
         if (selectedLanguage !== 'auto') {
           ws.send(JSON.stringify({ action: "set_language", language: selectedLanguage }));
         }
@@ -208,22 +212,29 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
         try {
           const data = JSON.parse(evt.data);
           if (data.type === 'partial' || data.type === 'final') {
-            if (data.text !== undefined && data.text !== null) {
+            if (data.text !== undefined && data.text !== null && data.text.trim()) {
               setLiveTranscript(data.text);
             }
             setStreamStats({
               language: data.language || 'auto',
               latency_ms: data.latency_ms || 0
             });
-            if (data.is_final && data.text && data.text.trim()) {
-              const newEntry = {
-                id: Date.now() + '-' + Math.random().toString(36).substring(2, 7),
-                text: data.text.trim(),
-                time: new Date().toLocaleTimeString(),
-                language: data.language || 'auto',
-                latency_ms: data.latency_ms || 0
-              };
-              setStreamHistory(prev => [newEntry, ...prev]);
+            if (data.is_final) {
+              setIsFinalizing(false);
+              if (data.text && data.text.trim()) {
+                const newEntry = {
+                  id: Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+                  text: data.text.trim(),
+                  time: new Date().toLocaleTimeString(),
+                  language: data.language || 'auto',
+                  latency_ms: data.latency_ms || 0
+                };
+                setStreamHistory(prev => [newEntry, ...prev]);
+              }
+              if (!isStreamingRef.current) {
+                try { ws.close(); } catch (e) {}
+                wsRef.current = null;
+              }
             }
           }
         } catch (e) {
@@ -234,10 +245,13 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
       ws.onerror = (err) => {
         console.error("WebSocket error:", err);
         setErrorMsg('Errore di connessione al WebSocket STT.');
+        setIsFinalizing(false);
       };
 
       ws.onclose = () => {
         setIsStreaming(false);
+        isStreamingRef.current = false;
+        setIsFinalizing(false);
       };
 
       // 4. Create ScriptProcessorNode to capture and downsample to 16kHz PCM
@@ -246,7 +260,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
       processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
-        if (ws.readyState === WebSocket.OPEN) {
+        if (ws.readyState === WebSocket.OPEN && isStreamingRef.current) {
           const inputData = e.inputBuffer.getChannelData(0);
           const downsampled = downsampleBuffer(inputData, ctx.sampleRate, 16000);
           // Convert float32 [-1.0, 1.0] to int16 PCM [-32768, 32767]
@@ -273,15 +287,9 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
   };
 
   const stopRealtimeStream = () => {
-    if (wsRef.current) {
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ action: "flush" }));
-      }
-      setTimeout(() => {
-        try { wsRef.current.close(); } catch (e) {}
-        wsRef.current = null;
-      }, 200);
-    }
+    isStreamingRef.current = false;
+    setIsStreaming(false);
+
     if (processorRef.current) {
       try { processorRef.current.disconnect(); } catch (e) {}
       processorRef.current = null;
@@ -296,8 +304,22 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
     }
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
     }
-    setIsStreaming(false);
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      setIsFinalizing(true);
+      wsRef.current.send(JSON.stringify({ action: "flush" }));
+      setTimeout(() => {
+        if (wsRef.current) {
+          try { wsRef.current.close(); } catch (e) {}
+          wsRef.current = null;
+        }
+        setIsFinalizing(false);
+      }, 10000);
+    } else {
+      setIsFinalizing(false);
+    }
   };
 
   // Copy helper
@@ -612,7 +634,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
               {/* Central Mic Button */}
               <button
                 onClick={isStreaming ? stopRealtimeStream : startRealtimeStream}
-                disabled={!isServerRunning}
+                disabled={!isServerRunning || isFinalizing}
                 style={{
                   width: '84px',
                   height: '84px',
@@ -620,26 +642,34 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                   border: 'none',
                   background: isStreaming
                     ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
+                    : isFinalizing
+                    ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)'
                     : 'linear-gradient(135deg, #06b6d4 0%, #8b5cf6 100%)',
                   color: 'white',
-                  cursor: isServerRunning ? 'pointer' : 'not-allowed',
+                  cursor: (isServerRunning && !isFinalizing) ? 'pointer' : 'not-allowed',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   boxShadow: isStreaming
                     ? '0 0 35px rgba(239, 68, 68, 0.6)'
+                    : isFinalizing
+                    ? '0 0 30px rgba(245, 158, 11, 0.5)'
                     : '0 0 30px rgba(6, 182, 212, 0.4)',
                   transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
                 }}
-                className={isStreaming ? 'pulse-icon' : ''}
+                className={isStreaming || isFinalizing ? 'pulse-icon' : ''}
                 title={isStreaming ? t('audioPlayground.stopListening') : t('audioPlayground.startListening')}
               >
-                {isStreaming ? <MicOff size={36} /> : <Mic size={36} />}
+                {isStreaming ? <MicOff size={36} /> : isFinalizing ? <Activity size={36} /> : <Mic size={36} />}
               </button>
 
               <div style={{ marginTop: '1rem', textAlign: 'center' }}>
                 <span style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-main)' }}>
-                  {isStreaming ? t('audioPlayground.listeningPrompt') : t('audioPlayground.clickToListen')}
+                  {isFinalizing
+                    ? '⏳ ' + (t('audioPlayground.finalizing') || 'Elaborazione trascrizione finale in corso...')
+                    : isStreaming
+                    ? t('audioPlayground.listeningPrompt')
+                    : t('audioPlayground.clickToListen')}
                 </span>
                 <p style={{ margin: '0.25rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   {isStreaming ? t('audioPlayground.streamingSubtext') : t('audioPlayground.zeroDelaySubtext')}
@@ -828,7 +858,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
               fontStyle: (activeMode === 'realtime' ? liveTranscript : fileTranscript?.text) ? 'normal' : 'italic'
             }}>
               {activeMode === 'realtime'
-                ? (liveTranscript || (isStreaming ? t('audioPlayground.waitingForAudio') : t('audioPlayground.pressMicToSpeak')))
+                ? (liveTranscript || (isFinalizing ? ('⏳ ' + (t('audioPlayground.finalizing') || 'Elaborazione trascrizione finale in corso...')) : isStreaming ? t('audioPlayground.waitingForAudio') : t('audioPlayground.pressMicToSpeak')))
                 : (fileTranscript?.text || (isTranscribingFile ? t('audioPlayground.transcribingFile') : t('audioPlayground.uploadFileToTranscribe')))}
             </div>
 
