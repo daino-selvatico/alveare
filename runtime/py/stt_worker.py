@@ -265,6 +265,7 @@ def main():
             audio_target = req.get("input")
             language = req.get("language", "auto")
             use_itn = req.get("use_itn", True)
+            detect_emotion = req.get("detect_emotion", True)
             
             t0 = time.perf_counter()
             raw_text = ""
@@ -320,21 +321,24 @@ def main():
 
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             
-            # Extract acoustic vocal emotion and tone in parallel (takes ~2ms)
-            emotion_res = {"emotion": "neutral", "tone": "calmo", "confidence": 0.85, "pitch_hz": 0.0}
-            if is_whisper and 'speech_np' in locals():
+            # Extract acoustic vocal emotion and tone in parallel if enabled
+            emotion_res = None
+            if detect_emotion and is_whisper and 'speech_np' in locals():
                 emotion_res = extract_acoustic_emotion(speech_np)
                 
-            ipc_out.write(json.dumps({
+            resp_dict = {
                 "status": "success",
                 "raw_text": raw_text,
                 "language": detected_lang,
-                "latency_ms": round(elapsed_ms, 2),
-                "emotion": emotion_res.get("emotion", "neutral"),
-                "tone": emotion_res.get("tone", "calmo"),
-                "pitch_hz": emotion_res.get("pitch_hz", 0.0),
-                "emotion_confidence": emotion_res.get("confidence", 0.85)
-            }) + "\n")
+                "latency_ms": round(elapsed_ms, 2)
+            }
+            if emotion_res:
+                resp_dict["emotion"] = emotion_res.get("emotion", "neutral")
+                resp_dict["tone"] = emotion_res.get("tone", "calmo")
+                resp_dict["pitch_hz"] = emotion_res.get("pitch_hz", 0.0)
+                resp_dict["emotion_confidence"] = emotion_res.get("confidence", 0.85)
+
+            ipc_out.write(json.dumps(resp_dict) + "\n")
             ipc_out.flush()
         except Exception as e:
             ipc_out.write(json.dumps({

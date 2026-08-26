@@ -36,6 +36,20 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     return localStorage.getItem('alveare_stt_language') || 'auto';
   });
 
+  // Optional Emotion & Tone Detection Flag (User preference)
+  const [detectEmotion, setDetectEmotion] = useState(() => {
+    const saved = localStorage.getItem('alveare_stt_detect_emotion');
+    return saved !== null ? saved === 'true' : true;
+  });
+
+  const handleDetectEmotionToggle = (val) => {
+    setDetectEmotion(val);
+    localStorage.setItem('alveare_stt_detect_emotion', val ? 'true' : 'false');
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ action: "set_detect_emotion", enabled: val }));
+    }
+  };
+
   const handleLanguageChange = (lang) => {
     setSelectedLanguage(lang);
     localStorage.setItem('alveare_stt_language', lang);
@@ -226,6 +240,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
         if (selectedLanguage !== 'auto') {
           ws.send(JSON.stringify({ action: "set_language", language: selectedLanguage }));
         }
+        ws.send(JSON.stringify({ action: "set_detect_emotion", enabled: detectEmotion }));
       };
 
       ws.onmessage = (evt) => {
@@ -388,6 +403,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
     if (selectedLanguage !== 'auto') {
       formData.append('language', selectedLanguage);
     }
+    formData.append('detect_emotion', detectEmotion ? 'true' : 'false');
     formData.append('response_format', 'verbose_json');
 
     setIsTranscribingFile(true);
@@ -522,6 +538,29 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
               <option value="tr" style={{ background: 'var(--bg-secondary)', color: 'var(--text-main)' }}>🇹🇷 Türkçe</option>
             </select>
           </div>
+
+          {/* Optional Tone & Emotion Toggle Button */}
+          <button
+            onClick={() => handleDetectEmotionToggle(!detectEmotion)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              background: detectEmotion ? 'rgba(16, 185, 129, 0.15)' : 'var(--bg-secondary)',
+              color: detectEmotion ? '#10b981' : 'var(--text-muted)',
+              border: `1px solid ${detectEmotion ? 'rgba(16, 185, 129, 0.4)' : 'var(--border-color)'}`,
+              padding: '0.45rem 0.75rem',
+              borderRadius: '10px',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+            title={detectEmotion ? 'Riconoscimento tonalità ed emozioni attivo' : 'Riconoscimento tonalità disattivato'}
+          >
+            <Sparkles size={15} color={detectEmotion ? '#10b981' : 'var(--text-muted)'} />
+            <span>{detectEmotion ? t('audioPlayground.emotionOn') : t('audioPlayground.emotionOff')}</span>
+          </button>
 
           {/* Mode Switcher Tabs */}
           <div style={{ display: 'flex', background: 'var(--bg-secondary)', padding: '0.3rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
@@ -722,7 +761,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                   <span style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                     <Globe size={13} /> {getLanguageLabel(streamStats.language)}
                   </span>
-                  {streamStats.emotion && streamStats.emotion !== 'unknown' && (
+                  {detectEmotion && streamStats.emotion && streamStats.emotion !== 'unknown' && (
                     <span style={{
                       fontSize: '0.78rem',
                       color: getEmotionDetails(streamStats.emotion, streamStats.tone).color,
@@ -915,7 +954,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                 <span className="badge badge-secondary" style={{ fontSize: '0.75rem' }}>
                   ⏱️ {fileTranscript.latency_ms} ms latenza
                 </span>
-                {fileTranscript.emotion && (
+                {detectEmotion && fileTranscript.emotion && (
                   <span style={{
                     fontSize: '0.75rem',
                     color: getEmotionDetails(fileTranscript.emotion, fileTranscript.tone).color,
@@ -1023,7 +1062,7 @@ function downsampleBuffer(buffer, sampleRate, outSampleRate = 16000) {
                           {getLanguageLabel(item.language)}
                         </span>
                       )}
-                      {item.emotion && (
+                      {detectEmotion && item.emotion && (
                         <span style={{
                           background: getEmotionDetails(item.emotion, item.tone).bg,
                           color: getEmotionDetails(item.emotion, item.tone).color,
