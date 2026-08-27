@@ -3,6 +3,38 @@
 All notable changes to Alveare are documented here. This project targets the
 AMD Ryzen AI (XDNA2) NPU on Linux.
 
+## [2.1.0] — 2026-08-27
+
+### Highlights
+- **🎙️ Native Speech-to-Text (STT) Engine on AMD Ryzen AI NPU (XDNA2)**:
+  Alveare now features a high-performance, low-latency Speech-to-Text engine supporting OpenAI Whisper architecture with dedicated hardware acceleration on AMD XDNA2 NPU cores and multi-threaded CPU fallback.
+- **⚡ Dual Whisper Model Support (Whisper Base & Whisper Large v3 Turbo / v3)**:
+  - **Whisper Base**: 145 MB lightweight STT model for instant, low-latency real-time live captions and voice dictation.
+  - **Whisper Large v3 Turbo**: 1.6 GB state-of-the-art model offering maximum transcription accuracy (identical WER to Large v3) at 4x-6x faster decoding speed with 4 decoder layers.
+  - **Whisper Large v3**: 3.1 GB full 32-layer Whisper model for maximum acoustic depth and multilingual precision across 90+ languages.
+- **🏎️ Hardware-Accelerated NPU GEMV Kernels for STT**:
+  Compiled custom 32-core MLIR-AIE kernels for Whisper Large ($d_{model}=1280$, $H_{ffn}=5120$): `gemv_1280x1280`, `gemv_3840x1280` (fused QKV), `gemv_5120x1280` (FFN FC1), and `gemv_1280x5120` (FFN FC2).
+- **🌊 Low-Latency Real-Time WebSocket Streaming (`/ws/stt`)**:
+  Continuous microphone audio streaming with server-side Voice Activity Detection (VAD), chunk buffering, live partials, and multi-language auto-detection.
+- **🔌 OpenAI-Compatible REST Transcriptions API (`/v1/audio/transcriptions`)**:
+  Full compatibility with OpenAI Whisper API format (JSON, verbose JSON, text) supporting `.wav`, `.mp3`, `.ogg`, `.flac`, `.m4a`, and `.webm` file uploads.
+- **🎛️ Audio Playground & Interactive Workbench**:
+  Dedicated Web UI view featuring live audio visualizer, continuous recording, file drag-and-drop transcription, audio playback, latency metrics, and copy/export history.
+- **🚀 1-Click Model Setup via Web UI & CLI**:
+  Automated model downloading, quantization validation, and registration for Whisper models via the UI "Aggiungi Modello" modal or `./alveare setup <model>`.
+
+### Added
+- Compiled NPU kernel artifacts in `kernels/build/` for $1280\times1280$, $3840\times1280$, $5120\times1280$, and $1280\times5120$.
+- `runtime/py/whisper_stt.py` and `runtime/py/stt_worker.py` with multi-threaded persistent worker and NPU layer offloading.
+- WebSocket endpoint `/ws/stt` and REST endpoint `/v1/audio/transcriptions` in `runtime/py/control_server.py`.
+- `frontend/src/components/AudioPlayground.jsx` workbench with live microphone waveforms, transcription history, and file upload.
+- Automated preset definitions for `whisper-large-v3-turbo` and `whisper-large-v3` in `tools/setup_model.py` and `./alveare` CLI.
+- Documentation in `docs/stt-engine.md` detailing architecture, NPU kernel execution, and API schemas.
+
+### Changed
+- Refactored model switcher and device manager to seamlessly support both `text-generation` and `speech-to-text` tasks across NPU and CPU.
+- Preserved pure, high-fidelity acoustic transcription with clean removal of ungrounded emotion/tone heuristics.
+
 ## [2.0.0] — 2026-08-25
 
 ### Highlights
