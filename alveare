@@ -300,7 +300,7 @@ cmd_serve() {
 
   device="$(echo "$device" | tr '[:upper:]' '[:lower:]')"
   if [ "$device" = "cpu" ]; then
-    if [ "$model" != "whisper" ] && [ "$model" != "whisper-base" ] && [[ "$model" != *"whisper"* ]]; then
+    if [ "$model" != "whisper" ] && [ "$model" != "whisper-base" ] && [[ "$model" != *"whisper"* ]] && [[ "$model" != *"audio8"* ]] && [[ "$model" != *"tts"* ]]; then
       echo "error: CPU execution is not supported for model '$model'. Only NPU (XDNA2) is supported." >&2
       exit 1
     fi
@@ -359,6 +359,21 @@ cmd_serve() {
     echo "Starting Whisper Speech-to-Text Server on $dev_label..."
     echo "  WebSocket Live Stream: ws://$host:$port/ws/stt"
     echo "  OpenAI STT Endpoint:   http://$host:$port/v1/audio/transcriptions"
+    echo
+    exec "$PY" -c "
+import sys, uvicorn
+from runtime.py.control_server import app, start_inference_server
+start_inference_server(model='$model', host='$host', port=$port, device='$device')
+uvicorn.run(app, host='$host', port=$port, log_level='info')
+"
+  fi
+
+  if [ "$model" = "audio8" ] || [[ "$model" == *"audio8"* ]] || [[ "$model" == *"tts"* ]]; then
+    local dev_label="NPU (XDNA2 Native)"
+    [ "$device" = "cpu" ] && dev_label="CPU"
+    echo "Starting Audio8 Text-to-Speech Server on $dev_label..."
+    echo "  OpenAI TTS Endpoint:   http://$host:$port/v1/audio/speech"
+    echo "  Web UI Studio:         http://$host:$port"
     echo
     exec "$PY" -c "
 import sys, uvicorn

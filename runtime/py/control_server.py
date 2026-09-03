@@ -13,12 +13,13 @@ import mimetypes
 import uuid
 import shutil
 import threading
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import numpy as np
 
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -395,7 +396,20 @@ def discover_models() -> List[Dict[str, Any]]:
             if size_mb == 0:
                 size_mb = 1600.0 if "large" in alias else 145.0
 
-        supported_devices = ["npu", "cpu"] if ("whisper" in alias or arch == "whisper" or task == "speech-to-text") else ["npu"]
+        elif "audio8" in alias or arch == "audio8" or task == "text-to-speech":
+            task = "text-to-speech"
+            arch = "audio8"
+            if not name or name == alias:
+                if "0.6b" in alias or "600m" in alias:
+                    name = "Audio8 TTS 0.6B Preview"
+                    description = "SOTA-class 600M multilingual text-to-speech with rich acoustic details and zero-shot voice cloning."
+                else:
+                    name = "Audio8 TTS 0.1B Preview"
+                    description = "Ultra-compact neural text-to-speech with natural Italian prosody, zero-shot voice cloning and NPU acceleration."
+            if size_mb == 0:
+                size_mb = 1200.0 if "0.6b" in alias else 340.0
+
+        supported_devices = ["npu", "cpu"] if ("whisper" in alias or arch == "whisper" or "audio8" in alias or arch == "audio8" or task in ("speech-to-text", "text-to-speech")) else ["npu"]
         models.append({
             "id": alias,
             "alias": alias,
@@ -417,6 +431,14 @@ def is_active_stt_model() -> bool:
         return True
     for m in discover_models():
         if m["id"] == state.active_model and m.get("task") == "speech-to-text":
+            return True
+    return False
+
+def is_active_tts_model() -> bool:
+    if state.active_model and "audio8" in state.active_model.lower():
+        return True
+    for m in discover_models():
+        if m["id"] == state.active_model and m.get("task") == "text-to-speech":
             return True
     return False
 
@@ -540,6 +562,58 @@ def start_inference_server(model: str, host: str, port: int, device: str = "npu"
                 append_log(f"[STT Engine] Errore avvio modello: {e}")
         
         threading.Thread(target=_load_stt_async, daemon=True).start()
+        save_config({"default_model": model, "host": host, "port": port, "device": device})
+        return True
+
+    if is_active_tts_model() or model.startswith("audio8"):
+        dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else "CPU (Multi-Threaded Vectorized)"
+        append_log(f"[TTS Engine] Avvio modello Audio8 TTS '{model}' su {dev_label}...")
+        state.status = "starting"
+        state.active_model = model
+        state.host = host
+        state.port = port
+        state.device = device
+        state.legacy = legacy
+        state.offline = offline
+        state.load_progress = 15.0
+        state.load_step = f"Caricamento modello TTS {model} su {dev_label}..."
+        state.is_loaded = False
+        state.tok_per_sec = 0.0
+        state.last_error = ""
+        state.start_time = time.time()
+
+        def _load_tts_async():
+            try:
+                tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
+                if "0.6b" in model.lower() or "600m" in model.lower():
+                    tts_id = "Audio8/Audio8-TTS-Preview-0.6b"
+                elif "0.1b" in model.lower() or "100m" in model.lower():
+                    tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
+                else:
+                    cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
+                    if cfg_path.exists():
+                        try:
+                            with open(cfg_path) as cf:
+                                cdata = json.load(cf)
+                                if "hf_model_id" in cdata:
+                                    tts_id = cdata["hf_model_id"]
+                        except Exception:
+                            pass
+
+                from runtime.py.audio8_tts import Audio8TTS
+                tts = Audio8TTS.get_instance(model_id=tts_id, device=device)
+                tts._ensure_loaded()
+                state.load_progress = 100.0
+                state.is_loaded = True
+                state.load_step = "Modello pronto"
+                state.status = "running"
+                append_log(f"[TTS Engine] Server TTS attivo su {dev_label} con {tts_id}. Pronto per sintesi vocale (/v1/audio/speech).")
+            except Exception as e:
+                state.status = "error"
+                state.last_error = str(e)
+                append_log(f"[TTS Engine] Errore avvio modello TTS: {e}")
+
+        threading.Thread(target=_load_tts_async, daemon=True).start()
         save_config({"default_model": model, "host": host, "port": port, "device": device})
         return True
 
@@ -1094,6 +1168,109 @@ async def audio_transcriptions(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Audio transcription error: {e}")
+
+# OpenAI-compatible Text-to-Speech (TTS) API
+class OpenAISpeechRequest(BaseModel):
+    model: Optional[str] = "audio8-0.1b"
+    input: str
+    voice: Optional[str] = "default"
+    response_format: Optional[str] = "wav"
+    speed: Optional[float] = 1.0
+
+@app.post("/v1/audio/speech")
+async def audio_speech(req: OpenAISpeechRequest):
+    try:
+        text = req.input.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Empty input text provided")
+
+        from runtime.py.audio8_tts import Audio8TTS
+        target_model = req.model or state.active_model or "audio8-0.1b"
+        tts = Audio8TTS.get_instance(model_id=target_model, device=state.device or "npu")
+        
+        state.is_transcribing = True
+        try:
+            wav_bytes, res = await asyncio.to_thread(tts.generate_bytes, text)
+        finally:
+            state.is_transcribing = False
+            state.last_transcribe_time = time.time()
+
+        return Response(content=wav_bytes, media_type="audio/wav")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Audio speech synthesis error: {e}")
+
+# High-level TTS endpoint for Web UI / Audio Playground
+@app.post("/api/tts/generate")
+async def api_tts_generate(
+    text: str = Form(...),
+    model: Optional[str] = Form("audio8-0.1b"),
+    device: Optional[str] = Form(None),
+    reference_audio: Optional[UploadFile] = File(None),
+    reference_text: Optional[str] = Form(None),
+    max_new_tokens: Optional[int] = Form(300),
+    temperature: Optional[float] = Form(0.8),
+    top_p: Optional[float] = Form(0.95),
+    top_k: Optional[int] = Form(50)
+):
+    try:
+        text = text.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Il testo da sintetizzare non può essere vuoto.")
+
+        ref_audio_path = None
+        if reference_audio is not None and reference_audio.filename:
+            ref_content = await reference_audio.read()
+            if ref_content:
+                tmp_ref = tempfile.NamedTemporaryFile(suffix=Path(reference_audio.filename).suffix or ".wav", delete=False)
+                tmp_ref.write(ref_content)
+                tmp_ref.close()
+                ref_audio_path = tmp_ref.name
+
+        target_device = device or state.device or "npu"
+        target_model = model or state.active_model or "audio8-0.1b"
+
+        from runtime.py.audio8_tts import Audio8TTS
+        tts = Audio8TTS.get_instance(model_id=target_model, device=target_device)
+
+        state.is_transcribing = True
+        try:
+            res = await asyncio.to_thread(
+                tts.generate,
+                text=text,
+                reference_audio=ref_audio_path,
+                reference_text=reference_text,
+                max_new_tokens=max_new_tokens or 300,
+                temperature=temperature or 0.8,
+                top_p=top_p or 0.95,
+                top_k=top_k or 50,
+                do_sample=True
+            )
+        finally:
+            state.is_transcribing = False
+            state.last_transcribe_time = time.time()
+
+        if res.get("status") == "error":
+            raise HTTPException(status_code=500, detail=res.get("error", "Sintesi vocale fallita"))
+
+        # Add URL to fetch audio
+        audio_path = res.get("audio_path")
+        audio_filename = Path(audio_path).name if audio_path else ""
+        res["audio_url"] = f"/api/tts/audio/{audio_filename}" if audio_filename else ""
+
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore generazione TTS: {e}")
+
+@app.get("/api/tts/audio/{filename}")
+async def api_tts_get_audio(filename: str):
+    tmp_path = Path(tempfile.gettempdir()) / filename
+    if not tmp_path.exists():
+        raise HTTPException(status_code=404, detail="File audio non trovato o scaduto.")
+    return FileResponse(path=str(tmp_path), media_type="audio/wav", filename=filename)
 
 # Fast STT endpoint for React Web UI Microphone recording
 class SttJsonRequest(BaseModel):

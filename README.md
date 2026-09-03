@@ -15,15 +15,16 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 - **⚡ In-Browser & Automated 1-Click Model Setup**: "Aggiungi Modello" modal enables 1-click GGUF downloading and quantization from Hugging Face for Gemma-4 12B, Gemma-4 E4B, Gemma-3 1B, and Llama 3.2 1B.
 - **💬 Rich Chat Experience**: Real-time token streaming with Markdown & code highlighting, persistent multi-turn conversation sessions (sidebar history manager), multimodal file upload (PDF/text/image/audio parsing), and dark/light theme toggle.
 - **🎛️ Advanced Sampling Controls**: Full control over `temperature` (0.0 to 2.0 with greedy decoding at 0.0), `top_p` (nucleus sampling), `top_k`, `max_tokens`, `max_context_length`, system prompt customization, and `enable_thinking` toggle for reasoning models.
-- **🎙️ Real-Time Speech-to-Text (`Whisper Base`)**: Integrated speech recognition. Supports live microphone voice recording in Web UI, automatic audio file transcription (MP3/WAV/M4A/OGG/FLAC/WebM), and OpenAI-compatible `/v1/audio/transcriptions` API with accurate multilingual transcription (Italian, English, European & Asian languages) on AMD NPU.
-- **🔌 OpenAI-Compatible API**: Standard `/v1/chat/completions`, `/v1/audio/transcriptions`, and `/v1/models` REST endpoints for direct drop-in replacement with the OpenAI Python SDK, LangChain, LlamaIndex, Continue, etc.
+- **🎙️ Real-Time Speech-to-Text (`Whisper Base` & `Whisper Large v3`)**: Integrated speech recognition. Supports live microphone voice recording in Web UI, automatic audio file transcription (MP3/WAV/M4A/OGG/FLAC/WebM), and OpenAI-compatible `/v1/audio/transcriptions` API with accurate multilingual transcription (Italian, English, European & Asian languages) on AMD NPU and CPU.
+- **🗣️ Neural Text-to-Speech & Voice Cloning (`Audio8 TTS 0.1B & 0.6B`)**: High-fidelity neural voice synthesis with natural Italian prosody, zero-shot voice cloning, and OpenAI-compatible `/v1/audio/speech` API accelerated on AMD NPU and CPU.
+- **🔌 OpenAI-Compatible API**: Standard `/v1/chat/completions`, `/v1/audio/transcriptions`, `/v1/audio/speech`, and `/v1/models` REST endpoints for direct drop-in replacement with the OpenAI Python SDK, LangChain, LlamaIndex, Continue, etc.
 - **🧩 Custom Quantizer Plugin Architecture**: Bring any custom architecture to the NPU by implementing `BaseQuantizer` (`tools/convert/base_quantizer.py`).
 
 ---
 
 ## 📦 Supported Models & NPU Performance
 
-| Model | Architecture Key | Features | Output Size (Q4_0) | NPU Status & Performance (32 Cores) |
+| Model | Architecture Key | Features | Output Size | NPU Status & Performance (32 Cores) |
 |---|---|---|---|---|
 | **Gemma 4 E4B** | `gemma4-e4b` | 42 layers, Per-Layer Embedding (PLE) | ~2.4 GB | **290–305 ms/tok (3.3–3.45 tok/s native)**, bursts **4.5–17 tok/s** |
 | **Gemma 4 12B** | `gemma4` | 48 layers, 32-core unified GEMV | ~6.8 GB | **696–705 ms/tok (1.43–1.94 tok/s)**, full 12.8B model |
@@ -32,6 +33,8 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 | **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **High-accuracy audio transcription**, AMD NPU (XDNA2) + CPU fallback |
 | **Whisper Large v3 Turbo** | `whisper-large-v3-turbo` | State-of-the-art accuracy & speed, 90+ langs | ~1.6 GB | **Maximum accuracy SOTA speech recognition**, AMD NPU (XDNA2) + CPU |
 | **Whisper Large v3** | `whisper-large-v3` | Full 32-layer deep multilingual STT | ~3.1 GB | **Ultra-deep audio transcription**, AMD NPU (XDNA2) + CPU |
+| **Audio8 TTS 0.1B Preview** | `audio8-0.1b` | Neural speech synthesis & voice cloning (IT/Multilingual) | ~340 MB | **Low-latency TTS**, AMD NPU (XDNA2) + CPU |
+| **Audio8 TTS 0.6B Preview** | `audio8-0.6b` | High-fidelity 600M TTS with zero-shot cloning | ~1.2 GB | **SOTA acoustic fidelity**, AMD NPU (XDNA2) + CPU |
 
 > **⚡ Performance Transparency**: All models execute natively across all 32 AIE2 cores with zero-bubble asynchronous pipelining, saturating the physical memory bandwidth of the AMD Ryzen AI 300 series processor.
 
@@ -75,6 +78,8 @@ For the complete guide, see 🚀 [**Quickstart Guide**](docs/quickstart.md).
 - 🚀 [**Quickstart Guide**](docs/quickstart.md): Step-by-step 5-minute setup and usage.
 - 📦 [**Adding & Quantizing Models**](docs/adding_models.md): 1-click HF downloads, CLI setup, manual GGUF quantization, and quantizer plugins.
 - 🎛️ [**Sampling Controls & API Reference**](docs/sampling.md): Sampling parameters (`temperature`, `top_p`, `top_k`, `seed`, `enable_thinking`, system prompt) and OpenAI API schema.
+- 🎙️ [**Speech-to-Text Engine Guide**](docs/stt-engine.md): Whisper STT on AMD NPU, WebSocket streaming, and REST API.
+- 🗣️ [**Text-to-Speech Engine Guide**](docs/tts-engine.md): Audio8 TTS on AMD NPU, voice cloning, and OpenAI speech endpoint.
 - 🛠️ [**Full Hardware & Toolchain Setup**](docs/SETUP.md): Deep dive into Linux driver permissions, XRT libraries, and AIE compiler requirements.
 - 🔌 [**Custom Quantizer Plugins**](docs/CUSTOM_QUANTIZERS.md): Build custom tensor tiling and layout plugins for new model architectures.
 - 🏛️ [**System Architecture**](docs/architecture.md): Overview of C++ engine, Python control server, and AIE kernel pipeline.

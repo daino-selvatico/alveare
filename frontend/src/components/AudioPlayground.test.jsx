@@ -44,6 +44,54 @@ describe('AudioPlayground', () => {
     expect(screen.getByText(/Supporta MP3, WAV, M4A, OGG, FLAC|Supports MP3, WAV, M4A, OGG, FLAC/i)).toBeDefined();
   });
 
+  it('switches to TTS mode and displays speech generation controls', () => {
+    render(
+      <I18nProvider>
+        <AudioPlayground
+          apiBase={mockApiBase}
+          status={mockStatus}
+          activeModel="audio8-0.1b"
+          isServerRunning={true}
+        />
+      </I18nProvider>
+    );
+
+    const ttsTabBtn = screen.getByText(/Text to Speech|Sintesi Vocale/i);
+    fireEvent.click(ttsTabBtn);
+
+    expect(screen.getByText(/Testo da Sintetizzare|Text to Synthesize/i)).toBeDefined();
+    expect(screen.getByText(/Genera Audio|Generate Speech/i)).toBeDefined();
+  });
+
+  it('switches to TTS mode and supports NPU/CPU device toggle', () => {
+    render(
+      <I18nProvider>
+        <AudioPlayground
+          apiBase={mockApiBase}
+          status={mockStatus}
+          activeModel="audio8-0.1b"
+          isServerRunning={true}
+        />
+      </I18nProvider>
+    );
+
+    const ttsTabBtn = screen.getByText(/Text to Speech|Sintesi Vocale/i);
+    fireEvent.click(ttsTabBtn);
+
+    const npuToggle = screen.getByText(/⚡ NPU/i);
+    const cpuToggle = screen.getByText(/🖥️ CPU/i);
+    expect(npuToggle).toBeDefined();
+    expect(cpuToggle).toBeDefined();
+
+    // Switch to CPU
+    fireEvent.click(cpuToggle);
+    expect(cpuToggle.style.color).toBe('rgb(96, 165, 250)'); // #60a5fa
+
+    // Switch back to NPU
+    fireEvent.click(npuToggle);
+    expect(npuToggle.style.color).toBe('rgb(52, 211, 153)'); // #34d399
+  });
+
   it('renders disabled state when server is not running', () => {
     render(
       <I18nProvider>

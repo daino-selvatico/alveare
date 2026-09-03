@@ -88,6 +88,26 @@ SUPPORTED_MODELS = [
         "filename": "model.safetensors",
         "size_approx": "~3.1 GB",
         "description": "Full 32-layer Whisper Large v3 model for maximum depth transcription accuracy."
+    },
+    {
+        "id": "audio8-0.1b",
+        "name": "Audio8 TTS 0.1B Preview",
+        "arch": "audio8",
+        "default_url": "Audio8/Audio8-TTS-Preview-0.1b",
+        "repo_id": "Audio8/Audio8-TTS-Preview-0.1b",
+        "filename": "model.safetensors",
+        "size_approx": "~340 MB",
+        "description": "Ultra-compact neural text-to-speech with natural Italian prosody, zero-shot voice cloning and NPU acceleration."
+    },
+    {
+        "id": "audio8-0.6b",
+        "name": "Audio8 TTS 0.6B Preview",
+        "arch": "audio8",
+        "default_url": "Audio8/Audio8-TTS-Preview-0.6b",
+        "repo_id": "Audio8/Audio8-TTS-Preview-0.6b",
+        "filename": "model.safetensors",
+        "size_approx": "~1.2 GB",
+        "description": "SOTA-class 600M multilingual text-to-speech with rich acoustic details and zero-shot voice cloning."
     }
 ]
 
@@ -209,6 +229,48 @@ def run_setup(
             "weights_dir": str(model_out_dir),
             "kernels_dir": str(ROOT_DIR / "kernels" / "build"),
             "config": {"model_type": "whisper", "task": "speech-to-text", "hf_model_id": hf_model_id}
+        }
+
+    is_tts = (
+        arch_or_quantizer in ("audio8", "tts", "text-to-speech") or
+        alias.startswith("audio8") or
+        (url_or_repo and "audio8" in url_or_repo.lower())
+    )
+    if is_tts:
+        hf_model_id = "Audio8/Audio8-TTS-Preview-0.1b"
+        if "0.6b" in alias.lower() or "600m" in alias.lower():
+            hf_model_id = "Audio8/Audio8-TTS-Preview-0.6b"
+        elif "0.1b" in alias.lower() or "100m" in alias.lower():
+            hf_model_id = "Audio8/Audio8-TTS-Preview-0.1b"
+        elif url_or_repo and ("/" in url_or_repo):
+            hf_model_id = url_or_repo
+
+        log_progress("download", 30.0, f"Downloading and validating {hf_model_id} text-to-speech model...")
+        from runtime.py.audio8_tts import Audio8TTS
+        tts = Audio8TTS.get_instance(model_id=hf_model_id)
+        tts._ensure_loaded()
+
+        # Save model descriptor config
+        model_out_dir = ROOT_DIR / f"quantized_weights_{alias}"
+        model_out_dir.mkdir(parents=True, exist_ok=True)
+        with open(model_out_dir / "config.json", "w") as cf:
+            json.dump({
+                "model_type": "audio8",
+                "architecture": "audio8",
+                "task": "text-to-speech",
+                "name": f"Audio8 {alias.replace('audio8-', '').upper()} TTS",
+                "hf_model_id": hf_model_id,
+                "supported_devices": ["npu", "cpu"],
+                "default_device": "npu"
+            }, cf, indent=2)
+
+        log_progress("complete", 100.0, f"{hf_model_id} TTS successfully initialized and ready!")
+        return {
+            "status": "success",
+            "alias": alias,
+            "weights_dir": str(model_out_dir),
+            "kernels_dir": str(ROOT_DIR / "kernels" / "build"),
+            "config": {"model_type": "audio8", "task": "text-to-speech", "hf_model_id": hf_model_id}
         }
 
     gguf_path: Optional[Path] = None

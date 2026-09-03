@@ -387,8 +387,25 @@
     "historyTitle": "Storico Trascrizioni",
     "emptyHistory": "Nessuna frase registrata in questa sessione.",
     "serverOffBannerTitle": "Server STT Non Avviato",
-    "serverOffBannerDesc": "Per iniziare a trascrivere la tua voce o file audio, avvia prima il modello STT nel Control Panel.",
-    "goToControlPanel": "Vai al Control Panel",
-    "micError": "Impossibile accedere al microfono: {error}"
+    "micError": "Impossibile accedere al microfono: {error}",
+    "ttsTab": "Sintesi Vocale (TTS)",
+    "ttsTitle": "Audio8 Neural TTS Studio",
+    "ttsSubtitle": "Sintesi vocale neurale ad alta fedeltà con voice cloning zero-shot su AMD NPU e CPU.",
+    "ttsInputPrompt": "Testo da Sintetizzare",
+    "ttsInputPlaceholder": "Inserisci qui il testo da convertire in voce naturale...",
+    "ttsGenerateBtn": "Genera Audio",
+    "ttsGenerating": "Generazione voce in corso...",
+    "ttsVoiceCloningTitle": "Voice Cloning Zero-Shot",
+    "ttsVoiceCloningDesc": "Clona qualsiasi timbro vocale caricando una breve clip audio (3-10s) e il suo testo esatto.",
+    "ttsRefAudioLabel": "Carica Clip Vocale di Riferimento (WAV/MP3)",
+    "ttsRefTextLabel": "Trascrizione esatta dell'audio di riferimento:",
+    "ttsRefTextPlaceholder": "Es: Ciao, sono un campione vocale di prova...",
+    "ttsResultTitle": "Risultato Sintesi Vocale",
+    "ttsDownload": "Scarica WAV",
+    "ttsPlay": "Riproduci",
+    "ttsPause": "Pausa",
+    "ttsDuration": "{duration}s durata",
+    "ttsTokens": "Tokens: {tokens}",
+    "ttsSpeed": "Velocità: {rtf}x RTF"
   }
 }

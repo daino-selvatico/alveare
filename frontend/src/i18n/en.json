@@ -387,8 +387,25 @@
     "historyTitle": "Transcription History",
     "emptyHistory": "No phrases recorded in this session.",
     "serverOffBannerTitle": "STT Server Not Running",
-    "serverOffBannerDesc": "To transcribe voice or audio files, start the STT model in the Control Panel first.",
-    "goToControlPanel": "Go to Control Panel",
-    "micError": "Unable to access microphone: {error}"
+    "micError": "Unable to access microphone: {error}",
+    "ttsTab": "Text to Speech (TTS)",
+    "ttsTitle": "Audio8 Neural TTS Studio",
+    "ttsSubtitle": "High-fidelity neural speech synthesis with zero-shot voice cloning on AMD NPU and CPU.",
+    "ttsInputPrompt": "Text to Synthesize",
+    "ttsInputPlaceholder": "Enter text to convert to natural human speech...",
+    "ttsGenerateBtn": "Generate Speech",
+    "ttsGenerating": "Synthesizing voice...",
+    "ttsVoiceCloningTitle": "Zero-Shot Voice Cloning",
+    "ttsVoiceCloningDesc": "Clone any speaker voice by providing a short audio sample (3-10s) and its exact transcript.",
+    "ttsRefAudioLabel": "Upload Reference Voice Sample (WAV/MP3)",
+    "ttsRefTextLabel": "Exact transcript of the reference sample:",
+    "ttsRefTextPlaceholder": "E.g.: Hello, this is a sample reference recording...",
+    "ttsResultTitle": "Generated Speech Audio",
+    "ttsDownload": "Download WAV",
+    "ttsPlay": "Play",
+    "ttsPause": "Pause",
+    "ttsDuration": "{duration}s duration",
+    "ttsTokens": "Tokens: {tokens}",
+    "ttsSpeed": "Speed: {rtf}x RTF"
   }
 }
