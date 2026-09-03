@@ -83,6 +83,29 @@ describe('AudioPlayground', () => {
     expect(screen.getByText(/audio8-0.1b/i)).toBeDefined();
   });
 
+  it('enables streaming mode and displays live teleprompter', () => {
+    render(
+      <I18nProvider>
+        <AudioPlayground
+          apiBase={mockApiBase}
+          status={{ ...mockStatus, model: 'audio8-0.1b', device: 'npu' }}
+          activeModel="audio8-0.1b"
+          isServerRunning={true}
+        />
+      </I18nProvider>
+    );
+
+    const ttsTabBtn = screen.getByText(/Text to Speech|Sintesi Vocale/i);
+    fireEvent.click(ttsTabBtn);
+
+    const streamingToggleBtn = screen.getByText(/Modalità Streaming|Streaming/i);
+    fireEvent.click(streamingToggleBtn);
+
+    expect(screen.getByText(/SOTTOTITOLI LIVE AUDIO|LIVE AUDIO TELEPROMPTER/i)).toBeDefined();
+    expect(screen.getByText(/Parametri Streaming Real-Time/i)).toBeDefined();
+    expect(screen.getByText(/Sintetizza in Streaming/i)).toBeDefined();
+  });
+
   it('renders disabled state when server is not running', () => {
     render(
       <I18nProvider>

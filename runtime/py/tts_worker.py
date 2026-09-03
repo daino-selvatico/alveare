@@ -276,12 +276,9 @@ def main():
             processor_kwargs["reference_audio"] = [ref_audio]
             processor_kwargs["reference_text"] = [ref_text]
 
-        # Dynamic token budget based on word/character count to avoid runaway autoregression on small chunks
+        # Dynamic token budget based on exact word count to avoid runaway autoregression on small chunks
         words_cnt = len(text_segment.split())
-        char_cnt = len(text_segment.strip())
-        # Average Italian speaking rate: ~12.5 acoustic frames/sec, ~3.2 words/sec (~4 frames/word)
-        # We allocate a safe bound: words * 5.0 + 8 (or chars * 1.0 + 6)
-        chunk_bounded_tokens = max(16, min(max_new_tokens, int(words_cnt * 5.2 + 8)))
+        chunk_bounded_tokens = max(24, min(max_new_tokens, int(words_cnt * 5.2 + 12)))
 
         inputs = processor(**processor_kwargs)
 
@@ -505,12 +502,16 @@ def main():
                     processor_kwargs["reference_audio"] = [ref_audio]
                     processor_kwargs["reference_text"] = [ref_text]
 
+                # Dynamic token budget for full generation based on exact word count
+                words_cnt = len(text.split())
+                bounded_tokens = max(24, min(max_new_tokens, int(words_cnt * 5.2 + 12)))
+
                 inputs = processor(**processor_kwargs)
 
                 with torch.inference_mode():
                     output = model.generate(
                         **inputs,
-                        max_new_tokens=max_new_tokens,
+                        max_new_tokens=bounded_tokens,
                         temperature=temperature,
                         top_p=top_p,
                         top_k=top_k,

@@ -219,6 +219,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   const [ttsActiveSpeakingText, setTtsActiveSpeakingText] = useState('');
   const [ttsPlayedSegments, setTtsPlayedSegments] = useState([]);
   const ttsPendingMetaRef = useRef(null);
+  const ttsServerCompletedRef = useRef(false);
   const [ttsStreamMetrics, setTtsStreamMetrics] = useState({
     ttfaMs: null,
     chunksReceived: 0,
@@ -621,6 +622,8 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     setErrorMsg('');
     setTtsIsStreaming(true);
     setTtsStreamingStatus('connecting');
+    setTtsActiveSpeakingText('');
+    setTtsPlayedSegments([]);
     setTtsStreamMetrics({
       ttfaMs: null,
       chunksReceived: 0,
@@ -630,6 +633,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       currentSegment: ''
     });
 
+    ttsServerCompletedRef.current = false;
     if (!gaplessPlayerRef.current) {
       gaplessPlayerRef.current = new GaplessPCMPlayer(44100);
     }
@@ -648,9 +652,14 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       }
     };
     gaplessPlayerRef.current.onEnded = () => {
-      setTtsStreamingStatus(prev => prev === 'streaming' || prev === 'playing' ? 'completed' : prev);
-      setTtsIsStreaming(false);
-      setTtsActiveSpeakingText('');
+      if (ttsServerCompletedRef.current) {
+        setTtsStreamingStatus('completed');
+        setTtsIsStreaming(false);
+        setTtsActiveSpeakingText('');
+      } else {
+        setTtsStreamingStatus('buffering');
+        setTtsActiveSpeakingText('');
+      }
     };
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -742,11 +751,23 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               currentSegment: data.text || prev.currentSegment
             }));
           } else if (data.event === "completed") {
+            ttsServerCompletedRef.current = true;
             setTtsStreamMetrics(prev => ({
               ...prev,
               totalDurationSec: data.total_duration_sec,
               rtf: data.rtf
             }));
+
+            const isPlayerBusy = gaplessPlayerRef.current && (
+              gaplessPlayerRef.current.isPlaying ||
+              (gaplessPlayerRef.current.activeNodes && gaplessPlayerRef.current.activeNodes.length > 0)
+            );
+
+            if (!isPlayerBusy) {
+              setTtsStreamingStatus('completed');
+              setTtsIsStreaming(false);
+              setTtsActiveSpeakingText('');
+            }
 
             // Record to TTS History
             const newHistoryItem = {
@@ -806,8 +827,10 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     if (gaplessPlayerRef.current) {
       gaplessPlayerRef.current.stopAndFlush();
     }
+    ttsServerCompletedRef.current = true;
     setTtsStreamingStatus('interrupted');
     setTtsIsStreaming(false);
+    setTtsActiveSpeakingText('');
   };
 
   const getLanguageLabel = (lang) => {
@@ -1392,14 +1415,14 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span className={ttsActiveSpeakingText ? 'pulse-icon' : ''} style={{
+                      <span className={ttsActiveSpeakingText || ttsIsStreaming ? 'pulse-icon' : ''} style={{
                         width: '10px',
                         height: '10px',
                         borderRadius: '50%',
-                        background: ttsActiveSpeakingText ? '#38bdf8' : 'var(--text-muted)'
+                        background: ttsActiveSpeakingText ? '#38bdf8' : ttsIsStreaming ? '#f59e0b' : 'var(--text-muted)'
                       }} />
                       <span style={{ fontSize: '0.82rem', fontWeight: 800, letterSpacing: '0.05em', color: ttsActiveSpeakingText ? 'var(--accent-cyan)' : 'var(--text-muted)', textTransform: 'uppercase' }}>
-                        {ttsActiveSpeakingText ? '● LIVE AUDIO TELEPROMPTER' : 'SOTTOTITOLI LIVE AUDIO'}
+                        {ttsActiveSpeakingText ? '● LIVE AUDIO TELEPROMPTER' : ttsIsStreaming ? '● STREAMING LIVE' : 'SOTTOTITOLI LIVE AUDIO'}
                       </span>
                     </div>
 
@@ -1420,27 +1443,42 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                     fontFamily: 'system-ui, -apple-system, sans-serif',
                     padding: '0.5rem 0'
                   }}>
-                    {ttsActiveSpeakingText ? (
+                    {ttsActiveSpeakingText || ttsPlayedSegments.length > 0 ? (
                       <div>
                         {ttsPlayedSegments.length > 0 && (
                           <span style={{ color: 'var(--text-muted)', opacity: 0.65, transition: 'all 0.3s ease' }}>
                             {ttsPlayedSegments.join(' ')}{' '}
                           </span>
                         )}
-                        <span style={{
-                          background: 'linear-gradient(90deg, rgba(6, 182, 212, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%)',
-                          color: '#38bdf8',
-                          fontWeight: 700,
-                          padding: '0.2rem 0.5rem',
-                          borderRadius: '6px',
-                          border: '1px solid rgba(56, 189, 248, 0.4)',
-                          boxShadow: '0 0 15px rgba(56, 189, 248, 0.35)',
-                          display: 'inline-block',
-                          transform: 'scale(1.02)',
-                          transition: 'all 0.2s ease'
-                        }}>
-                          🔊 {ttsActiveSpeakingText}
-                        </span>
+                        {ttsActiveSpeakingText && (
+                          <span style={{
+                            background: 'linear-gradient(90deg, rgba(6, 182, 212, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%)',
+                            color: '#38bdf8',
+                            fontWeight: 700,
+                            padding: '0.2rem 0.5rem',
+                            borderRadius: '6px',
+                            border: '1px solid rgba(56, 189, 248, 0.4)',
+                            boxShadow: '0 0 15px rgba(56, 189, 248, 0.35)',
+                            display: 'inline-block',
+                            transform: 'scale(1.02)',
+                            transition: 'all 0.2s ease'
+                          }}>
+                            🔊 {ttsActiveSpeakingText}
+                          </span>
+                        )}
+                        {!ttsActiveSpeakingText && ttsIsStreaming && (
+                          <span style={{
+                            color: '#f59e0b',
+                            fontSize: '0.88rem',
+                            fontStyle: 'italic',
+                            marginLeft: ttsPlayedSegments.length > 0 ? '0.5rem' : '0',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.35rem'
+                          }}>
+                            ⏳ In elaborazione prossimo blocco...
+                          </span>
+                        )}
                       </div>
                     ) : (
                       <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.9rem' }}>
