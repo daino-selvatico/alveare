@@ -27,7 +27,12 @@ export default function App() {
 
   const isSttActive = Boolean(
     status?.is_running &&
-    (status?.model === 'whisper-base' || models.find(m => m.id === status?.model)?.task === 'speech-to-text')
+    (
+      status?.model?.includes('whisper') ||
+      status?.model?.includes('audio8') ||
+      models.find(m => m.id === status?.model)?.task === 'speech-to-text' ||
+      models.find(m => m.id === status?.model)?.task === 'text-to-speech'
+    )
   );
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState(false);

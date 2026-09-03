@@ -31,8 +31,21 @@ import { useTranslation } from '../i18n/I18nContext';
 export default function AudioPlayground({ apiBase, status, activeModel, isServerRunning, models = [], onNavigateToControl }) {
   const { t } = useTranslation();
 
+  const isTtsModel = Boolean(
+    activeModel?.includes('audio8') ||
+    models.find(m => m.id === activeModel)?.task === 'text-to-speech' ||
+    status?.model?.includes('audio8')
+  );
+
   // Mode: 'realtime' (Live mic stream) | 'file' (Audio upload) | 'tts' (Text to Speech)
-  const [activeMode, setActiveMode] = useState('realtime');
+  const [activeMode, setActiveMode] = useState(() => isTtsModel ? 'tts' : 'realtime');
+
+  useEffect(() => {
+    if (isTtsModel) {
+      setActiveMode('tts');
+      if (activeModel) setTtsModel(activeModel);
+    }
+  }, [activeModel, isTtsModel]);
   
   // Language selection: 'auto' | 'it' | 'en' | 'zh' | 'ja' | 'ko' | 'yue'
   const [selectedLanguage, setSelectedLanguage] = useState(() => {
@@ -577,63 +590,69 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
           {/* Mode Switcher Tabs */}
           <div style={{ display: 'flex', background: 'var(--bg-secondary)', padding: '0.3rem', borderRadius: '10px', border: '1px solid var(--border-color)', gap: '0.2rem' }}>
-            <button
-              onClick={() => { setActiveMode('realtime'); }}
-              style={{
-                padding: '0.45rem 0.85rem',
-                borderRadius: '7px',
-                border: 'none',
-                background: activeMode === 'realtime' ? 'var(--gradient-brand)' : 'transparent',
-                color: activeMode === 'realtime' ? '#fff' : 'var(--text-muted)',
-                fontWeight: 600,
-                fontSize: '0.82rem',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.45rem',
-                transition: 'all 0.2s ease'
-              }}
-            >
-              <Mic size={15} /> {t('audioPlayground.liveStreamTab')}
-            </button>
-            <button
-              onClick={() => { setActiveMode('file'); stopRealtimeStream(); }}
-              style={{
-                padding: '0.45rem 0.85rem',
-                borderRadius: '7px',
-                border: 'none',
-                background: activeMode === 'file' ? 'var(--gradient-brand)' : 'transparent',
-                color: activeMode === 'file' ? '#fff' : 'var(--text-muted)',
-                fontWeight: 600,
-                fontSize: '0.82rem',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.45rem',
-                transition: 'all 0.2s ease'
-              }}
-            >
-              <FileAudio size={15} /> {t('audioPlayground.fileTab')}
-            </button>
-            <button
-              onClick={() => { setActiveMode('tts'); stopRealtimeStream(); }}
-              style={{
-                padding: '0.45rem 0.85rem',
-                borderRadius: '7px',
-                border: 'none',
-                background: activeMode === 'tts' ? 'var(--gradient-brand)' : 'transparent',
-                color: activeMode === 'tts' ? '#fff' : 'var(--text-muted)',
-                fontWeight: 600,
-                fontSize: '0.82rem',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.45rem',
-                transition: 'all 0.2s ease'
-              }}
-            >
-              <Volume2 size={15} /> {t('audioPlayground.ttsTab') || 'Text to Speech (TTS)'}
-            </button>
+            {!isTtsModel && (
+              <>
+                <button
+                  onClick={() => { setActiveMode('realtime'); }}
+                  style={{
+                    padding: '0.45rem 0.85rem',
+                    borderRadius: '7px',
+                    border: 'none',
+                    background: activeMode === 'realtime' ? 'var(--gradient-brand)' : 'transparent',
+                    color: activeMode === 'realtime' ? '#fff' : 'var(--text-muted)',
+                    fontWeight: 600,
+                    fontSize: '0.82rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <Mic size={15} /> {t('audioPlayground.liveStreamTab')}
+                </button>
+                <button
+                  onClick={() => { setActiveMode('file'); stopRealtimeStream(); }}
+                  style={{
+                    padding: '0.45rem 0.85rem',
+                    borderRadius: '7px',
+                    border: 'none',
+                    background: activeMode === 'file' ? 'var(--gradient-brand)' : 'transparent',
+                    color: activeMode === 'file' ? '#fff' : 'var(--text-muted)',
+                    fontWeight: 600,
+                    fontSize: '0.82rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <FileAudio size={15} /> {t('audioPlayground.fileTab')}
+                </button>
+              </>
+            )}
+            {isTtsModel && (
+              <button
+                onClick={() => { setActiveMode('tts'); stopRealtimeStream(); }}
+                style={{
+                  padding: '0.45rem 0.85rem',
+                  borderRadius: '7px',
+                  border: 'none',
+                  background: activeMode === 'tts' ? 'var(--gradient-brand)' : 'transparent',
+                  color: activeMode === 'tts' ? '#fff' : 'var(--text-muted)',
+                  fontWeight: 600,
+                  fontSize: '0.82rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.45rem',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                <Volume2 size={15} /> {t('audioPlayground.ttsTab') || 'Sintesi Vocale (TTS)'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -962,23 +981,23 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                     </button>
                   </div>
 
-                  <select
-                    value={ttsModel}
-                    onChange={(e) => setTtsModel(e.target.value)}
+                  <div
                     style={{
                       background: 'rgba(0,0,0,0.3)',
                       border: '1px solid var(--border-color)',
                       color: 'var(--text-main)',
                       fontSize: '0.8rem',
                       fontWeight: 600,
-                      padding: '0.3rem 0.6rem',
+                      padding: '0.35rem 0.75rem',
                       borderRadius: '8px',
-                      cursor: 'pointer'
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.4rem'
                     }}
+                    title="Il modello può essere configurato e modificato dal Pannello di Controllo"
                   >
-                    <option value="audio8-0.1b">Audio8 TTS 0.1B (~340 MB)</option>
-                    <option value="audio8-0.6b">Audio8 TTS 0.6B (~1.2 GB)</option>
-                  </select>
+                    <span style={{ color: 'var(--accent-cyan)' }}>●</span> {status?.model || activeModel || 'audio8-0.1b'}
+                  </div>
 
                   <button
                     type="button"

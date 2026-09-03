@@ -288,7 +288,7 @@ def load_config() -> Dict[str, Any]:
     default_config = {
         "first_launch": True,
         "default_model": "gemma4",
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8000,
         "device": "npu",
         "legacy": False,
@@ -782,12 +782,16 @@ class ConfigUpdateRequest(BaseModel):
 
 @app.get("/api/status")
 async def get_status():
-    if is_active_stt_model():
-        is_running = (state.status in ("starting", "running"))
+    is_running_tts = is_active_tts_model() and state.is_loaded and (state.status in ("starting", "running"))
+    is_running_stt = is_active_stt_model() and (state.status in ("starting", "running"))
+
+    if is_running_tts or is_running_stt:
+        is_running = True
     else:
         is_running = state.process is not None and state.process.poll() is None
         if not is_running and state.status == "running":
             state.status = "stopped"
+
 
     uptime = round(time.time() - state.start_time, 1) if (is_running and state.start_time > 0) else 0
     cfg = load_config()
@@ -1763,7 +1767,7 @@ if FRONTEND_DIST.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    host = os.getenv("ALVEARE_CONTROL_HOST", "127.0.0.1")
+    host = os.getenv("ALVEARE_CONTROL_HOST", "0.0.0.0")
     port = int(os.getenv("ALVEARE_CONTROL_PORT", "8080"))
     print(f"[Alveare Control Server] Listening on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
