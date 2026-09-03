@@ -205,8 +205,8 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
   // TTS Streaming Real-Time State
   const [ttsStreamingEnabled, setTtsStreamingEnabled] = useState(false);
-  const [ttsChunkStrategy, setTtsChunkStrategy] = useState('clauses');
-  const [ttsWordsPerChunk, setTtsWordsPerChunk] = useState(8);
+  const [ttsChunkStrategy, setTtsChunkStrategy] = useState('sentences');
+  const [ttsWordsPerChunk, setTtsWordsPerChunk] = useState(14);
   const [ttsTokenDelay, setTtsTokenDelay] = useState(0);
   const [ttsIsStreaming, setTtsIsStreaming] = useState(false);
   const [ttsStreamingStatus, setTtsStreamingStatus] = useState('idle');
