@@ -29,18 +29,25 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
 
-class GaplessPCMPlayer {
-  constructor(sampleRate = 44100) {
+export class GaplessPCMPlayer {
+  constructor(sampleRate = 44100, prebufferChunks = 2) {
     this.sampleRate = sampleRate;
+    this.prebufferChunks = Math.max(1, Math.min(5, Number(prebufferChunks) || 2));
     this.audioCtx = null;
     this.nextStartTime = 0;
     this.isPlaying = false;
     this.activeNodes = [];
     this.wordTimers = [];
+    this.pendingChunks = [];
     this.onChunkStarted = null;
     this.onWordStarted = null;
     this.onChunkPlayed = null;
+    this.onChunkScheduled = null;
     this.onEnded = null;
+  }
+
+  setPrebufferChunks(n) {
+    this.prebufferChunks = Math.max(1, Math.min(5, Number(n) || 1));
   }
 
   init() {
@@ -54,7 +61,7 @@ class GaplessPCMPlayer {
     }
   }
 
-  enqueuePCM16(arrayBuffer, meta = {}) {
+  _scheduleBuffer(arrayBuffer, meta = {}) {
     this.init();
     if (!this.audioCtx) return 0;
 
@@ -109,6 +116,10 @@ class GaplessPCMPlayer {
     this.isPlaying = true;
     this.activeNodes.push(sourceNode);
 
+    if (this.onChunkScheduled) {
+      this.onChunkScheduled(meta, startTime, audioBuffer.duration, arrayBuffer);
+    }
+
     sourceNode.onended = () => {
       const idx = this.activeNodes.indexOf(sourceNode);
       if (idx !== -1) this.activeNodes.splice(idx, 1);
@@ -122,11 +133,39 @@ class GaplessPCMPlayer {
     return startTime;
   }
 
+  flushPendingPrebuffer() {
+    if (this.pendingChunks.length === 0) return;
+    const toSchedule = [...this.pendingChunks];
+    this.pendingChunks = [];
+    for (const item of toSchedule) {
+      this._scheduleBuffer(item.arrayBuffer, item.meta);
+    }
+  }
+
+  enqueuePCM16(arrayBuffer, meta = {}) {
+    if (this.isPlaying || this.prebufferChunks <= 1) {
+      if (this.pendingChunks.length > 0) {
+        this.flushPendingPrebuffer();
+      }
+      return this._scheduleBuffer(arrayBuffer, meta);
+    }
+
+    this.pendingChunks.push({ arrayBuffer, meta });
+
+    if (this.pendingChunks.length >= this.prebufferChunks) {
+      this.flushPendingPrebuffer();
+      return this.nextStartTime;
+    }
+
+    return 0;
+  }
+
   getCurrentTime() {
     return this.audioCtx ? this.audioCtx.currentTime : 0;
   }
 
   stopAndFlush() {
+    this.pendingChunks = [];
     for (const t of this.wordTimers) {
       clearTimeout(t);
     }
@@ -151,7 +190,7 @@ class GaplessPCMPlayer {
       try {
         this.audioCtx.close();
       } catch (e) {}
-        this.audioCtx = null;
+      this.audioCtx = null;
     }
   }
 }
@@ -237,6 +276,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   const [ttsStreamingEnabled, setTtsStreamingEnabled] = useState(false);
   const [ttsChunkStrategy, setTtsChunkStrategy] = useState('sentences');
   const [ttsWordsPerChunk, setTtsWordsPerChunk] = useState(14);
+  const [ttsPrebufferChunks, setTtsPrebufferChunks] = useState(2);
   const [ttsTokenDelay, setTtsTokenDelay] = useState(0);
   const [ttsIsStreaming, setTtsIsStreaming] = useState(false);
   const [ttsStreamingStatus, setTtsStreamingStatus] = useState('idle');
@@ -691,6 +731,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       formData.append('max_new_tokens', ttsMaxTokens);
       formData.append('temperature', ttsTemperature);
       formData.append('top_p', ttsTopP);
+      formData.append('prebuffer_chunks', ttsPrebufferChunks);
 
       const res = await fetch(`${apiBase}/api/tts/generate`, {
         method: 'POST',
@@ -757,8 +798,9 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
     ttsServerCompletedRef.current = false;
     if (!gaplessPlayerRef.current) {
-      gaplessPlayerRef.current = new GaplessPCMPlayer(44100);
+      gaplessPlayerRef.current = new GaplessPCMPlayer(44100, ttsPrebufferChunks);
     } else {
+      gaplessPlayerRef.current.setPrebufferChunks(ttsPrebufferChunks);
       gaplessPlayerRef.current.init();
     }
     gaplessPlayerRef.current.onChunkStarted = (meta) => {
@@ -774,6 +816,39 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       if (meta && meta.text) {
         setTtsPlayedSegments(prev => [...prev, meta.text]);
       }
+    };
+    gaplessPlayerRef.current.onChunkScheduled = (meta, chunkStartTime, durationSec, rawData) => {
+      const wordTimestamps = meta.word_timestamps || [];
+      const timeline = [...wordTimelineRef.current];
+
+      if (wordTimestamps.length > 0) {
+        let wtIdx = 0;
+        for (let i = nextWordIndexRef.current; i < timeline.length && wtIdx < wordTimestamps.length; i++) {
+          if (timeline[i].isWord) {
+            const wt = wordTimestamps[wtIdx];
+            timeline[i].startTime = chunkStartTime + (wt.start_ms / 1000.0);
+            timeline[i].endTime = chunkStartTime + (wt.end_ms / 1000.0);
+            wtIdx++;
+            nextWordIndexRef.current = i + 1;
+          }
+        }
+      } else if (meta.text) {
+        const chunkWords = meta.text.trim().split(/\s+/);
+        const durSec = durationSec || (meta.duration_ms ? meta.duration_ms / 1000.0 : (rawData ? (rawData.byteLength / 2) / 44100 : 1.0));
+        const wordDur = durSec / Math.max(1, chunkWords.length);
+        let cwIdx = 0;
+        for (let i = nextWordIndexRef.current; i < timeline.length && cwIdx < chunkWords.length; i++) {
+          if (timeline[i].isWord) {
+            timeline[i].startTime = chunkStartTime + cwIdx * wordDur;
+            timeline[i].endTime = chunkStartTime + (cwIdx + 1) * wordDur;
+            cwIdx++;
+            nextWordIndexRef.current = i + 1;
+          }
+        }
+      }
+
+      wordTimelineRef.current = timeline;
+      setKaraokeTokens([...timeline]);
     };
     gaplessPlayerRef.current.onEnded = () => {
       if (ttsServerCompletedRef.current) {
@@ -811,7 +886,8 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
         pitch: 0.0,
         temperature: ttsTemperature,
         chunk_strategy: ttsChunkStrategy,
-        words_per_chunk: ttsWordsPerChunk
+        words_per_chunk: ttsWordsPerChunk,
+        prebuffer_chunks: ttsPrebufferChunks
       }));
 
       // Simulate LLM streaming token-by-token or send all
@@ -858,46 +934,17 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
           ttfaMs: prev.ttfaMs !== null ? prev.ttfaMs : ttfa,
           chunksReceived: prev.chunksReceived + 1
         }));
-        setTtsStreamingStatus('playing');
 
         const meta = ttsPendingMetaRef.current || { text: '', word_timestamps: [] };
         ttsPendingMetaRef.current = null;
 
         if (gaplessPlayerRef.current) {
-          const chunkStartTime = gaplessPlayerRef.current.enqueuePCM16(event.data, meta);
-
-          // Attach precise word timestamps to the timeline tokens
-          const wordTimestamps = meta.word_timestamps || [];
-          const timeline = [...wordTimelineRef.current];
-
-          if (wordTimestamps.length > 0) {
-            let wtIdx = 0;
-            for (let i = nextWordIndexRef.current; i < timeline.length && wtIdx < wordTimestamps.length; i++) {
-              if (timeline[i].isWord) {
-                const wt = wordTimestamps[wtIdx];
-                timeline[i].startTime = chunkStartTime + (wt.start_ms / 1000.0);
-                timeline[i].endTime = chunkStartTime + (wt.end_ms / 1000.0);
-                wtIdx++;
-                nextWordIndexRef.current = i + 1;
-              }
-            }
-          } else if (meta.text) {
-            const chunkWords = meta.text.trim().split(/\s+/);
-            const durSec = meta.duration_ms ? meta.duration_ms / 1000.0 : (event.data.byteLength / 2) / 44100;
-            const wordDur = durSec / Math.max(1, chunkWords.length);
-            let cwIdx = 0;
-            for (let i = nextWordIndexRef.current; i < timeline.length && cwIdx < chunkWords.length; i++) {
-              if (timeline[i].isWord) {
-                timeline[i].startTime = chunkStartTime + cwIdx * wordDur;
-                timeline[i].endTime = chunkStartTime + (cwIdx + 1) * wordDur;
-                cwIdx++;
-                nextWordIndexRef.current = i + 1;
-              }
-            }
+          gaplessPlayerRef.current.enqueuePCM16(event.data, meta);
+          if (gaplessPlayerRef.current.isPlaying) {
+            setTtsStreamingStatus('playing');
+          } else {
+            setTtsStreamingStatus('buffering');
           }
-
-          wordTimelineRef.current = timeline;
-          setKaraokeTokens([...timeline]);
         }
       } else if (typeof event.data === 'string') {
         try {
@@ -910,6 +957,9 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
             }));
           } else if (data.event === "completed") {
             ttsServerCompletedRef.current = true;
+            if (gaplessPlayerRef.current) {
+              gaplessPlayerRef.current.flushPendingPrebuffer();
+            }
             setTtsStreamMetrics(prev => ({
               ...prev,
               totalDurationSec: data.total_duration_sec,
@@ -918,7 +968,8 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
             const isPlayerBusy = gaplessPlayerRef.current && (
               gaplessPlayerRef.current.isPlaying ||
-              (gaplessPlayerRef.current.activeNodes && gaplessPlayerRef.current.activeNodes.length > 0)
+              (gaplessPlayerRef.current.activeNodes && gaplessPlayerRef.current.activeNodes.length > 0) ||
+              (gaplessPlayerRef.current.pendingChunks && gaplessPlayerRef.current.pendingChunks.length > 0)
             );
 
             if (!isPlayerBusy) {
@@ -1781,7 +1832,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                     </span>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.76rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
                         Strategia di Chunking
@@ -1803,6 +1854,22 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                         <option value="sentences">Frasi Complete (Prosodia Naturale Audio8: . ! ? ; :)</option>
                         <option value="words">Buffer a {ttsWordsPerChunk} Parole</option>
                       </select>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.76rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
+                        Pre-buffering di Avvio ({ttsPrebufferChunks} {ttsPrebufferChunks === 1 ? 'chunk' : 'chunk'})
+                      </label>
+                      <input
+                        type="range"
+                        min="1"
+                        max="5"
+                        step="1"
+                        aria-label="Pre-buffering di Avvio"
+                        value={ttsPrebufferChunks}
+                        onChange={(e) => setTtsPrebufferChunks(Number(e.target.value))}
+                        style={{ width: '100%', accentColor: 'var(--accent-cyan)' }}
+                      />
                     </div>
 
                     <div>

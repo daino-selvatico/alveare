@@ -284,7 +284,7 @@ def main():
 
         # Dynamic token budget based on exact word count to avoid runaway autoregression on small chunks
         words_cnt = len(text_segment.split())
-        chunk_bounded_tokens = max(24, min(max_new_tokens, int(words_cnt * 5.2 + 12)))
+        chunk_bounded_tokens = max(28, min(max_new_tokens, int(words_cnt * 5.8 + 18)))
 
         inputs = processor(**processor_kwargs)
 
@@ -514,7 +514,7 @@ def main():
 
                 # Dynamic token budget for full generation based on exact word count
                 words_cnt = len(text.split())
-                bounded_tokens = max(24, min(max_new_tokens, int(words_cnt * 5.2 + 12)))
+                bounded_tokens = max(28, min(max_new_tokens, int(words_cnt * 5.8 + 18)))
 
                 inputs = processor(**processor_kwargs)
 

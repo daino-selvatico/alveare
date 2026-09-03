@@ -426,6 +426,8 @@
     "ttsChunksMetric": "Chunk Riprodotti",
     "ttsStatusPlaying": "Riproduzione in corso",
     "ttsStatusInterrupted": "Interrotto (Barge-in)",
-    "ttsStatusCompleted": "Streaming completato"
+    "ttsStatusCompleted": "Streaming completato",
+    "ttsPrebufferChunksLabel": "Pre-buffering di Avvio",
+    "ttsPrebufferChunksDesc": "Accumula i primi chunk prima di avviare il clock audioCtx per mascherare ritardi"
   }
 }

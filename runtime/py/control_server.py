@@ -1184,6 +1184,7 @@ class OpenAISpeechRequest(BaseModel):
     language: Optional[str] = "it"
     temperature: Optional[float] = 0.8
     stream: Optional[bool] = False
+    prebuffer_chunks: Optional[int] = 2
 
 @app.post("/v1/audio/speech")
 async def audio_speech(req: OpenAISpeechRequest):
@@ -1281,7 +1282,8 @@ async def api_tts_generate(
     max_new_tokens: Optional[int] = Form(300),
     temperature: Optional[float] = Form(0.8),
     top_p: Optional[float] = Form(0.95),
-    top_k: Optional[int] = Form(50)
+    top_k: Optional[int] = Form(50),
+    prebuffer_chunks: Optional[int] = Form(2)
 ):
     try:
         text = text.strip()
@@ -1546,6 +1548,7 @@ async def handle_tts_stream_connection(websocket: WebSocket):
     temperature = 0.8
     chunk_strategy = "sentences"
     words_per_chunk = 8
+    prebuffer_chunks = 2
     reference_audio = None
     reference_text = None
 
@@ -1650,6 +1653,7 @@ async def handle_tts_stream_connection(websocket: WebSocket):
                         temperature = float(payload.get("temperature", 0.8))
                         chunk_strategy = payload.get("chunk_strategy", "sentences")
                         words_per_chunk = int(payload.get("words_per_chunk", 8))
+                        prebuffer_chunks = max(1, min(5, int(payload.get("prebuffer_chunks", 2))))
                         reference_audio = payload.get("reference_audio")
                         reference_text = payload.get("reference_text")
 
@@ -1661,7 +1665,8 @@ async def handle_tts_stream_connection(websocket: WebSocket):
                             "sample_rate": sample_rate,
                             "channels": 1,
                             "format": format_type,
-                            "frame_duration_ms": 80.0
+                            "frame_duration_ms": 80.0,
+                            "prebuffer_chunks": prebuffer_chunks
                         })
 
                     elif action == "text_chunk":
@@ -1676,13 +1681,18 @@ async def handle_tts_stream_connection(websocket: WebSocket):
                         text_buffer += incoming_text
 
                         if is_final:
-                            # Flush all chunks
-                            chunks = split_into_chunks(text_buffer, strategy=chunk_strategy, words_per_chunk=words_per_chunk)
+                            # Flush all chunks, guaranteeing residual text is synthesized
+                            to_synth = text_buffer.strip()
                             text_buffer = ""
-                            for c in chunks:
-                                if interrupted:
-                                    break
-                                await _synthesize_and_send_chunk(c)
+                            if to_synth:
+                                chunks = split_into_chunks(to_synth, strategy=chunk_strategy, words_per_chunk=words_per_chunk)
+                                if not chunks:
+                                    chunks = [to_synth]
+                                for c in chunks:
+                                    if interrupted:
+                                        break
+                                    if c.strip():
+                                        await _synthesize_and_send_chunk(c.strip())
 
                             if not interrupted:
                                 elapsed_sec = (time.perf_counter() - t_start) if t_start else 0.0
@@ -1711,12 +1721,16 @@ async def handle_tts_stream_connection(websocket: WebSocket):
 
                     elif action == "flush":
                         if not interrupted and text_buffer.strip():
-                            remaining_chunks = split_into_chunks(text_buffer, strategy=chunk_strategy, words_per_chunk=words_per_chunk)
+                            to_synth = text_buffer.strip()
                             text_buffer = ""
-                            for c in remaining_chunks:
+                            chunks = split_into_chunks(to_synth, strategy=chunk_strategy, words_per_chunk=words_per_chunk)
+                            if not chunks:
+                                chunks = [to_synth]
+                            for c in chunks:
                                 if interrupted:
                                     break
-                                await _synthesize_and_send_chunk(c)
+                                if c.strip():
+                                    await _synthesize_and_send_chunk(c.strip())
 
                         if not interrupted:
                             elapsed_sec = (time.perf_counter() - t_start) if t_start else 0.0
