@@ -3,6 +3,7 @@ import os
 import io
 import json
 import time
+import math
 import ctypes
 import tempfile
 import numpy as np
@@ -71,6 +72,8 @@ def main():
 
     import torch
     import torch.nn as nn
+    import torchaudio
+    import librosa
     import soundfile as sf
     from transformers import AutoProcessor, AutoModel
 
@@ -156,32 +159,19 @@ def main():
                             return out.reshape(*orig_shape[:-1], self.out_features)
 
                 offloaded_count = 0
-                # Offload fast layers and attention/FFN projections if hardware shape exists
-                if hasattr(model, "fast_layers"):
-                    for block in model.fast_layers:
-                        if hasattr(block, "attention"):
-                            if npu_lib.alveare_npu_has_shape(reg, block.attention.wo.out_features, block.attention.wo.in_features):
-                                block.attention.wo = NPULinear(block.attention.wo)
-                                offloaded_count += 1
-                        if hasattr(block, "feed_forward"):
-                            if hasattr(block.feed_forward, "w2") and npu_lib.alveare_npu_has_shape(reg, block.feed_forward.w2.out_features, block.feed_forward.w2.in_features):
-                                block.feed_forward.w2 = NPULinear(block.feed_forward.w2)
-                                offloaded_count += 1
-
-                if hasattr(model, "layers"): # 0.6b transformer layers
-                    for block in model.layers:
-                        if hasattr(block, "attention"):
-                            if npu_lib.alveare_npu_has_shape(reg, block.attention.wo.out_features, block.attention.wo.in_features):
-                                block.attention.wo = NPULinear(block.attention.wo)
-                                offloaded_count += 1
-                        if hasattr(block, "feed_forward"):
-                            if hasattr(block.feed_forward, "w2") and npu_lib.alveare_npu_has_shape(reg, block.feed_forward.w2.out_features, block.feed_forward.w2.in_features):
-                                block.feed_forward.w2 = NPULinear(block.feed_forward.w2)
+                # Recursively offload all Linear layers matching NPU XDNA2 shapes
+                for name, module in list(model.named_modules()):
+                    for child_name, child in list(module.named_children()):
+                        if isinstance(child, nn.Linear):
+                            if npu_lib.alveare_npu_has_shape(reg, child.out_features, child.in_features):
+                                setattr(module, child_name, NPULinear(child))
                                 offloaded_count += 1
 
                 sys.stderr.write(f"[TTS Worker] Offloaded {offloaded_count} linear projections to AMD Ryzen AI NPU cores!\n")
             else:
                 sys.stderr.write("[TTS Worker] Could not initialize NPU registry.\n")
+        else:
+            sys.stderr.write("[TTS Worker] NPU library or manifest not found.\n")
 
     sys.stderr.write(f"[TTS Worker] {model_id} fully loaded and ready on {device}.\n")
     ipc_out.write("READY\n")
@@ -210,6 +200,8 @@ def main():
 
                 ref_audio = req.get("reference_audio")
                 ref_text = req.get("reference_text")
+                speed = float(req.get("speed", 1.0))
+                pitch = float(req.get("pitch", 0.0))
                 max_new_tokens = int(req.get("max_new_tokens", 300))
                 temperature = float(req.get("temperature", 0.8))
                 top_p = float(req.get("top_p", 0.95))
@@ -219,7 +211,7 @@ def main():
                 t0 = time.perf_counter()
 
                 processor_kwargs = {"text": [text], "return_tensors": "pt"}
-                if ref_audio and ref_text:
+                if ref_audio and os.path.exists(ref_audio) and ref_text:
                     processor_kwargs["reference_audio"] = [ref_audio]
                     processor_kwargs["reference_text"] = [ref_text]
 
@@ -237,8 +229,32 @@ def main():
                     )
                     waveforms, waveform_lengths = model.decode_audio(output.codes)
 
-                audio_samples = waveforms[0, : int(waveform_lengths[0])].float().cpu().numpy()
+                audio_tensor = waveforms[0, : int(waveform_lengths[0])].float().cpu()
                 sr = model.config.codec_sample_rate
+
+                # 1. Pitch Shift Adjustment (torchaudio)
+                if pitch != 0.0 and pitch != 1.0:
+                    if 0.2 < pitch <= 2.0 and pitch != 1.0:
+                        n_steps = 12.0 * math.log2(pitch)
+                    else:
+                        n_steps = float(pitch)
+                    if abs(n_steps) > 0.01:
+                        try:
+                            audio_tensor = torchaudio.functional.pitch_shift(
+                                audio_tensor.unsqueeze(0), sample_rate=sr, n_steps=n_steps
+                            ).squeeze(0)
+                        except Exception as pe:
+                            sys.stderr.write(f"[TTS Worker] Pitch shift error: {pe}\n")
+
+                audio_samples = audio_tensor.numpy()
+
+                # 2. Speed / Time-Stretch Adjustment (librosa)
+                if speed > 0 and abs(speed - 1.0) > 0.02:
+                    try:
+                        audio_samples = librosa.effects.time_stretch(audio_samples, rate=speed)
+                    except Exception as se:
+                        sys.stderr.write(f"[TTS Worker] Speed stretch error: {se}\n")
+
                 duration_sec = len(audio_samples) / sr if sr > 0 else 0.0
 
                 # Write output to temporary or requested wav file

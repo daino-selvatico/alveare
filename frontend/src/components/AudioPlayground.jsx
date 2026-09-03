@@ -935,50 +935,31 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                  {/* TTS Device Selector */}
-                  <div style={{ display: 'flex', background: 'rgba(0,0,0,0.3)', padding: '0.2rem', borderRadius: '8px', border: '1px solid var(--border-color)', gap: '0.2rem' }}>
-                    <button
-                      type="button"
-                      onClick={() => setTtsDevice('npu')}
-                      style={{
-                        padding: '0.25rem 0.6rem',
-                        borderRadius: '6px',
-                        border: ttsDevice === 'npu' ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid transparent',
-                        background: ttsDevice === 'npu' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
-                        color: ttsDevice === 'npu' ? '#34d399' : 'var(--text-muted)',
-                        fontSize: '0.78rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.3rem',
-                        transition: 'all 0.15s ease'
-                      }}
-                      title="Esecuzione accelerata su AMD Ryzen AI NPU con NPULinear offload"
-                    >
-                      <Zap size={13} /> ⚡ NPU
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTtsDevice('cpu')}
-                      style={{
-                        padding: '0.25rem 0.6rem',
-                        borderRadius: '6px',
-                        border: ttsDevice === 'cpu' ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
-                        background: ttsDevice === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
-                        color: ttsDevice === 'cpu' ? '#60a5fa' : 'var(--text-muted)',
-                        fontSize: '0.78rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.3rem',
-                        transition: 'all 0.15s ease'
-                      }}
-                      title="Esecuzione su CPU multi-core vettorizzata"
-                    >
-                      <Server size={13} /> 🖥️ CPU
-                    </button>
+                  {/* Informative Device Badge */}
+                  <div
+                    style={{
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid var(--border-color)',
+                      color: (status?.device === 'npu' || ttsDevice === 'npu') ? '#34d399' : '#60a5fa',
+                      fontSize: '0.8rem',
+                      fontWeight: 600,
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: '8px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.35rem'
+                    }}
+                    title="Dispositivo hardware configurato dal Pannello di Controllo"
+                  >
+                    {(status?.device === 'npu' || ttsDevice === 'npu') ? (
+                      <>
+                        <Zap size={13} color="#34d399" /> ⚡ NPU (XDNA2)
+                      </>
+                    ) : (
+                      <>
+                        <Server size={13} color="#60a5fa" /> 🖥️ CPU
+                      </>
+                    )}
                   </div>
 
                   <div

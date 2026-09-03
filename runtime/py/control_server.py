@@ -1177,9 +1177,12 @@ async def audio_transcriptions(
 class OpenAISpeechRequest(BaseModel):
     model: Optional[str] = "audio8-0.1b"
     input: str
-    voice: Optional[str] = "default"
+    voice: Optional[str] = "valeria"
     response_format: Optional[str] = "wav"
     speed: Optional[float] = 1.0
+    pitch: Optional[float] = 0.0
+    language: Optional[str] = "it"
+    temperature: Optional[float] = 0.8
 
 @app.post("/v1/audio/speech")
 async def audio_speech(req: OpenAISpeechRequest):
@@ -1194,7 +1197,15 @@ async def audio_speech(req: OpenAISpeechRequest):
         
         state.is_transcribing = True
         try:
-            wav_bytes, res = await asyncio.to_thread(tts.generate_bytes, text)
+            wav_bytes, res = await asyncio.to_thread(
+                tts.generate_bytes,
+                text,
+                voice=req.voice or "valeria",
+                speed=req.speed or 1.0,
+                pitch=req.pitch or 0.0,
+                language=req.language or "it",
+                temperature=req.temperature or 0.8
+            )
         finally:
             state.is_transcribing = False
             state.last_transcribe_time = time.time()
@@ -1209,8 +1220,12 @@ async def audio_speech(req: OpenAISpeechRequest):
 @app.post("/api/tts/generate")
 async def api_tts_generate(
     text: str = Form(...),
-    model: Optional[str] = Form("audio8-0.1b"),
+    model: Optional[str] = Form(None),
     device: Optional[str] = Form(None),
+    voice: Optional[str] = Form("valeria"),
+    language: Optional[str] = Form("it"),
+    speed: Optional[float] = Form(1.0),
+    pitch: Optional[float] = Form(0.0),
     reference_audio: Optional[UploadFile] = File(None),
     reference_text: Optional[str] = Form(None),
     max_new_tokens: Optional[int] = Form(300),
@@ -1243,10 +1258,14 @@ async def api_tts_generate(
             res = await asyncio.to_thread(
                 tts.generate,
                 text=text,
+                voice=voice or "valeria",
+                language=language or "it",
+                speed=speed if speed is not None else 1.0,
+                pitch=pitch if pitch is not None else 0.0,
                 reference_audio=ref_audio_path,
                 reference_text=reference_text,
                 max_new_tokens=max_new_tokens or 300,
-                temperature=temperature or 0.8,
+                temperature=temperature if temperature is not None else 0.8,
                 top_p=top_p or 0.95,
                 top_k=top_k or 50,
                 do_sample=True
@@ -1264,6 +1283,10 @@ async def api_tts_generate(
         res["audio_url"] = f"/api/tts/audio/{audio_filename}" if audio_filename else ""
 
         return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore generazione TTS: {e}")
     except HTTPException:
         raise
     except Exception as e:

@@ -63,12 +63,12 @@ describe('AudioPlayground', () => {
     expect(screen.getByText(/Genera Audio|Generate Speech/i)).toBeDefined();
   });
 
-  it('switches to TTS mode and supports NPU/CPU device toggle', () => {
+  it('switches to TTS mode and displays active hardware device badge', () => {
     render(
       <I18nProvider>
         <AudioPlayground
           apiBase={mockApiBase}
-          status={mockStatus}
+          status={{ ...mockStatus, model: 'audio8-0.1b', device: 'npu' }}
           activeModel="audio8-0.1b"
           isServerRunning={true}
         />
@@ -78,18 +78,9 @@ describe('AudioPlayground', () => {
     const ttsTabBtn = screen.getByText(/Text to Speech|Sintesi Vocale/i);
     fireEvent.click(ttsTabBtn);
 
-    const npuToggle = screen.getByText(/⚡ NPU/i);
-    const cpuToggle = screen.getByText(/🖥️ CPU/i);
-    expect(npuToggle).toBeDefined();
-    expect(cpuToggle).toBeDefined();
-
-    // Switch to CPU
-    fireEvent.click(cpuToggle);
-    expect(cpuToggle.style.color).toBe('rgb(96, 165, 250)'); // #60a5fa
-
-    // Switch back to NPU
-    fireEvent.click(npuToggle);
-    expect(npuToggle.style.color).toBe('rgb(52, 211, 153)'); // #34d399
+    const deviceBadge = screen.getByText(/⚡ NPU/i);
+    expect(deviceBadge).toBeDefined();
+    expect(screen.getByText(/audio8-0.1b/i)).toBeDefined();
   });
 
   it('renders disabled state when server is not running', () => {

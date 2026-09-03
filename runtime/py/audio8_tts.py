@@ -44,11 +44,26 @@ def find_torch_python() -> Optional[str]:
     return None
 
 VOICE_PRESETS = {
-    "female_expressive": (Path("/home/daino/progetti/voice-studio/voices/valeria_expressive.wav"), "Questo è un campione di voce espressivo per la sintesi vocale."),
-    "valeria": (Path("/home/daino/progetti/voice-studio/voices/valeria_expressive.wav"), "Questo è un campione di voce espressivo per la sintesi vocale."),
-    "male_deep": (Path("/home/daino/progetti/voice-studio/voices/daino_raw.wav"), "Questo è un campione di voce registrato per il test."),
-    "daino": (Path("/home/daino/progetti/voice-studio/voices/daino_raw.wav"), "Questo è un campione di voce registrato per il test."),
-    "default": (Path("/home/daino/progetti/voice-studio/voices/valeria_expressive.wav"), "Questo è un campione di voce espressivo per la sintesi vocale."),
+    "valeria": (
+        Path("/home/daino/progetti/voice-studio/voices/valeria_expressive.wav"),
+        "Ma dai, non ci credo, davvero, hai fatto tutto questo. Guarda che è venuto benissimo, dobbiamo assolutamente organizzarci per il weekend, voglio fare qualcosa di divertente insieme. Che ne dici, usciamo fuori a pranzo?"
+    ),
+    "daino": (
+        Path("/home/daino/progetti/voice-studio/voices/daino_raw.wav"),
+        "Ciao, Bolt! Oggi è stata una giornata bella piena di lavoro e di codice ma finalmente ci prendiamo un momento per fare qualche test sui modelli vocali. Guarda che set up incredibile abbiamo tirato su direttamente dalla chat Telegram. Fammi sentire cosa viene fuori con la mia voce."
+    ),
+    "narratore": (
+        Path("/home/daino/progetti/voice-studio/voices/valeria_master.wav"),
+        "Ciao, oggi ho fatto una bella passeggiata e c'era un'aria davvero piacevole. Più tardi mi metto a cucinare con calma qualcosa di buono per cena, magari un piatto semplice ma saporito. Mi rilassa molto prendermi del tempo per me e staccare la spina."
+    ),
+    "female_expressive": (
+        Path("/home/daino/progetti/voice-studio/voices/valeria_expressive.wav"),
+        "Ma dai, non ci credo, davvero, hai fatto tutto questo. Guarda che è venuto benissimo, dobbiamo assolutamente organizzarci per il weekend, voglio fare qualcosa di divertente insieme. Che ne dici, usciamo fuori a pranzo?"
+    ),
+    "default": (
+        Path("/home/daino/progetti/voice-studio/voices/valeria_expressive.wav"),
+        "Ma dai, non ci credo, davvero, hai fatto tutto questo. Guarda che è venuto benissimo, dobbiamo assolutamente organizzarci per il weekend, voglio fare qualcosa di divertente insieme. Che ne dici, usciamo fuori a pranzo?"
+    ),
 }
 
 class Audio8TTS:
@@ -128,6 +143,10 @@ class Audio8TTS:
     def generate(
         self,
         text: str,
+        voice: Optional[str] = "valeria",
+        speed: float = 1.0,
+        pitch: float = 0.0,
+        language: str = "it",
         reference_audio: Optional[str] = None,
         reference_text: Optional[str] = None,
         max_new_tokens: int = 300,
@@ -142,15 +161,40 @@ class Audio8TTS:
         Returns dictionary with audio_path, sample_rate, duration_sec, latency_ms, rtf.
         """
         self._ensure_loaded()
-        ref_audio_str = reference_audio
-        ref_text_str = reference_text
-        if not ref_audio_str or ref_audio_str in VOICE_PRESETS:
-            preset_key = ref_audio_str if ref_audio_str in VOICE_PRESETS else "female_expressive"
-            preset_path, preset_text = VOICE_PRESETS[preset_key]
-            if preset_path.exists():
-                ref_audio_str = str(preset_path)
-                if not ref_text_str:
-                    ref_text_str = preset_text
+        ref_audio_str = None
+        ref_text_str = None
+
+        if reference_audio and os.path.exists(reference_audio):
+            ref_audio_str = reference_audio
+            ref_text_str = reference_text or ""
+        else:
+            preset_key = (voice or reference_audio or "valeria").lower().strip()
+            if preset_key in VOICE_PRESETS:
+                preset_path, preset_text = VOICE_PRESETS[preset_key]
+                if preset_path.exists():
+                    ref_audio_str = str(preset_path)
+                    ref_text_str = reference_text or preset_text
+            elif "female" in preset_key:
+                preset_path, preset_text = VOICE_PRESETS["female_expressive"]
+                if preset_path.exists():
+                    ref_audio_str = str(preset_path)
+                    ref_text_str = reference_text or preset_text
+            elif "daino" in preset_key:
+                preset_path, preset_text = VOICE_PRESETS["daino"]
+                if preset_path.exists():
+                    ref_audio_str = str(preset_path)
+                    ref_text_str = reference_text or preset_text
+            elif "narrat" in preset_key:
+                preset_path, preset_text = VOICE_PRESETS["narratore"]
+                if preset_path.exists():
+                    ref_audio_str = str(preset_path)
+                    ref_text_str = reference_text or preset_text
+            else:
+                # Default fallback
+                preset_path, preset_text = VOICE_PRESETS["default"]
+                if preset_path.exists():
+                    ref_audio_str = str(preset_path)
+                    ref_text_str = reference_text or preset_text
 
         with self._worker_lock:
             if self._worker_proc is None or self._worker_proc.poll() is not None:
@@ -159,6 +203,10 @@ class Audio8TTS:
             req = {
                 "action": "generate",
                 "text": text,
+                "voice": voice or "valeria",
+                "language": language or "it",
+                "speed": float(speed) if speed else 1.0,
+                "pitch": float(pitch) if pitch is not None else 0.0,
                 "reference_audio": ref_audio_str,
                 "reference_text": ref_text_str,
                 "max_new_tokens": max_new_tokens,
