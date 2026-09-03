@@ -66,6 +66,161 @@ VOICE_PRESETS = {
     ),
 }
 
+import re
+
+def split_into_chunks(
+    text: str,
+    strategy: str = "clauses",
+    words_per_chunk: int = 8,
+    min_words_first: int = 3,
+    max_words_per_chunk: int = 22
+) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+
+    if strategy == "sentences":
+        raw = re.split(r'(?<=[.!?;\n:])\s+', text)
+        return [c.strip() for c in raw if c.strip()]
+
+    if strategy == "words":
+        words = text.split()
+        if not words:
+            return []
+        chunks = []
+        wpc = max(1, words_per_chunk)
+        for i in range(0, len(words), wpc):
+            chunk = " ".join(words[i:i + wpc])
+            if chunk:
+                chunks.append(chunk)
+        return chunks
+
+    # Default: "clauses" - Adaptive Clause & Sentence Chunker
+    tokens = re.findall(r'\S+|\s+', text)
+    chunks = []
+    curr_words = []
+    curr_tokens = []
+    is_first_chunk = True
+
+    clause_puncts = {',', '—', '-', '...', ')', '"', '»', '”', '–'}
+    sentence_puncts = {'.', '!', '?', ';', ':', '\n'}
+
+    for t in tokens:
+        curr_tokens.append(t)
+        if t.strip() and not re.match(r'^[^\w\s]+$', t):
+            curr_words.append(t)
+
+        word_count = len(curr_words)
+        stripped = t.strip()
+
+        has_sent_punct = any(p in stripped for p in sentence_puncts)
+        has_clause_punct = any(p in stripped for p in clause_puncts)
+
+        should_flush = False
+
+        if is_first_chunk:
+            if (has_clause_punct or has_sent_punct) and word_count >= min_words_first:
+                should_flush = True
+            elif word_count >= 6:
+                should_flush = True
+        else:
+            if has_sent_punct and word_count >= 2:
+                should_flush = True
+            elif has_clause_punct and word_count >= 6:
+                should_flush = True
+            elif word_count >= max_words_per_chunk:
+                should_flush = True
+
+        if should_flush:
+            chunk_str = "".join(curr_tokens).strip()
+            if chunk_str:
+                chunks.append(chunk_str)
+                is_first_chunk = False
+            curr_tokens = []
+            curr_words = []
+
+    remaining = "".join(curr_tokens).strip()
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks if chunks else [text]
+
+def extract_completed_chunks(
+    text: str,
+    strategy: str = "clauses",
+    words_per_chunk: int = 8,
+    is_first: bool = False
+) -> tuple[list[str], str]:
+    if not text:
+        return [], ""
+
+    if strategy == "sentences":
+        parts = re.split(r'([.!?;\n:]+\s*)', text)
+        ready = []
+        for i in range(0, len(parts) - 1, 2):
+            seg = (parts[i] + parts[i+1]).strip()
+            if seg:
+                ready.append(seg)
+        remaining = parts[-1] if len(parts) % 2 == 1 else ""
+        return ready, remaining
+
+    if strategy == "words":
+        words = text.split()
+        wpc = max(1, words_per_chunk)
+        if len(words) < wpc:
+            return [], text
+        ready = []
+        idx = 0
+        while idx + wpc <= len(words):
+            ready.append(" ".join(words[idx:idx + wpc]))
+            idx += wpc
+        remaining = " ".join(words[idx:])
+        return ready, remaining
+
+    clause_puncts = {',', '—', '-', '...', ')', '"', '»', '”', '–'}
+    sentence_puncts = {'.', '!', '?', ';', ':', '\n'}
+
+    tokens = re.findall(r'\S+|\s+', text)
+    ready = []
+    curr_tokens = []
+    curr_words = []
+    first = is_first
+
+    for t in tokens:
+        curr_tokens.append(t)
+        if t.strip() and not re.match(r'^[^\w\s]+$', t):
+            curr_words.append(t)
+
+        word_count = len(curr_words)
+        stripped = t.strip()
+        has_sent = any(p in stripped for p in sentence_puncts)
+        has_clause = any(p in stripped for p in clause_puncts)
+
+        should_flush = False
+        if first:
+            if (has_clause or has_sent) and word_count >= 3:
+                should_flush = True
+            elif word_count >= 6:
+                should_flush = True
+        else:
+            if has_sent and word_count >= 2:
+                should_flush = True
+            elif has_clause and word_count >= 6:
+                should_flush = True
+            elif word_count >= 20:
+                should_flush = True
+
+        if should_flush:
+            chunk_str = "".join(curr_tokens).strip()
+            if chunk_str:
+                ready.append(chunk_str)
+                first = False
+            curr_tokens = []
+            curr_words = []
+
+    remaining = "".join(curr_tokens)
+    return ready, remaining
+
 class Audio8TTS:
     _instance = None
     _worker_proc = None
@@ -140,6 +295,39 @@ class Audio8TTS:
         finally:
             self._loading = False
 
+    def _resolve_reference(
+        self,
+        voice: Optional[str] = None,
+        reference_audio: Optional[str] = None,
+        reference_text: Optional[str] = None
+    ) -> tuple[Optional[str], Optional[str]]:
+        if reference_audio and os.path.exists(reference_audio):
+            return reference_audio, reference_text or ""
+
+        preset_key = (voice or reference_audio or "valeria").lower().strip()
+        if preset_key in VOICE_PRESETS:
+            preset_path, preset_text = VOICE_PRESETS[preset_key]
+            if preset_path.exists():
+                return str(preset_path), reference_text or preset_text
+        elif "female" in preset_key:
+            preset_path, preset_text = VOICE_PRESETS["female_expressive"]
+            if preset_path.exists():
+                return str(preset_path), reference_text or preset_text
+        elif "daino" in preset_key:
+            preset_path, preset_text = VOICE_PRESETS["daino"]
+            if preset_path.exists():
+                return str(preset_path), reference_text or preset_text
+        elif "narrat" in preset_key:
+            preset_path, preset_text = VOICE_PRESETS["narratore"]
+            if preset_path.exists():
+                return str(preset_path), reference_text or preset_text
+
+        # Default fallback
+        preset_path, preset_text = VOICE_PRESETS["default"]
+        if preset_path.exists():
+            return str(preset_path), reference_text or preset_text
+        return None, None
+
     def generate(
         self,
         text: str,
@@ -161,40 +349,7 @@ class Audio8TTS:
         Returns dictionary with audio_path, sample_rate, duration_sec, latency_ms, rtf.
         """
         self._ensure_loaded()
-        ref_audio_str = None
-        ref_text_str = None
-
-        if reference_audio and os.path.exists(reference_audio):
-            ref_audio_str = reference_audio
-            ref_text_str = reference_text or ""
-        else:
-            preset_key = (voice or reference_audio or "valeria").lower().strip()
-            if preset_key in VOICE_PRESETS:
-                preset_path, preset_text = VOICE_PRESETS[preset_key]
-                if preset_path.exists():
-                    ref_audio_str = str(preset_path)
-                    ref_text_str = reference_text or preset_text
-            elif "female" in preset_key:
-                preset_path, preset_text = VOICE_PRESETS["female_expressive"]
-                if preset_path.exists():
-                    ref_audio_str = str(preset_path)
-                    ref_text_str = reference_text or preset_text
-            elif "daino" in preset_key:
-                preset_path, preset_text = VOICE_PRESETS["daino"]
-                if preset_path.exists():
-                    ref_audio_str = str(preset_path)
-                    ref_text_str = reference_text or preset_text
-            elif "narrat" in preset_key:
-                preset_path, preset_text = VOICE_PRESETS["narratore"]
-                if preset_path.exists():
-                    ref_audio_str = str(preset_path)
-                    ref_text_str = reference_text or preset_text
-            else:
-                # Default fallback
-                preset_path, preset_text = VOICE_PRESETS["default"]
-                if preset_path.exists():
-                    ref_audio_str = str(preset_path)
-                    ref_text_str = reference_text or preset_text
+        ref_audio_str, ref_text_str = self._resolve_reference(voice, reference_audio, reference_text)
 
         with self._worker_lock:
             if self._worker_proc is None or self._worker_proc.poll() is not None:
@@ -234,6 +389,151 @@ class Audio8TTS:
                     pass
                 self._worker_proc = None
                 return {"status": "error", "error": str(e)}
+
+    def generate_chunk(
+        self,
+        text: str,
+        seq: int = 0,
+        voice: Optional[str] = "valeria",
+        speed: float = 1.0,
+        pitch: float = 0.0,
+        language: str = "it",
+        reference_audio: Optional[str] = None,
+        reference_text: Optional[str] = None,
+        max_new_tokens: int = 300,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        do_sample: bool = True,
+        sample_rate: int = 44100,
+        format: str = "pcm16"
+    ) -> tuple[bytes, Dict[str, Any]]:
+        """
+        Synthesizes a single chunk/clause of text and returns raw PCM bytes + metadata.
+        """
+        self._ensure_loaded()
+        ref_audio_str, ref_text_str = self._resolve_reference(voice, reference_audio, reference_text)
+
+        with self._worker_lock:
+            if self._worker_proc is None or self._worker_proc.poll() is not None:
+                self._ensure_loaded()
+
+            req = {
+                "action": "generate_chunk",
+                "text": text,
+                "seq": seq,
+                "voice": voice or "valeria",
+                "language": language or "it",
+                "speed": float(speed) if speed else 1.0,
+                "pitch": float(pitch) if pitch is not None else 0.0,
+                "reference_audio": ref_audio_str,
+                "reference_text": ref_text_str,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "do_sample": do_sample,
+                "sample_rate": sample_rate,
+                "format": format
+            }
+
+            try:
+                self._worker_proc.stdin.write(json.dumps(req) + "\n")
+                self._worker_proc.stdin.flush()
+                resp_line = self._worker_proc.stdout.readline()
+                if not resp_line:
+                    raise RuntimeError("TTS worker process closed unexpectedly.")
+                res = json.loads(resp_line)
+                if res.get("status") == "error":
+                    raise RuntimeError(res.get("error", "Chunk synthesis error"))
+                pcm_b64 = res.get("pcm_b64", "")
+                pcm_bytes = base64.b64decode(pcm_b64) if pcm_b64 else b""
+                return pcm_bytes, res
+            except Exception as e:
+                try:
+                    if self._worker_proc:
+                        self._worker_proc.terminate()
+                except Exception:
+                    pass
+                self._worker_proc = None
+                raise e
+
+    def generate_stream(
+        self,
+        text: str,
+        voice: Optional[str] = "valeria",
+        speed: float = 1.0,
+        pitch: float = 0.0,
+        language: str = "it",
+        reference_audio: Optional[str] = None,
+        reference_text: Optional[str] = None,
+        chunk_strategy: str = "clauses",
+        words_per_chunk: int = 8,
+        max_new_tokens: int = 300,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        do_sample: bool = True,
+        sample_rate: int = 44100,
+        format: str = "pcm16"
+    ):
+        """
+        Streaming generator yielding (pcm_bytes, meta_dict) for each acoustic chunk.
+        """
+        self._ensure_loaded()
+        ref_audio_str, ref_text_str = self._resolve_reference(voice, reference_audio, reference_text)
+
+        with self._worker_lock:
+            if self._worker_proc is None or self._worker_proc.poll() is not None:
+                self._ensure_loaded()
+
+            req = {
+                "action": "generate_stream",
+                "text": text,
+                "chunk_strategy": chunk_strategy,
+                "words_per_chunk": words_per_chunk,
+                "voice": voice or "valeria",
+                "language": language or "it",
+                "speed": float(speed) if speed else 1.0,
+                "pitch": float(pitch) if pitch is not None else 0.0,
+                "reference_audio": ref_audio_str,
+                "reference_text": ref_text_str,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "do_sample": do_sample,
+                "sample_rate": sample_rate,
+                "format": format
+            }
+
+            try:
+                self._worker_proc.stdin.write(json.dumps(req) + "\n")
+                self._worker_proc.stdin.flush()
+
+                while True:
+                    line = self._worker_proc.stdout.readline()
+                    if not line:
+                        break
+                    data = json.loads(line.strip())
+                    event = data.get("event")
+                    if event == "audio_frame":
+                        pcm_b64 = data.get("pcm_b64", "")
+                        pcm_bytes = base64.b64decode(pcm_b64) if pcm_b64 else b""
+                        yield pcm_bytes, data
+                    elif event == "stream_end":
+                        yield b"", data
+                        break
+                    elif data.get("status") == "error":
+                        raise RuntimeError(data.get("error", "TTS stream synthesis failed"))
+            except Exception as e:
+                try:
+                    if self._worker_proc:
+                        self._worker_proc.terminate()
+                except Exception:
+                    pass
+                self._worker_proc = None
+                raise e
 
     def generate_bytes(self, text: str, **kwargs) -> tuple[bytes, Dict[str, Any]]:
         """Synthesizes speech and returns raw WAV bytes alongside metadata."""

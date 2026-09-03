@@ -406,6 +406,26 @@
     "ttsPause": "Pause",
     "ttsDuration": "{duration}s duration",
     "ttsTokens": "Tokens: {tokens}",
-    "ttsSpeed": "Speed: {rtf}x RTF"
+    "ttsSpeed": "Speed: {rtf}x RTF",
+    "ttsStreamingToggle": "Real-Time Streaming Mode",
+    "ttsStreamingDesc": "Ultra low-latency incremental speech generation (TTFA < 250ms) with gapless Web Audio playback",
+    "ttsChunkStrategyLabel": "Chunking Strategy",
+    "ttsChunkStrategyClauses": "Clauses & Punctuation",
+    "ttsChunkStrategySentences": "Full Sentences",
+    "ttsChunkStrategyWords": "Fixed Word Buffer",
+    "ttsWordsPerChunkLabel": "Word buffer size:",
+    "ttsLlmDelayLabel": "LLM Token Simulation Delay",
+    "ttsLlmDelay0": "0 ms (Instant)",
+    "ttsLlmDelay30": "30 ms (Fast LLM)",
+    "ttsLlmDelay60": "60 ms (Standard LLM)",
+    "ttsLlmDelay120": "120 ms (Slow LLM)",
+    "ttsStartStreamingBtn": "Start Streaming TTS",
+    "ttsStreamingInProgress": "Streaming in progress...",
+    "ttsBargeInBtn": "Interrupt (Barge-in)",
+    "ttsTtfaMetric": "TTFA (Time To First Audio)",
+    "ttsChunksMetric": "Chunks Played",
+    "ttsStatusPlaying": "Playing audio",
+    "ttsStatusInterrupted": "Interrupted (Barge-in)",
+    "ttsStatusCompleted": "Streaming completed"
   }
 }

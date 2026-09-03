@@ -177,6 +177,168 @@ def main():
     ipc_out.write("READY\n")
     ipc_out.flush()
 
+    import base64
+    import re
+
+    def split_into_chunks(
+        text: str,
+        strategy: str = "clauses",
+        words_per_chunk: int = 8,
+        min_words_first: int = 3,
+        max_words_per_chunk: int = 22
+    ) -> list:
+        text = text.strip()
+        if not text:
+            return []
+
+        if strategy == "sentences":
+            raw = re.split(r'(?<=[.!?;\n:])\s+', text)
+            return [c.strip() for c in raw if c.strip()]
+
+        if strategy == "words":
+            words = text.split()
+            if not words:
+                return []
+            chunks = []
+            wpc = max(1, words_per_chunk)
+            for i in range(0, len(words), wpc):
+                chunk = " ".join(words[i:i + wpc])
+                if chunk:
+                    chunks.append(chunk)
+            return chunks
+
+        # Default: "clauses" - Adaptive Clause & Sentence Chunker
+        tokens = re.findall(r'\S+|\s+', text)
+        chunks = []
+        curr_words = []
+        curr_tokens = []
+        is_first_chunk = True
+
+        clause_puncts = {',', '—', '-', '...', ')', '"', '»', '”', '–'}
+        sentence_puncts = {'.', '!', '?', ';', ':', '\n'}
+
+        for t in tokens:
+            curr_tokens.append(t)
+            if t.strip() and not re.match(r'^[^\w\s]+$', t):
+                curr_words.append(t)
+
+            word_count = len(curr_words)
+            stripped = t.strip()
+
+            has_sent_punct = any(p in stripped for p in sentence_puncts)
+            has_clause_punct = any(p in stripped for p in clause_puncts)
+
+            should_flush = False
+
+            if is_first_chunk:
+                if (has_clause_punct or has_sent_punct) and word_count >= min_words_first:
+                    should_flush = True
+                elif word_count >= 6:
+                    should_flush = True
+            else:
+                if has_sent_punct and word_count >= 2:
+                    should_flush = True
+                elif has_clause_punct and word_count >= 6:
+                    should_flush = True
+                elif word_count >= max_words_per_chunk:
+                    should_flush = True
+
+            if should_flush:
+                chunk_str = "".join(curr_tokens).strip()
+                if chunk_str:
+                    chunks.append(chunk_str)
+                    is_first_chunk = False
+                curr_tokens = []
+                curr_words = []
+
+        remaining = "".join(curr_tokens).strip()
+        if remaining:
+            chunks.append(remaining)
+
+        return chunks if chunks else [text]
+
+    def synthesize_audio_segment(
+        text_segment: str,
+        ref_audio: str = None,
+        ref_text: str = None,
+        speed: float = 1.0,
+        pitch: float = 0.0,
+        max_new_tokens: int = 300,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        do_sample: bool = True,
+        target_sample_rate: int = 44100,
+        format_type: str = "pcm16"
+    ):
+        processor_kwargs = {"text": [text_segment], "return_tensors": "pt"}
+        if ref_audio and os.path.exists(ref_audio) and ref_text:
+            processor_kwargs["reference_audio"] = [ref_audio]
+            processor_kwargs["reference_text"] = [ref_text]
+
+        inputs = processor(**processor_kwargs)
+
+        with torch.inference_mode():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                do_sample=do_sample,
+                return_dict_in_generate=True,
+            )
+            waveforms, waveform_lengths = model.decode_audio(output.codes)
+
+        audio_tensor = waveforms[0, : int(waveform_lengths[0])].float().cpu()
+        native_sr = getattr(model.config, "codec_sample_rate", 44100) or 44100
+
+        # Pitch Shift Adjustment (torchaudio)
+        if pitch != 0.0 and pitch != 1.0:
+            if 0.2 < pitch <= 2.0 and pitch != 1.0:
+                n_steps = 12.0 * math.log2(pitch)
+            else:
+                n_steps = float(pitch)
+            if abs(n_steps) > 0.01:
+                try:
+                    audio_tensor = torchaudio.functional.pitch_shift(
+                        audio_tensor.unsqueeze(0), sample_rate=native_sr, n_steps=n_steps
+                    ).squeeze(0)
+                except Exception as pe:
+                    sys.stderr.write(f"[TTS Worker] Pitch shift error: {pe}\n")
+
+        audio_samples = audio_tensor.numpy()
+
+        # Speed / Time-Stretch Adjustment (librosa)
+        if speed > 0 and abs(speed - 1.0) > 0.02:
+            try:
+                audio_samples = librosa.effects.time_stretch(audio_samples, rate=speed)
+            except Exception as se:
+                sys.stderr.write(f"[TTS Worker] Speed stretch error: {se}\n")
+
+        # Resample if target sample rate differs
+        effective_sr = native_sr
+        if target_sample_rate > 0 and target_sample_rate != native_sr:
+            try:
+                audio_samples = librosa.resample(audio_samples, orig_sr=native_sr, target_sr=target_sample_rate)
+                effective_sr = target_sample_rate
+            except Exception as re_err:
+                sys.stderr.write(f"[TTS Worker] Resampling error: {re_err}\n")
+                effective_sr = native_sr
+
+        # Format conversion
+        if format_type.lower() == "float32":
+            pcm_bytes = audio_samples.astype(np.float32).tobytes()
+        else:
+            clipped = np.clip(audio_samples, -1.0, 1.0)
+            pcm_bytes = (clipped * 32767.0).astype(np.int16).tobytes()
+
+        duration_sec = len(audio_samples) / effective_sr if effective_sr > 0 else 0.0
+        num_frames = int(output.codes.shape[-1]) if hasattr(output, "codes") else 0
+        num_tokens = int(output.codes.numel()) if hasattr(output, "codes") else 0
+
+        return pcm_bytes, audio_samples, effective_sr, duration_sec, num_frames, num_tokens
+
     # Main IPC Command Loop
     for line in sys.stdin:
         line = line.strip()
@@ -190,6 +352,137 @@ def main():
                 ipc_out.write(json.dumps({"status": "pong"}) + "\n")
                 ipc_out.flush()
                 continue
+
+            ref_audio = req.get("reference_audio")
+            ref_text = req.get("reference_text")
+            speed = float(req.get("speed", 1.0))
+            pitch = float(req.get("pitch", 0.0))
+            max_new_tokens = int(req.get("max_new_tokens", 300))
+            temperature = float(req.get("temperature", 0.8))
+            top_p = float(req.get("top_p", 0.95))
+            top_k = int(req.get("top_k", 50))
+            do_sample = bool(req.get("do_sample", True))
+            req_sr = int(req.get("sample_rate", 44100))
+            req_format = str(req.get("format", "pcm16")).lower()
+
+            if action == "generate_chunk":
+                chunk_text = req.get("text", "").strip()
+                if not chunk_text:
+                    ipc_out.write(json.dumps({"status": "error", "error": "Empty chunk text"}) + "\n")
+                    ipc_out.flush()
+                    continue
+
+                seq_id = int(req.get("seq", 0))
+                t0 = time.perf_counter()
+                pcm_bytes, audio_samples, sr, duration_sec, num_frames, num_tokens = synthesize_audio_segment(
+                    chunk_text,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    speed=speed,
+                    pitch=pitch,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    do_sample=do_sample,
+                    target_sample_rate=req_sr,
+                    format_type=req_format
+                )
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                pcm_b64 = base64.b64encode(pcm_bytes).decode("ascii")
+
+                res = {
+                    "status": "success",
+                    "event": "audio_frame",
+                    "seq": seq_id,
+                    "sample_rate": sr,
+                    "num_samples": len(audio_samples),
+                    "duration_sec": round(duration_sec, 3),
+                    "duration_ms": round(duration_sec * 1000.0, 2),
+                    "latency_ms": round(elapsed_ms, 2),
+                    "pcm_b64": pcm_b64,
+                    "text": chunk_text,
+                    "num_frames": num_frames,
+                    "num_tokens": num_tokens
+                }
+                ipc_out.write(json.dumps(res) + "\n")
+                ipc_out.flush()
+                continue
+
+            if action == "generate_stream":
+                text = req.get("text", "").strip()
+                if not text:
+                    ipc_out.write(json.dumps({"status": "error", "error": "Empty text prompt"}) + "\n")
+                    ipc_out.flush()
+                    continue
+
+                strategy = req.get("chunk_strategy", "clauses")
+                words_per_chunk = int(req.get("words_per_chunk", 8))
+                chunks = split_into_chunks(text, strategy=strategy, words_per_chunk=words_per_chunk)
+
+                t_stream_start = time.perf_counter()
+                first_latency_ms = None
+                total_samples = 0
+                total_duration = 0.0
+
+                for seq_id, chunk in enumerate(chunks):
+                    t_chunk_start = time.perf_counter()
+                    pcm_bytes, audio_samples, sr, dur_sec, n_frames, n_tokens = synthesize_audio_segment(
+                        chunk,
+                        ref_audio=ref_audio,
+                        ref_text=ref_text,
+                        speed=speed,
+                        pitch=pitch,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        do_sample=do_sample,
+                        target_sample_rate=req_sr,
+                        format_type=req_format
+                    )
+                    chunk_elapsed_ms = (time.perf_counter() - t_chunk_start) * 1000.0
+                    if first_latency_ms is None:
+                        first_latency_ms = (time.perf_counter() - t_stream_start) * 1000.0
+
+                    total_samples += len(audio_samples)
+                    total_duration += dur_sec
+                    pcm_b64 = base64.b64encode(pcm_bytes).decode("ascii")
+
+                    frame_meta = {
+                        "event": "audio_frame",
+                        "seq": seq_id,
+                        "num_samples": len(audio_samples),
+                        "sample_rate": sr,
+                        "duration_sec": round(dur_sec, 3),
+                        "duration_ms": round(dur_sec * 1000.0, 2),
+                        "chunk_latency_ms": round(chunk_elapsed_ms, 2),
+                        "ttfa_ms": round(first_latency_ms, 2) if seq_id == 0 else None,
+                        "pcm_b64": pcm_b64,
+                        "text_segment": chunk
+                    }
+                    ipc_out.write(json.dumps(frame_meta) + "\n")
+                    ipc_out.flush()
+
+                total_elapsed_ms = (time.perf_counter() - t_stream_start) * 1000.0
+                total_elapsed_sec = total_elapsed_ms / 1000.0
+                rtf = total_elapsed_sec / total_duration if total_duration > 0 else 0.0
+
+                end_meta = {
+                    "event": "stream_end",
+                    "total_samples": total_samples,
+                    "total_duration": round(total_duration, 3),
+                    "total_duration_sec": round(total_duration, 3),
+                    "latency_ms": round(total_elapsed_ms, 2),
+                    "ttfa_ms": round(first_latency_ms, 2) if first_latency_ms else 0.0,
+                    "rtf": round(rtf, 3),
+                    "num_chunks": len(chunks),
+                    "sample_rate": sr,
+                    "format": req_format
+                }
+                ipc_out.write(json.dumps(end_meta) + "\n")
+                ipc_out.flush()
+                continue
                 
             if action == "generate":
                 text = req.get("text", "").strip()
@@ -197,16 +490,6 @@ def main():
                     ipc_out.write(json.dumps({"status": "error", "error": "Empty text prompt"}) + "\n")
                     ipc_out.flush()
                     continue
-
-                ref_audio = req.get("reference_audio")
-                ref_text = req.get("reference_text")
-                speed = float(req.get("speed", 1.0))
-                pitch = float(req.get("pitch", 0.0))
-                max_new_tokens = int(req.get("max_new_tokens", 300))
-                temperature = float(req.get("temperature", 0.8))
-                top_p = float(req.get("top_p", 0.95))
-                top_k = int(req.get("top_k", 50))
-                do_sample = bool(req.get("do_sample", True))
 
                 t0 = time.perf_counter()
 
@@ -230,7 +513,7 @@ def main():
                     waveforms, waveform_lengths = model.decode_audio(output.codes)
 
                 audio_tensor = waveforms[0, : int(waveform_lengths[0])].float().cpu()
-                sr = model.config.codec_sample_rate
+                sr = getattr(model.config, "codec_sample_rate", 44100) or 44100
 
                 # 1. Pitch Shift Adjustment (torchaudio)
                 if pitch != 0.0 and pitch != 1.0:

@@ -24,9 +24,107 @@ import {
   Sliders,
   Server,
   UserCheck,
-  RotateCw
+  RotateCw,
+  Square
 } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
+
+class GaplessPCMPlayer {
+  constructor(sampleRate = 44100) {
+    this.sampleRate = sampleRate;
+    this.audioCtx = null;
+    this.nextStartTime = 0;
+    this.isPlaying = false;
+    this.activeNodes = [];
+    this.onChunkPlayed = null;
+    this.onEnded = null;
+  }
+
+  init() {
+    if (!this.audioCtx || this.audioCtx.state === 'closed') {
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtxClass) {
+        this.audioCtx = new AudioCtxClass({ sampleRate: this.sampleRate, latencyHint: 'interactive' });
+        this.nextStartTime = this.audioCtx.currentTime;
+      }
+    }
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume();
+    }
+  }
+
+  enqueuePCM16(arrayBuffer) {
+    this.init();
+    if (!this.audioCtx) return;
+
+    let int16Array;
+    if (arrayBuffer instanceof Int16Array) {
+      int16Array = arrayBuffer;
+    } else if (arrayBuffer instanceof ArrayBuffer) {
+      int16Array = new Int16Array(arrayBuffer);
+    } else if (ArrayBuffer.isView(arrayBuffer)) {
+      int16Array = new Int16Array(arrayBuffer.buffer, arrayBuffer.byteOffset, arrayBuffer.byteLength / 2);
+    } else {
+      return;
+    }
+
+    if (int16Array.length === 0) return;
+
+    const float32Data = new Float32Array(int16Array.length);
+    for (let i = 0; i < int16Array.length; i++) {
+      float32Data[i] = int16Array[i] / 32768.0;
+    }
+
+    const audioBuffer = this.audioCtx.createBuffer(1, float32Data.length, this.sampleRate);
+    audioBuffer.copyToChannel(float32Data, 0);
+
+    const sourceNode = this.audioCtx.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.connect(this.audioCtx.destination);
+
+    const currentTime = this.audioCtx.currentTime;
+    const startTime = Math.max(currentTime + 0.015, this.nextStartTime);
+    sourceNode.start(startTime);
+
+    this.nextStartTime = startTime + audioBuffer.duration;
+    this.isPlaying = true;
+    this.activeNodes.push(sourceNode);
+
+    sourceNode.onended = () => {
+      const idx = this.activeNodes.indexOf(sourceNode);
+      if (idx !== -1) this.activeNodes.splice(idx, 1);
+      if (this.onChunkPlayed) this.onChunkPlayed();
+      if (this.activeNodes.length === 0 && (!this.audioCtx || this.audioCtx.currentTime >= this.nextStartTime - 0.05)) {
+        this.isPlaying = false;
+        if (this.onEnded) this.onEnded();
+      }
+    };
+  }
+
+  stopAndFlush() {
+    for (const node of this.activeNodes) {
+      try {
+        node.stop();
+        node.disconnect();
+      } catch (e) {}
+    }
+    this.activeNodes = [];
+    if (this.audioCtx && this.audioCtx.state !== 'closed') {
+      this.nextStartTime = this.audioCtx.currentTime;
+    }
+    this.isPlaying = false;
+  }
+
+  close() {
+    this.stopAndFlush();
+    if (this.audioCtx && this.audioCtx.state !== 'closed') {
+      try {
+        this.audioCtx.close();
+      } catch (e) {}
+      this.audioCtx = null;
+    }
+  }
+}
 
 export default function AudioPlayground({ apiBase, status, activeModel, isServerRunning, models = [], onNavigateToControl }) {
   const { t } = useTranslation();
@@ -104,6 +202,23 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   const [ttsTopP, setTtsTopP] = useState(0.95);
   const [isGeneratingTts, setIsGeneratingTts] = useState(false);
   const [ttsResult, setTtsResult] = useState(null);
+
+  // TTS Streaming Real-Time State
+  const [ttsStreamingEnabled, setTtsStreamingEnabled] = useState(false);
+  const [ttsChunkStrategy, setTtsChunkStrategy] = useState('clauses');
+  const [ttsWordsPerChunk, setTtsWordsPerChunk] = useState(8);
+  const [ttsTokenDelay, setTtsTokenDelay] = useState(0);
+  const [ttsIsStreaming, setTtsIsStreaming] = useState(false);
+  const [ttsStreamingStatus, setTtsStreamingStatus] = useState('idle');
+  const [ttsStreamMetrics, setTtsStreamMetrics] = useState({
+    ttfaMs: null,
+    chunksReceived: 0,
+    chunksPlayed: 0,
+    totalDurationSec: null,
+    rtf: null,
+    currentSegment: ''
+  });
+
   const [ttsHistory, setTtsHistory] = useState(() => {
     try {
       const saved = localStorage.getItem('alveare_tts_history');
@@ -135,10 +250,20 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   const fileInputRef = useRef(null);
   const ttsFileInputRef = useRef(null);
 
+  // TTS Streaming Refs
+  const ttsWsRef = useRef(null);
+  const gaplessPlayerRef = useRef(null);
+  const ttsSimTimerRef = useRef(null);
+  const ttsStartTimeRef = useRef(null);
+
   // Clean up on unmount
   useEffect(() => {
     return () => {
       stopRealtimeStream();
+      stopTtsStreaming();
+      if (gaplessPlayerRef.current) {
+        gaplessPlayerRef.current.close();
+      }
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
@@ -476,6 +601,191 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     } finally {
       setIsGeneratingTts(false);
     }
+  };
+
+  const startTtsStreaming = () => {
+    if (!ttsText.trim()) return;
+    if (!isServerRunning) {
+      setErrorMsg(t('audioPlayground.serverOffBannerDesc'));
+      return;
+    }
+    setErrorMsg('');
+    setTtsIsStreaming(true);
+    setTtsStreamingStatus('connecting');
+    setTtsStreamMetrics({
+      ttfaMs: null,
+      chunksReceived: 0,
+      chunksPlayed: 0,
+      totalDurationSec: null,
+      rtf: null,
+      currentSegment: ''
+    });
+
+    if (!gaplessPlayerRef.current) {
+      gaplessPlayerRef.current = new GaplessPCMPlayer(44100);
+    }
+    gaplessPlayerRef.current.onChunkPlayed = () => {
+      setTtsStreamMetrics(prev => ({
+        ...prev,
+        chunksPlayed: prev.chunksPlayed + 1
+      }));
+    };
+    gaplessPlayerRef.current.onEnded = () => {
+      setTtsStreamingStatus(prev => prev === 'streaming' || prev === 'playing' ? 'completed' : prev);
+      setTtsIsStreaming(false);
+    };
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = apiBase ? apiBase.replace(/^http(s)?:\/\//, '') : window.location.host;
+    const wsUrl = `${wsProtocol}//${wsHost}/ws/tts`;
+
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    ttsWsRef.current = ws;
+
+    ws.onopen = () => {
+      ttsStartTimeRef.current = performance.now();
+      setTtsStreamingStatus('streaming');
+
+      // Send start handshake
+      ws.send(JSON.stringify({
+        action: "start",
+        voice: "valeria",
+        model: ttsModel,
+        device: ttsDevice,
+        sample_rate: 44100,
+        format: "pcm16",
+        speed: 1.0,
+        pitch: 0.0,
+        temperature: ttsTemperature,
+        chunk_strategy: ttsChunkStrategy,
+        words_per_chunk: ttsWordsPerChunk
+      }));
+
+      // Simulate LLM streaming token-by-token or send all
+      if (ttsTokenDelay > 0) {
+        const words = ttsText.split(/(\s+)/);
+        let idx = 0;
+        ttsSimTimerRef.current = setInterval(() => {
+          if (idx < words.length && ws.readyState === WebSocket.OPEN) {
+            const piece = words[idx];
+            if (piece) {
+              ws.send(JSON.stringify({
+                action: "text_chunk",
+                text: piece,
+                is_final: false
+              }));
+            }
+            idx++;
+          } else {
+            if (ttsSimTimerRef.current) {
+              clearInterval(ttsSimTimerRef.current);
+              ttsSimTimerRef.current = null;
+            }
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ action: "flush" }));
+            }
+          }
+        }, ttsTokenDelay);
+      } else {
+        ws.send(JSON.stringify({
+          action: "text_chunk",
+          text: ttsText,
+          is_final: true
+        }));
+      }
+    };
+
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        const now = performance.now();
+        const ttfa = ttsStartTimeRef.current ? Math.round(now - ttsStartTimeRef.current) : 0;
+
+        setTtsStreamMetrics(prev => ({
+          ...prev,
+          ttfaMs: prev.ttfaMs !== null ? prev.ttfaMs : ttfa,
+          chunksReceived: prev.chunksReceived + 1
+        }));
+        setTtsStreamingStatus('playing');
+
+        if (gaplessPlayerRef.current) {
+          gaplessPlayerRef.current.enqueuePCM16(event.data);
+        }
+      } else if (typeof event.data === 'string') {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.event === "chunk_meta") {
+            setTtsStreamMetrics(prev => ({
+              ...prev,
+              currentSegment: data.text || prev.currentSegment
+            }));
+          } else if (data.event === "completed") {
+            setTtsStreamMetrics(prev => ({
+              ...prev,
+              totalDurationSec: data.total_duration_sec,
+              rtf: data.rtf
+            }));
+
+            // Record to TTS History
+            const newHistoryItem = {
+              id: Date.now(),
+              text: ttsText,
+              time: new Date().toLocaleTimeString(),
+              model: ttsModel,
+              device: ttsDevice,
+              duration_sec: data.total_duration_sec,
+              latency_ms: data.latency_ttfa_ms || Math.round(performance.now() - (ttsStartTimeRef.current || performance.now())),
+              rtf: data.rtf,
+              tokens_per_sec: data.tokens_per_sec || 0,
+              num_tokens: data.num_tokens || 0,
+              is_stream: true
+            };
+            setTtsHistory(prev => [newHistoryItem, ...prev]);
+          } else if (data.event === "interrupted") {
+            setTtsStreamingStatus('interrupted');
+            setTtsIsStreaming(false);
+          } else if (data.event === "error") {
+            setErrorMsg(data.message || "Errore nello streaming TTS");
+            setTtsIsStreaming(false);
+          }
+        } catch (e) {
+          console.error("TTS WS message parse error:", e);
+        }
+      }
+    };
+
+    ws.onerror = (e) => {
+      console.error("TTS WebSocket error:", e);
+      setErrorMsg("Errore di connessione WebSocket al server TTS.");
+      stopTtsStreaming();
+    };
+
+    ws.onclose = () => {
+      // Keep playing queued audio until finished
+    };
+  };
+
+  const stopTtsStreaming = () => {
+    if (ttsSimTimerRef.current) {
+      clearInterval(ttsSimTimerRef.current);
+      ttsSimTimerRef.current = null;
+    }
+    if (ttsWsRef.current && ttsWsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        ttsWsRef.current.send(JSON.stringify({ action: "interrupt", reason: "user_barge_in" }));
+      } catch (e) {}
+      setTimeout(() => {
+        if (ttsWsRef.current) {
+          ttsWsRef.current.close();
+          ttsWsRef.current = null;
+        }
+      }, 200);
+    }
+    if (gaplessPlayerRef.current) {
+      gaplessPlayerRef.current.stopAndFlush();
+    }
+    setTtsStreamingStatus('interrupted');
+    setTtsIsStreaming(false);
   };
 
   const getLanguageLabel = (lang) => {
@@ -982,6 +1292,29 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
                   <button
                     type="button"
+                    onClick={() => setTtsStreamingEnabled(!ttsStreamingEnabled)}
+                    style={{
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: '8px',
+                      border: ttsStreamingEnabled ? '1px solid rgba(6, 182, 212, 0.6)' : '1px solid var(--border-color)',
+                      background: ttsStreamingEnabled ? 'linear-gradient(135deg, rgba(6, 182, 212, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%)' : 'transparent',
+                      color: ttsStreamingEnabled ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                      fontSize: '0.78rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.4rem',
+                      transition: 'all 0.2s ease'
+                    }}
+                    title="Abilita la generazione e riproduzione in streaming WebSocket in tempo reale"
+                  >
+                    <Zap size={14} color={ttsStreamingEnabled ? 'var(--accent-cyan)' : 'currentColor'} />
+                    {ttsStreamingEnabled ? '⚡ Streaming Attivo' : '📡 Modalità Streaming'}
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => setTtsVoiceCloningOpen(!ttsVoiceCloningOpen)}
                     style={{
                       padding: '0.35rem 0.75rem',
@@ -1094,28 +1427,154 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                 </div>
               )}
 
+              {/* Real-Time Streaming Configuration Card */}
+              {ttsStreamingEnabled && (
+                <div style={{
+                  background: 'rgba(6, 182, 212, 0.05)',
+                  border: '1px solid rgba(6, 182, 212, 0.25)',
+                  borderRadius: '12px',
+                  padding: '1rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.85rem'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <Radio size={15} /> Parametri Streaming Real-Time (WebSocket /ws/tts)
+                    </span>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                      Riproduzione fluida gapless con Web Audio API
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.76rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
+                        Strategia di Chunking
+                      </label>
+                      <select
+                        value={ttsChunkStrategy}
+                        onChange={(e) => setTtsChunkStrategy(e.target.value)}
+                        style={{
+                          width: '100%',
+                          background: 'rgba(0,0,0,0.3)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '7px',
+                          padding: '0.4rem 0.6rem',
+                          color: 'var(--text-main)',
+                          fontSize: '0.8rem',
+                          fontWeight: 600
+                        }}
+                      >
+                        <option value="clauses">Clausole / Punteggiatura (Bassa Latenza TTFA &lt; 250ms)</option>
+                        <option value="sentences">Frasi Intere (Massima Naturalezza)</option>
+                        <option value="words">Buffer a {ttsWordsPerChunk} Parole</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.76rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
+                        Simulazione Token LLM ({ttsTokenDelay === 0 ? 'Istantanea' : `${ttsTokenDelay} ms/token`})
+                      </label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="80"
+                        step="10"
+                        value={ttsTokenDelay}
+                        onChange={(e) => setTtsTokenDelay(Number(e.target.value))}
+                        style={{ width: '100%', accentColor: 'var(--accent-cyan)' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Generate Button & Progress */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-                <button
-                  className="btn-primary"
-                  onClick={handleTtsGenerate}
-                  disabled={isGeneratingTts || !ttsText.trim() || !isServerRunning}
-                  style={{
-                    padding: '0.6rem 1.4rem',
-                    fontSize: '0.9rem',
-                    fontWeight: 700,
-                    borderRadius: '10px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    boxShadow: '0 4px 15px rgba(6, 182, 212, 0.4)'
-                  }}
-                >
-                  {isGeneratingTts ? <RotateCw size={16} className="spin-icon" /> : <Volume2 size={16} />}
-                  {isGeneratingTts ? (t('audioPlayground.ttsGenerating') || 'Sintesi vocale in corso...') : (t('audioPlayground.ttsGenerateBtn') || 'Genera Audio')}
-                </button>
+                <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+                  {ttsStreamingEnabled ? (
+                    <>
+                      <button
+                        className="btn-primary"
+                        onClick={startTtsStreaming}
+                        disabled={ttsIsStreaming || !ttsText.trim() || !isServerRunning}
+                        style={{
+                          padding: '0.6rem 1.4rem',
+                          fontSize: '0.9rem',
+                          fontWeight: 700,
+                          borderRadius: '10px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          boxShadow: '0 4px 15px rgba(6, 182, 212, 0.4)'
+                        }}
+                      >
+                        {ttsIsStreaming ? <RotateCw size={16} className="spin-icon" /> : <Radio size={16} />}
+                        {ttsIsStreaming ? 'Streaming in corso...' : 'Sintetizza in Streaming (Live Playback)'}
+                      </button>
 
-                {ttsResult && (
+                      {ttsIsStreaming && (
+                        <button
+                          className="btn-secondary"
+                          onClick={stopTtsStreaming}
+                          style={{
+                            padding: '0.6rem 1rem',
+                            fontSize: '0.85rem',
+                            fontWeight: 700,
+                            borderRadius: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            borderColor: 'rgba(239, 68, 68, 0.5)',
+                            color: '#f87171'
+                          }}
+                        >
+                          <VolumeX size={15} /> Interrompi (Barge-in)
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <button
+                      className="btn-primary"
+                      onClick={handleTtsGenerate}
+                      disabled={isGeneratingTts || !ttsText.trim() || !isServerRunning}
+                      style={{
+                        padding: '0.6rem 1.4rem',
+                        fontSize: '0.9rem',
+                        fontWeight: 700,
+                        borderRadius: '10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        boxShadow: '0 4px 15px rgba(6, 182, 212, 0.4)'
+                      }}
+                    >
+                      {isGeneratingTts ? <RotateCw size={16} className="spin-icon" /> : <Volume2 size={16} />}
+                      {isGeneratingTts ? (t('audioPlayground.ttsGenerating') || 'Sintesi vocale in corso...') : (t('audioPlayground.ttsGenerateBtn') || 'Genera Audio')}
+                    </button>
+                  )}
+                </div>
+
+                {ttsStreamingEnabled && (ttsStreamMetrics.chunksReceived > 0 || ttsIsStreaming) && (
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    {ttsStreamMetrics.ttfaMs && (
+                      <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
+                        ⚡ TTFA: {ttsStreamMetrics.ttfaMs} ms
+                      </span>
+                    )}
+                    <span className="badge badge-cyan" style={{ fontSize: '0.75rem' }}>
+                      📦 Chunk: {ttsStreamMetrics.chunksPlayed} / {ttsStreamMetrics.chunksReceived}
+                    </span>
+                    {ttsStreamMetrics.totalDurationSec && (
+                      <span className="badge badge-purple" style={{ fontSize: '0.75rem' }}>
+                        ⏳ Durata: {ttsStreamMetrics.totalDurationSec}s
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {!ttsStreamingEnabled && ttsResult && (
                   <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
                     <span
                       className="badge"

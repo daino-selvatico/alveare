@@ -1183,6 +1183,7 @@ class OpenAISpeechRequest(BaseModel):
     pitch: Optional[float] = 0.0
     language: Optional[str] = "it"
     temperature: Optional[float] = 0.8
+    stream: Optional[bool] = False
 
 @app.post("/v1/audio/speech")
 async def audio_speech(req: OpenAISpeechRequest):
@@ -1194,7 +1195,56 @@ async def audio_speech(req: OpenAISpeechRequest):
         from runtime.py.audio8_tts import Audio8TTS
         target_model = req.model or state.active_model or "audio8-0.1b"
         tts = Audio8TTS.get_instance(model_id=target_model, device=state.device or "npu")
-        
+
+        if req.stream:
+            async def pcm_streamer():
+                state.is_transcribing = True
+                try:
+                    queue = asyncio.Queue()
+                    loop = asyncio.get_running_loop()
+
+                    def _producer():
+                        try:
+                            for chunk_bytes, meta in tts.generate_stream(
+                                text=text,
+                                voice=req.voice or "valeria",
+                                speed=req.speed or 1.0,
+                                pitch=req.pitch or 0.0,
+                                language=req.language or "it",
+                                temperature=req.temperature or 0.8,
+                                sample_rate=44100,
+                                format="pcm16"
+                            ):
+                                loop.call_soon_threadsafe(queue.put_nowait, (chunk_bytes, meta))
+                        except Exception as e:
+                            loop.call_soon_threadsafe(queue.put_nowait, (None, e))
+                        finally:
+                            loop.call_soon_threadsafe(queue.put_nowait, (None, None))
+
+                    threading.Thread(target=_producer, daemon=True).start()
+
+                    while True:
+                        item = await queue.get()
+                        chunk_bytes, meta_or_err = item
+                        if chunk_bytes is None and meta_or_err is None:
+                            break
+                        if chunk_bytes is None and isinstance(meta_or_err, Exception):
+                            raise meta_or_err
+                        if chunk_bytes:
+                            yield chunk_bytes
+                finally:
+                    state.is_transcribing = False
+                    state.last_transcribe_time = time.time()
+
+            headers = {
+                "Content-Type": "audio/pcm",
+                "X-Alveare-Sample-Rate": "44100",
+                "X-Alveare-Channels": "1",
+                "X-Alveare-Bits-Per-Sample": "16",
+                "X-Alveare-Frame-Rate": "12.5"
+            }
+            return StreamingResponse(pcm_streamer(), media_type="audio/pcm", headers=headers)
+
         state.is_transcribing = True
         try:
             wav_bytes, res = await asyncio.to_thread(
@@ -1479,6 +1529,235 @@ async def websocket_stt_root(websocket: WebSocket):
 @app.websocket("/api/stt/stream")
 async def websocket_stt_api(websocket: WebSocket):
     await handle_stt_stream_connection(websocket)
+
+async def handle_tts_stream_connection(websocket: WebSocket):
+    await websocket.accept()
+    from runtime.py.audio8_tts import Audio8TTS, split_into_chunks, extract_completed_chunks
+    import uuid
+
+    session_id = f"tts-{uuid.uuid4().hex[:8]}"
+    voice = "valeria"
+    model_name = state.active_model or "audio8-0.1b"
+    device_name = state.device or "npu"
+    sample_rate = 44100
+    format_type = "pcm16"
+    speed = 1.0
+    pitch = 0.0
+    temperature = 0.8
+    chunk_strategy = "clauses"
+    words_per_chunk = 8
+    reference_audio = None
+    reference_text = None
+
+    interrupted = False
+    seq_id = 0
+    total_samples = 0
+    total_duration = 0.0
+    t_start = None
+    ttfa_ms = None
+    text_buffer = ""
+    is_first_chunk = True
+
+    tts = Audio8TTS.get_instance(model_id=model_name, device=device_name)
+
+    async def _synthesize_and_send_chunk(chunk_str: str) -> bool:
+        nonlocal seq_id, total_samples, total_duration, ttfa_ms, is_first_chunk
+        if interrupted or not chunk_str.strip():
+            return False
+
+        t_chunk_start = time.perf_counter()
+        try:
+            state.is_transcribing = True
+            pcm_bytes, meta = await asyncio.to_thread(
+                tts.generate_chunk,
+                text=chunk_str,
+                seq=seq_id,
+                voice=voice,
+                speed=speed,
+                pitch=pitch,
+                language="it",
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+                temperature=temperature,
+                sample_rate=sample_rate,
+                format=format_type
+            )
+
+            if interrupted:
+                return False
+
+            if ttfa_ms is None and t_start is not None:
+                ttfa_ms = (time.perf_counter() - t_start) * 1000.0
+
+            dur_sec = meta.get("duration_sec", 0.0)
+            n_samples = meta.get("num_samples", len(pcm_bytes) // 2)
+            total_samples += n_samples
+            total_duration += dur_sec
+
+            # Send binary PCM frame directly to client for zero latency
+            await websocket.send_bytes(pcm_bytes)
+
+            # Send metadata JSON event
+            await websocket.send_json({
+                "event": "chunk_meta",
+                "seq": seq_id,
+                "num_samples": n_samples,
+                "sample_rate": sample_rate,
+                "duration_ms": round(dur_sec * 1000.0, 2),
+                "latency_ms": round((time.perf_counter() - t_chunk_start) * 1000.0, 2),
+                "ttfa_ms": round(ttfa_ms, 2) if is_first_chunk else None,
+                "text": chunk_str
+            })
+
+            seq_id += 1
+            is_first_chunk = False
+            return True
+        except Exception as e:
+            print(f"[WebSocket TTS] Chunk synthesis error: {e}")
+            await websocket.send_json({"event": "error", "message": str(e)})
+            return False
+        finally:
+            state.is_transcribing = False
+            state.last_transcribe_time = time.time()
+
+    try:
+        while True:
+            msg = await websocket.receive()
+            if "text" in msg and msg["text"]:
+                try:
+                    payload = json.loads(msg["text"])
+                    action = payload.get("action", "")
+
+                    if action == "start":
+                        interrupted = False
+                        seq_id = 0
+                        total_samples = 0
+                        total_duration = 0.0
+                        ttfa_ms = None
+                        text_buffer = ""
+                        is_first_chunk = True
+                        t_start = time.perf_counter()
+
+                        voice = payload.get("voice", "valeria")
+                        model_name = payload.get("model", state.active_model or "audio8-0.1b")
+                        device_name = payload.get("device", state.device or "npu")
+                        sample_rate = int(payload.get("sample_rate", 44100))
+                        format_type = str(payload.get("format", "pcm16")).lower()
+                        speed = float(payload.get("speed", 1.0))
+                        pitch = float(payload.get("pitch", 0.0))
+                        temperature = float(payload.get("temperature", 0.8))
+                        chunk_strategy = payload.get("chunk_strategy", "clauses")
+                        words_per_chunk = int(payload.get("words_per_chunk", 8))
+                        reference_audio = payload.get("reference_audio")
+                        reference_text = payload.get("reference_text")
+
+                        tts = Audio8TTS.get_instance(model_id=model_name, device=device_name)
+
+                        await websocket.send_json({
+                            "event": "ready",
+                            "session_id": session_id,
+                            "sample_rate": sample_rate,
+                            "channels": 1,
+                            "format": format_type,
+                            "frame_duration_ms": 80.0
+                        })
+
+                    elif action == "text_chunk":
+                        if interrupted:
+                            continue
+                        incoming_text = payload.get("text", "")
+                        is_final = bool(payload.get("is_final", False))
+
+                        if t_start is None:
+                            t_start = time.perf_counter()
+
+                        text_buffer += incoming_text
+
+                        if is_final:
+                            # Flush all chunks
+                            chunks = split_into_chunks(text_buffer, strategy=chunk_strategy, words_per_chunk=words_per_chunk)
+                            text_buffer = ""
+                            for c in chunks:
+                                if interrupted:
+                                    break
+                                await _synthesize_and_send_chunk(c)
+
+                            if not interrupted:
+                                elapsed_sec = (time.perf_counter() - t_start) if t_start else 0.0
+                                rtf = elapsed_sec / total_duration if total_duration > 0 else 0.0
+                                await websocket.send_json({
+                                    "event": "completed",
+                                    "total_samples": total_samples,
+                                    "total_duration_sec": round(total_duration, 3),
+                                    "latency_ttfa_ms": round(ttfa_ms, 2) if ttfa_ms else 0.0,
+                                    "rtf": round(rtf, 3),
+                                    "num_chunks": seq_id
+                                })
+                        else:
+                            ready_chunks, remaining = extract_completed_chunks(
+                                text_buffer,
+                                strategy=chunk_strategy,
+                                words_per_chunk=words_per_chunk,
+                                is_first=is_first_chunk
+                            )
+                            if ready_chunks:
+                                text_buffer = remaining
+                                for c in ready_chunks:
+                                    if interrupted:
+                                        break
+                                    await _synthesize_and_send_chunk(c)
+
+                    elif action == "flush":
+                        if not interrupted and text_buffer.strip():
+                            remaining_chunks = split_into_chunks(text_buffer, strategy=chunk_strategy, words_per_chunk=words_per_chunk)
+                            text_buffer = ""
+                            for c in remaining_chunks:
+                                if interrupted:
+                                    break
+                                await _synthesize_and_send_chunk(c)
+
+                        if not interrupted:
+                            elapsed_sec = (time.perf_counter() - t_start) if t_start else 0.0
+                            rtf = elapsed_sec / total_duration if total_duration > 0 else 0.0
+                            await websocket.send_json({
+                                "event": "completed",
+                                "total_samples": total_samples,
+                                "total_duration_sec": round(total_duration, 3),
+                                "latency_ttfa_ms": round(ttfa_ms, 2) if ttfa_ms else 0.0,
+                                "rtf": round(rtf, 3),
+                                "num_chunks": seq_id
+                            })
+
+                    elif action == "interrupt":
+                        interrupted = True
+                        text_buffer = ""
+                        await websocket.send_json({
+                            "event": "interrupted",
+                            "flushed_chunks": seq_id,
+                            "reason": payload.get("reason", "user_interrupted")
+                        })
+
+                    elif action == "ping":
+                        await websocket.send_json({"event": "pong"})
+
+                except json.JSONDecodeError:
+                    pass
+                except Exception as err:
+                    print(f"[WebSocket TTS] Message handling error: {err}")
+                    await websocket.send_json({"event": "error", "message": str(err)})
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[WebSocket TTS] Connection exception: {e}")
+
+@app.websocket("/ws/tts")
+async def websocket_tts_root(websocket: WebSocket):
+    await handle_tts_stream_connection(websocket)
+
+@app.websocket("/api/tts/stream")
+async def websocket_tts_api(websocket: WebSocket):
+    await handle_tts_stream_connection(websocket)
 
 @app.post("/api/control/start")
 async def control_start(req: StartRequest):
