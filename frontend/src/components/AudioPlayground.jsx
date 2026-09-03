@@ -53,7 +53,7 @@ class GaplessPCMPlayer {
     }
   }
 
-  enqueuePCM16(arrayBuffer) {
+  enqueuePCM16(arrayBuffer, meta = {}) {
     this.init();
     if (!this.audioCtx) return;
 
@@ -86,6 +86,12 @@ class GaplessPCMPlayer {
     const startTime = Math.max(currentTime + 0.015, this.nextStartTime);
     sourceNode.start(startTime);
 
+    // Schedule live karaoke subtitle trigger precisely when playback begins
+    const delayMs = Math.max(0, (startTime - currentTime) * 1000.0);
+    setTimeout(() => {
+      if (this.onChunkStarted) this.onChunkStarted(meta);
+    }, delayMs);
+
     this.nextStartTime = startTime + audioBuffer.duration;
     this.isPlaying = true;
     this.activeNodes.push(sourceNode);
@@ -93,7 +99,7 @@ class GaplessPCMPlayer {
     sourceNode.onended = () => {
       const idx = this.activeNodes.indexOf(sourceNode);
       if (idx !== -1) this.activeNodes.splice(idx, 1);
-      if (this.onChunkPlayed) this.onChunkPlayed();
+      if (this.onChunkPlayed) this.onChunkPlayed(meta);
       if (this.activeNodes.length === 0 && (!this.audioCtx || this.audioCtx.currentTime >= this.nextStartTime - 0.05)) {
         this.isPlaying = false;
         if (this.onEnded) this.onEnded();
@@ -210,6 +216,9 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   const [ttsTokenDelay, setTtsTokenDelay] = useState(0);
   const [ttsIsStreaming, setTtsIsStreaming] = useState(false);
   const [ttsStreamingStatus, setTtsStreamingStatus] = useState('idle');
+  const [ttsActiveSpeakingText, setTtsActiveSpeakingText] = useState('');
+  const [ttsPlayedSegments, setTtsPlayedSegments] = useState([]);
+  const ttsPendingMetaRef = useRef(null);
   const [ttsStreamMetrics, setTtsStreamMetrics] = useState({
     ttfaMs: null,
     chunksReceived: 0,
@@ -624,15 +633,24 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     if (!gaplessPlayerRef.current) {
       gaplessPlayerRef.current = new GaplessPCMPlayer(44100);
     }
-    gaplessPlayerRef.current.onChunkPlayed = () => {
+    gaplessPlayerRef.current.onChunkStarted = (meta) => {
+      if (meta && meta.text) {
+        setTtsActiveSpeakingText(meta.text);
+      }
+    };
+    gaplessPlayerRef.current.onChunkPlayed = (meta) => {
       setTtsStreamMetrics(prev => ({
         ...prev,
         chunksPlayed: prev.chunksPlayed + 1
       }));
+      if (meta && meta.text) {
+        setTtsPlayedSegments(prev => [...prev, meta.text]);
+      }
     };
     gaplessPlayerRef.current.onEnded = () => {
       setTtsStreamingStatus(prev => prev === 'streaming' || prev === 'playing' ? 'completed' : prev);
       setTtsIsStreaming(false);
+      setTtsActiveSpeakingText('');
     };
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -708,13 +726,17 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
         }));
         setTtsStreamingStatus('playing');
 
+        const meta = ttsPendingMetaRef.current || { text: '' };
+        ttsPendingMetaRef.current = null;
+
         if (gaplessPlayerRef.current) {
-          gaplessPlayerRef.current.enqueuePCM16(event.data);
+          gaplessPlayerRef.current.enqueuePCM16(event.data, meta);
         }
       } else if (typeof event.data === 'string') {
         try {
           const data = JSON.parse(event.data);
           if (data.event === "chunk_meta") {
+            ttsPendingMetaRef.current = data;
             setTtsStreamMetrics(prev => ({
               ...prev,
               currentSegment: data.text || prev.currentSegment
@@ -1354,6 +1376,80 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                   lineHeight: 1.5
                 }}
               />
+
+              {/* Gemini Live Subtitle / Karaoke Teleprompter Display */}
+              {(ttsStreamingEnabled || ttsIsStreaming || ttsActiveSpeakingText || ttsPlayedSegments.length > 0) && (
+                <div style={{
+                  background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(30, 41, 59, 0.8) 100%)',
+                  border: ttsActiveSpeakingText ? '1px solid rgba(6, 182, 212, 0.5)' : '1px solid var(--border-color)',
+                  borderRadius: '14px',
+                  padding: '1.1rem 1.25rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.75rem',
+                  boxShadow: ttsActiveSpeakingText ? '0 0 25px rgba(6, 182, 212, 0.2)' : 'none',
+                  transition: 'all 0.3s ease'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span className={ttsActiveSpeakingText ? 'pulse-icon' : ''} style={{
+                        width: '10px',
+                        height: '10px',
+                        borderRadius: '50%',
+                        background: ttsActiveSpeakingText ? '#38bdf8' : 'var(--text-muted)'
+                      }} />
+                      <span style={{ fontSize: '0.82rem', fontWeight: 800, letterSpacing: '0.05em', color: ttsActiveSpeakingText ? 'var(--accent-cyan)' : 'var(--text-muted)', textTransform: 'uppercase' }}>
+                        {ttsActiveSpeakingText ? '● LIVE AUDIO TELEPROMPTER' : 'SOTTOTITOLI LIVE AUDIO'}
+                      </span>
+                    </div>
+
+                    {ttsActiveSpeakingText && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <span style={{ width: '3px', height: '14px', background: '#38bdf8', borderRadius: '2px' }} />
+                        <span style={{ width: '3px', height: '22px', background: '#818cf8', borderRadius: '2px' }} />
+                        <span style={{ width: '3px', height: '10px', background: '#c084fc', borderRadius: '2px' }} />
+                        <span style={{ width: '3px', height: '18px', background: '#38bdf8', borderRadius: '2px' }} />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Karaoke Highlighted Prompt Body */}
+                  <div style={{
+                    fontSize: '1.05rem',
+                    lineHeight: 1.65,
+                    fontFamily: 'system-ui, -apple-system, sans-serif',
+                    padding: '0.5rem 0'
+                  }}>
+                    {ttsActiveSpeakingText ? (
+                      <div>
+                        {ttsPlayedSegments.length > 0 && (
+                          <span style={{ color: 'var(--text-muted)', opacity: 0.65, transition: 'all 0.3s ease' }}>
+                            {ttsPlayedSegments.join(' ')}{' '}
+                          </span>
+                        )}
+                        <span style={{
+                          background: 'linear-gradient(90deg, rgba(6, 182, 212, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%)',
+                          color: '#38bdf8',
+                          fontWeight: 700,
+                          padding: '0.2rem 0.5rem',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(56, 189, 248, 0.4)',
+                          boxShadow: '0 0 15px rgba(56, 189, 248, 0.35)',
+                          display: 'inline-block',
+                          transform: 'scale(1.02)',
+                          transition: 'all 0.2s ease'
+                        }}>
+                          🔊 {ttsActiveSpeakingText}
+                        </span>
+                      </div>
+                    ) : (
+                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.9rem' }}>
+                        {ttsIsStreaming ? 'In attesa del primo blocco vocale dal motore neurale...' : 'Avvia la sintesi in streaming per visualizzare i sottotitoli sincronizzati in tempo reale.'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Zero-Shot Voice Cloning Collapsible Card */}
               {ttsVoiceCloningOpen && (
