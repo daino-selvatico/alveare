@@ -1544,7 +1544,7 @@ async def handle_tts_stream_connection(websocket: WebSocket):
     speed = 1.0
     pitch = 0.0
     temperature = 0.8
-    chunk_strategy = "clauses"
+    chunk_strategy = "sentences"
     words_per_chunk = 8
     reference_audio = None
     reference_text = None
@@ -1593,11 +1593,9 @@ async def handle_tts_stream_connection(websocket: WebSocket):
             n_samples = meta.get("num_samples", len(pcm_bytes) // 2)
             total_samples += n_samples
             total_duration += dur_sec
+            word_timestamps = meta.get("word_timestamps", [])
 
-            # Send binary PCM frame directly to client for zero latency
-            await websocket.send_bytes(pcm_bytes)
-
-            # Send metadata JSON event
+            # Send metadata JSON event first so client has word timestamps and text ready
             await websocket.send_json({
                 "event": "chunk_meta",
                 "seq": seq_id,
@@ -1606,8 +1604,12 @@ async def handle_tts_stream_connection(websocket: WebSocket):
                 "duration_ms": round(dur_sec * 1000.0, 2),
                 "latency_ms": round((time.perf_counter() - t_chunk_start) * 1000.0, 2),
                 "ttfa_ms": round(ttfa_ms, 2) if is_first_chunk else None,
-                "text": chunk_str
+                "text": chunk_str,
+                "word_timestamps": word_timestamps
             })
+
+            # Send binary PCM frame directly to client for zero latency
+            await websocket.send_bytes(pcm_bytes)
 
             seq_id += 1
             is_first_chunk = False
@@ -1646,7 +1648,7 @@ async def handle_tts_stream_connection(websocket: WebSocket):
                         speed = float(payload.get("speed", 1.0))
                         pitch = float(payload.get("pitch", 0.0))
                         temperature = float(payload.get("temperature", 0.8))
-                        chunk_strategy = payload.get("chunk_strategy", "clauses")
+                        chunk_strategy = payload.get("chunk_strategy", "sentences")
                         words_per_chunk = int(payload.get("words_per_chunk", 8))
                         reference_audio = payload.get("reference_audio")
                         reference_text = payload.get("reference_text")

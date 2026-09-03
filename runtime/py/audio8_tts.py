@@ -70,7 +70,7 @@ import re
 
 def split_into_chunks(
     text: str,
-    strategy: str = "clauses",
+    strategy: str = "sentences",
     words_per_chunk: int = 8,
     min_words_first: int = 3,
     max_words_per_chunk: int = 22
@@ -78,10 +78,6 @@ def split_into_chunks(
     text = text.strip()
     if not text:
         return []
-
-    if strategy == "sentences":
-        raw = re.split(r'(?<=[.!?;\n:])\s+', text)
-        return [c.strip() for c in raw if c.strip()]
 
     if strategy == "words":
         words = text.split()
@@ -95,74 +91,27 @@ def split_into_chunks(
                 chunks.append(chunk)
         return chunks
 
-    # Default: "clauses" - Adaptive Clause & Sentence Chunker
-    tokens = re.findall(r'\S+|\s+', text)
+    # Default & "sentences": Split exclusively on complete sentences (delimiters: '.', '!', '?', '\n', ':', ';', '…')
+    # avoiding splits at commas or partial words to preserve Audio8 prosody without artificial pauses or repetitions.
+    parts = re.split(r'([.!?;\n:…]+\s*)', text)
     chunks = []
-    curr_words = []
-    curr_tokens = []
-    is_first_chunk = True
-
-    clause_puncts = {',', '—', '-', '...', ')', '"', '»', '”', '–'}
-    sentence_puncts = {'.', '!', '?', ';', ':', '\n'}
-
-    for t in tokens:
-        curr_tokens.append(t)
-        if t.strip() and not re.match(r'^[^\w\s]+$', t):
-            curr_words.append(t)
-
-        word_count = len(curr_words)
-        stripped = t.strip()
-
-        has_sent_punct = any(p in stripped for p in sentence_puncts)
-        has_clause_punct = any(p in stripped for p in clause_puncts)
-
-        should_flush = False
-
-        if is_first_chunk:
-            if (has_clause_punct or has_sent_punct) and word_count >= min_words_first:
-                should_flush = True
-            elif word_count >= 6:
-                should_flush = True
-        else:
-            if has_sent_punct and word_count >= 2:
-                should_flush = True
-            elif has_clause_punct and word_count >= 6:
-                should_flush = True
-            elif word_count >= max_words_per_chunk:
-                should_flush = True
-
-        if should_flush:
-            chunk_str = "".join(curr_tokens).strip()
-            if chunk_str:
-                chunks.append(chunk_str)
-                is_first_chunk = False
-            curr_tokens = []
-            curr_words = []
-
-    remaining = "".join(curr_tokens).strip()
-    if remaining:
-        chunks.append(remaining)
+    for i in range(0, len(parts) - 1, 2):
+        seg = (parts[i] + parts[i+1]).strip()
+        if seg:
+            chunks.append(seg)
+    if len(parts) % 2 == 1 and parts[-1].strip():
+        chunks.append(parts[-1].strip())
 
     return chunks if chunks else [text]
 
 def extract_completed_chunks(
     text: str,
-    strategy: str = "clauses",
+    strategy: str = "sentences",
     words_per_chunk: int = 8,
     is_first: bool = False
 ) -> tuple[list[str], str]:
     if not text:
         return [], ""
-
-    if strategy == "sentences":
-        parts = re.split(r'([.!?;\n:]+\s*)', text)
-        ready = []
-        for i in range(0, len(parts) - 1, 2):
-            seg = (parts[i] + parts[i+1]).strip()
-            if seg:
-                ready.append(seg)
-        remaining = parts[-1] if len(parts) % 2 == 1 else ""
-        return ready, remaining
 
     if strategy == "words":
         words = text.split()
@@ -177,48 +126,14 @@ def extract_completed_chunks(
         remaining = " ".join(words[idx:])
         return ready, remaining
 
-    clause_puncts = {',', '—', '-', '...', ')', '"', '»', '”', '–'}
-    sentence_puncts = {'.', '!', '?', ';', ':', '\n'}
-
-    tokens = re.findall(r'\S+|\s+', text)
+    # Default & "sentences": Extract exclusively complete sentences with delimiters '.', '!', '?', '\n', ':', ';', '…'
+    parts = re.split(r'([.!?;\n:…]+\s*)', text)
     ready = []
-    curr_tokens = []
-    curr_words = []
-    first = is_first
-
-    for t in tokens:
-        curr_tokens.append(t)
-        if t.strip() and not re.match(r'^[^\w\s]+$', t):
-            curr_words.append(t)
-
-        word_count = len(curr_words)
-        stripped = t.strip()
-        has_sent = any(p in stripped for p in sentence_puncts)
-        has_clause = any(p in stripped for p in clause_puncts)
-
-        should_flush = False
-        if first:
-            if (has_clause or has_sent) and word_count >= 3:
-                should_flush = True
-            elif word_count >= 6:
-                should_flush = True
-        else:
-            if has_sent and word_count >= 2:
-                should_flush = True
-            elif has_clause and word_count >= 6:
-                should_flush = True
-            elif word_count >= 20:
-                should_flush = True
-
-        if should_flush:
-            chunk_str = "".join(curr_tokens).strip()
-            if chunk_str:
-                ready.append(chunk_str)
-                first = False
-            curr_tokens = []
-            curr_words = []
-
-    remaining = "".join(curr_tokens)
+    for i in range(0, len(parts) - 1, 2):
+        seg = (parts[i] + parts[i+1]).strip()
+        if seg:
+            ready.append(seg)
+    remaining = parts[-1] if len(parts) % 2 == 1 else ""
     return ready, remaining
 
 class Audio8TTS:
@@ -467,7 +382,7 @@ class Audio8TTS:
         language: str = "it",
         reference_audio: Optional[str] = None,
         reference_text: Optional[str] = None,
-        chunk_strategy: str = "clauses",
+        chunk_strategy: str = "sentences",
         words_per_chunk: int = 8,
         max_new_tokens: int = 300,
         temperature: float = 0.8,

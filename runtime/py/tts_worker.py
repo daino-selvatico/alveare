@@ -182,7 +182,7 @@ def main():
 
     def split_into_chunks(
         text: str,
-        strategy: str = "clauses",
+        strategy: str = "sentences",
         words_per_chunk: int = 8,
         min_words_first: int = 3,
         max_words_per_chunk: int = 22
@@ -190,10 +190,6 @@ def main():
         text = text.strip()
         if not text:
             return []
-
-        if strategy == "sentences":
-            raw = re.split(r'(?<=[.!?;\n:])\s+', text)
-            return [c.strip() for c in raw if c.strip()]
 
         if strategy == "words":
             words = text.split()
@@ -207,55 +203,65 @@ def main():
                     chunks.append(chunk)
             return chunks
 
-        # Default: "clauses" - Adaptive Clause & Sentence Chunker
-        tokens = re.findall(r'\S+|\s+', text)
+        # Default & "sentences": Split exclusively on complete sentences (delimiters: '.', '!', '?', '\n', ':', ';', '…')
+        # avoiding splits at commas or partial words to preserve Audio8 prosody without artificial pauses or repetitions.
+        parts = re.split(r'([.!?;\n:…]+\s*)', text)
         chunks = []
-        curr_words = []
-        curr_tokens = []
-        is_first_chunk = True
-
-        clause_puncts = {',', '—', '-', '...', ')', '"', '»', '”', '–'}
-        sentence_puncts = {'.', '!', '?', ';', ':', '\n'}
-
-        for t in tokens:
-            curr_tokens.append(t)
-            if t.strip() and not re.match(r'^[^\w\s]+$', t):
-                curr_words.append(t)
-
-            word_count = len(curr_words)
-            stripped = t.strip()
-
-            has_sent_punct = any(p in stripped for p in sentence_puncts)
-            has_clause_punct = any(p in stripped for p in clause_puncts)
-
-            should_flush = False
-
-            if is_first_chunk:
-                if (has_clause_punct or has_sent_punct) and word_count >= min_words_first:
-                    should_flush = True
-                elif word_count >= 6:
-                    should_flush = True
-            else:
-                if has_sent_punct and word_count >= 2:
-                    should_flush = True
-                elif has_clause_punct and word_count >= 6:
-                    should_flush = True
-                elif word_count >= max_words_per_chunk:
-                    should_flush = True
-
-            if should_flush:
-                chunk_str = "".join(curr_tokens).strip()
-                if chunk_str:
-                    chunks.append(chunk_str)
-                    is_first_chunk = False
-                curr_tokens = []
-                curr_words = []
-
-        remaining = "".join(curr_tokens).strip()
-        if remaining:
-            chunks.append(remaining)
+        for i in range(0, len(parts) - 1, 2):
+            seg = (parts[i] + parts[i+1]).strip()
+            if seg:
+                chunks.append(seg)
+        if len(parts) % 2 == 1 and parts[-1].strip():
+            chunks.append(parts[-1].strip())
 
         return chunks if chunks else [text]
+
+    def compute_word_timestamps(text_segment: str, duration_sec: float) -> list:
+        """
+        Calculates exact word-by-word timestamps based on actual audio duration.
+        Returns: [{'word': w, 'start_ms': s, 'end_ms': e}]
+        """
+        words = text_segment.strip().split()
+        if not words or duration_sec <= 0:
+            return []
+
+        duration_ms = duration_sec * 1000.0
+        if len(words) == 1:
+            return [{
+                "word": words[0],
+                "start_ms": 0.0,
+                "end_ms": round(duration_ms, 2)
+            }]
+
+        weights = []
+        for w in words:
+            clean = re.sub(r'[^\w]', '', w)
+            weight = max(1.0, float(len(clean)))
+            if w and w[-1] in {'.', '!', '?', ';', ':', '…'}:
+                weight += 2.0
+            elif w and w[-1] in {',', '-', '—'}:
+                weight += 1.0
+            weights.append(weight)
+
+        total_weight = sum(weights) if sum(weights) > 0 else float(len(words))
+
+        timestamps = []
+        current_ms = 0.0
+        for i, w in enumerate(words):
+            if i == len(words) - 1:
+                end_ms = duration_ms
+            else:
+                w_dur = (weights[i] / total_weight) * duration_ms
+                end_ms = current_ms + w_dur
+
+            timestamps.append({
+                "word": w,
+                "start_ms": round(current_ms, 2),
+                "end_ms": round(end_ms, 2)
+            })
+            current_ms = end_ms
+
+        return timestamps
 
     def synthesize_audio_segment(
         text_segment: str,
@@ -394,6 +400,7 @@ def main():
                 )
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 pcm_b64 = base64.b64encode(pcm_bytes).decode("ascii")
+                word_timestamps = compute_word_timestamps(chunk_text, duration_sec)
 
                 res = {
                     "status": "success",
@@ -406,6 +413,7 @@ def main():
                     "latency_ms": round(elapsed_ms, 2),
                     "pcm_b64": pcm_b64,
                     "text": chunk_text,
+                    "word_timestamps": word_timestamps,
                     "num_frames": num_frames,
                     "num_tokens": num_tokens
                 }
@@ -420,7 +428,7 @@ def main():
                     ipc_out.flush()
                     continue
 
-                strategy = req.get("chunk_strategy", "clauses")
+                strategy = req.get("chunk_strategy", "sentences")
                 words_per_chunk = int(req.get("words_per_chunk", 8))
                 chunks = split_into_chunks(text, strategy=strategy, words_per_chunk=words_per_chunk)
 
@@ -452,6 +460,7 @@ def main():
                     total_samples += len(audio_samples)
                     total_duration += dur_sec
                     pcm_b64 = base64.b64encode(pcm_bytes).decode("ascii")
+                    word_timestamps = compute_word_timestamps(chunk, dur_sec)
 
                     frame_meta = {
                         "event": "audio_frame",
@@ -463,7 +472,8 @@ def main():
                         "chunk_latency_ms": round(chunk_elapsed_ms, 2),
                         "ttfa_ms": round(first_latency_ms, 2) if seq_id == 0 else None,
                         "pcm_b64": pcm_b64,
-                        "text_segment": chunk
+                        "text_segment": chunk,
+                        "word_timestamps": word_timestamps
                     }
                     ipc_out.write(json.dumps(frame_meta) + "\n")
                     ipc_out.flush()
@@ -547,6 +557,7 @@ def main():
                         sys.stderr.write(f"[TTS Worker] Speed stretch error: {se}\n")
 
                 duration_sec = len(audio_samples) / sr if sr > 0 else 0.0
+                word_timestamps = compute_word_timestamps(text, duration_sec)
 
                 # Write output to temporary or requested wav file
                 out_path = req.get("output_path")
@@ -577,6 +588,7 @@ def main():
                     "num_tokens": num_tokens,
                     "tokens_per_sec": tokens_per_sec,
                     "frames_per_sec": frames_per_sec,
+                    "word_timestamps": word_timestamps,
                     "device": device,
                     "model": model_id
                 }

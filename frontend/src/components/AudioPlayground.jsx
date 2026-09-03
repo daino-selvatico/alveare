@@ -36,17 +36,18 @@ class GaplessPCMPlayer {
     this.nextStartTime = 0;
     this.isPlaying = false;
     this.activeNodes = [];
+    this.wordTimers = [];
+    this.onChunkStarted = null;
+    this.onWordStarted = null;
     this.onChunkPlayed = null;
     this.onEnded = null;
   }
 
   init() {
     if (!this.audioCtx || this.audioCtx.state === 'closed') {
-      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtxClass) {
-        this.audioCtx = new AudioCtxClass({ sampleRate: this.sampleRate, latencyHint: 'interactive' });
-        this.nextStartTime = this.audioCtx.currentTime;
-      }
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      this.audioCtx = new AudioContextClass({ sampleRate: this.sampleRate });
+      this.nextStartTime = this.audioCtx.currentTime;
     }
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
       this.audioCtx.resume();
@@ -55,7 +56,7 @@ class GaplessPCMPlayer {
 
   enqueuePCM16(arrayBuffer, meta = {}) {
     this.init();
-    if (!this.audioCtx) return;
+    if (!this.audioCtx) return 0;
 
     let int16Array;
     if (arrayBuffer instanceof Int16Array) {
@@ -65,10 +66,10 @@ class GaplessPCMPlayer {
     } else if (ArrayBuffer.isView(arrayBuffer)) {
       int16Array = new Int16Array(arrayBuffer.buffer, arrayBuffer.byteOffset, arrayBuffer.byteLength / 2);
     } else {
-      return;
+      return 0;
     }
 
-    if (int16Array.length === 0) return;
+    if (int16Array.length === 0) return 0;
 
     const float32Data = new Float32Array(int16Array.length);
     for (let i = 0; i < int16Array.length; i++) {
@@ -88,9 +89,21 @@ class GaplessPCMPlayer {
 
     // Schedule live karaoke subtitle trigger precisely when playback begins
     const delayMs = Math.max(0, (startTime - currentTime) * 1000.0);
-    setTimeout(() => {
+    const chunkTimer = setTimeout(() => {
       if (this.onChunkStarted) this.onChunkStarted(meta);
     }, delayMs);
+    this.wordTimers.push(chunkTimer);
+
+    // Schedule word-by-word timestamps
+    if (Array.isArray(meta.word_timestamps)) {
+      meta.word_timestamps.forEach((wt, wIdx) => {
+        const wordDelayMs = Math.max(0, (startTime + (wt.start_ms / 1000.0) - currentTime) * 1000.0);
+        const wTimer = setTimeout(() => {
+          if (this.onWordStarted) this.onWordStarted(wt, meta, wIdx);
+        }, wordDelayMs);
+        this.wordTimers.push(wTimer);
+      });
+    }
 
     this.nextStartTime = startTime + audioBuffer.duration;
     this.isPlaying = true;
@@ -105,9 +118,20 @@ class GaplessPCMPlayer {
         if (this.onEnded) this.onEnded();
       }
     };
+
+    return startTime;
+  }
+
+  getCurrentTime() {
+    return this.audioCtx ? this.audioCtx.currentTime : 0;
   }
 
   stopAndFlush() {
+    for (const t of this.wordTimers) {
+      clearTimeout(t);
+    }
+    this.wordTimers = [];
+
     for (const node of this.activeNodes) {
       try {
         node.stop();
@@ -127,7 +151,7 @@ class GaplessPCMPlayer {
       try {
         this.audioCtx.close();
       } catch (e) {}
-      this.audioCtx = null;
+        this.audioCtx = null;
     }
   }
 }
@@ -229,6 +253,90 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     currentSegment: ''
   });
 
+  // Word-by-word karaoke synchronization state driven by hardware AudioContext clock
+  const [karaokeTokens, setKaraokeTokens] = useState([]);
+  const [activeWordIndex, setActiveWordIndex] = useState(-1);
+  const [currentAudioTime, setCurrentAudioTime] = useState(0);
+  const wordTimelineRef = useRef([]);
+  const nextWordIndexRef = useRef(0);
+  const karaokeAnimRef = useRef(null);
+  const currentAudioTimeRef = useRef(0);
+  const activeWordRef = useRef(null);
+
+  const tokenizeTextForKaraoke = useCallback((text) => {
+    if (!text) return [];
+    const parts = text.split(/(\s+)/);
+    return parts.map((part, index) => ({
+      id: index,
+      text: part,
+      isWord: part.trim().length > 0,
+      startTime: null,
+      endTime: null
+    }));
+  }, []);
+
+  useEffect(() => {
+    if (!ttsIsStreaming && ttsStreamingStatus !== 'playing' && ttsStreamingStatus !== 'completed') {
+      const tokens = tokenizeTextForKaraoke(ttsText);
+      setKaraokeTokens(tokens);
+      wordTimelineRef.current = tokens;
+      nextWordIndexRef.current = 0;
+      setActiveWordIndex(-1);
+    }
+  }, [ttsText, tokenizeTextForKaraoke, ttsIsStreaming, ttsStreamingStatus]);
+
+  useEffect(() => {
+    if (activeWordRef.current && activeWordIndex !== -1) {
+      try {
+        activeWordRef.current.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+          inline: 'nearest'
+        });
+      } catch {}
+    }
+  }, [activeWordIndex]);
+
+  useEffect(() => {
+    if (!ttsIsStreaming && ttsStreamingStatus !== 'playing') {
+      if (karaokeAnimRef.current) {
+        cancelAnimationFrame(karaokeAnimRef.current);
+        karaokeAnimRef.current = null;
+      }
+      return;
+    }
+
+    const tick = () => {
+      if (gaplessPlayerRef.current && gaplessPlayerRef.current.audioCtx) {
+        const nowCtx = gaplessPlayerRef.current.audioCtx.currentTime;
+        currentAudioTimeRef.current = nowCtx;
+        setCurrentAudioTime(nowCtx);
+
+        const timeline = wordTimelineRef.current;
+        let foundIdx = -1;
+        for (let i = 0; i < timeline.length; i++) {
+          const item = timeline[i];
+          if (item.isWord && item.startTime !== null && item.endTime !== null) {
+            if (nowCtx >= item.startTime && nowCtx <= item.endTime) {
+              foundIdx = i;
+              break;
+            }
+          }
+        }
+        setActiveWordIndex(foundIdx);
+      }
+      karaokeAnimRef.current = requestAnimationFrame(tick);
+    };
+
+    karaokeAnimRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (karaokeAnimRef.current) {
+        cancelAnimationFrame(karaokeAnimRef.current);
+        karaokeAnimRef.current = null;
+      }
+    };
+  }, [ttsIsStreaming, ttsStreamingStatus]);
+
   const [ttsHistory, setTtsHistory] = useState(() => {
     try {
       const saved = localStorage.getItem('alveare_tts_history');
@@ -271,6 +379,10 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     return () => {
       stopRealtimeStream();
       stopTtsStreaming();
+      if (karaokeAnimRef.current) {
+        cancelAnimationFrame(karaokeAnimRef.current);
+        karaokeAnimRef.current = null;
+      }
       if (gaplessPlayerRef.current) {
         gaplessPlayerRef.current.close();
       }
@@ -624,6 +736,16 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     setTtsStreamingStatus('connecting');
     setTtsActiveSpeakingText('');
     setTtsPlayedSegments([]);
+    
+    // Initialize full text karaoke tokens with clean state
+    const freshTokens = tokenizeTextForKaraoke(ttsText);
+    setKaraokeTokens(freshTokens);
+    wordTimelineRef.current = freshTokens;
+    nextWordIndexRef.current = 0;
+    setActiveWordIndex(-1);
+    setCurrentAudioTime(0);
+    currentAudioTimeRef.current = 0;
+
     setTtsStreamMetrics({
       ttfaMs: null,
       chunksReceived: 0,
@@ -636,6 +758,8 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     ttsServerCompletedRef.current = false;
     if (!gaplessPlayerRef.current) {
       gaplessPlayerRef.current = new GaplessPCMPlayer(44100);
+    } else {
+      gaplessPlayerRef.current.init();
     }
     gaplessPlayerRef.current.onChunkStarted = (meta) => {
       if (meta && meta.text) {
@@ -656,6 +780,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
         setTtsStreamingStatus('completed');
         setTtsIsStreaming(false);
         setTtsActiveSpeakingText('');
+        setActiveWordIndex(-1);
       } else {
         setTtsStreamingStatus('buffering');
         setTtsActiveSpeakingText('');
@@ -735,11 +860,44 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
         }));
         setTtsStreamingStatus('playing');
 
-        const meta = ttsPendingMetaRef.current || { text: '' };
+        const meta = ttsPendingMetaRef.current || { text: '', word_timestamps: [] };
         ttsPendingMetaRef.current = null;
 
         if (gaplessPlayerRef.current) {
-          gaplessPlayerRef.current.enqueuePCM16(event.data, meta);
+          const chunkStartTime = gaplessPlayerRef.current.enqueuePCM16(event.data, meta);
+
+          // Attach precise word timestamps to the timeline tokens
+          const wordTimestamps = meta.word_timestamps || [];
+          const timeline = [...wordTimelineRef.current];
+
+          if (wordTimestamps.length > 0) {
+            let wtIdx = 0;
+            for (let i = nextWordIndexRef.current; i < timeline.length && wtIdx < wordTimestamps.length; i++) {
+              if (timeline[i].isWord) {
+                const wt = wordTimestamps[wtIdx];
+                timeline[i].startTime = chunkStartTime + (wt.start_ms / 1000.0);
+                timeline[i].endTime = chunkStartTime + (wt.end_ms / 1000.0);
+                wtIdx++;
+                nextWordIndexRef.current = i + 1;
+              }
+            }
+          } else if (meta.text) {
+            const chunkWords = meta.text.trim().split(/\s+/);
+            const durSec = meta.duration_ms ? meta.duration_ms / 1000.0 : (event.data.byteLength / 2) / 44100;
+            const wordDur = durSec / Math.max(1, chunkWords.length);
+            let cwIdx = 0;
+            for (let i = nextWordIndexRef.current; i < timeline.length && cwIdx < chunkWords.length; i++) {
+              if (timeline[i].isWord) {
+                timeline[i].startTime = chunkStartTime + cwIdx * wordDur;
+                timeline[i].endTime = chunkStartTime + (cwIdx + 1) * wordDur;
+                cwIdx++;
+                nextWordIndexRef.current = i + 1;
+              }
+            }
+          }
+
+          wordTimelineRef.current = timeline;
+          setKaraokeTokens([...timeline]);
         }
       } else if (typeof event.data === 'string') {
         try {
@@ -767,6 +925,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               setTtsStreamingStatus('completed');
               setTtsIsStreaming(false);
               setTtsActiveSpeakingText('');
+              setActiveWordIndex(-1);
             }
 
             // Record to TTS History
@@ -787,9 +946,11 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
           } else if (data.event === "interrupted") {
             setTtsStreamingStatus('interrupted');
             setTtsIsStreaming(false);
+            setActiveWordIndex(-1);
           } else if (data.event === "error") {
             setErrorMsg(data.message || "Errore nello streaming TTS");
             setTtsIsStreaming(false);
+            setActiveWordIndex(-1);
           }
         } catch (e) {
           console.error("TTS WS message parse error:", e);
@@ -831,6 +992,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     setTtsStreamingStatus('interrupted');
     setTtsIsStreaming(false);
     setTtsActiveSpeakingText('');
+    setActiveWordIndex(-1);
   };
 
   const getLanguageLabel = (lang) => {
@@ -1401,32 +1563,32 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
               />
 
               {/* Gemini Live Subtitle / Karaoke Teleprompter Display */}
-              {(ttsStreamingEnabled || ttsIsStreaming || ttsActiveSpeakingText || ttsPlayedSegments.length > 0) && (
+              {(ttsStreamingEnabled || ttsIsStreaming || ttsStreamingStatus !== 'idle') && (
                 <div style={{
-                  background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(30, 41, 59, 0.8) 100%)',
-                  border: ttsActiveSpeakingText ? '1px solid rgba(6, 182, 212, 0.5)' : '1px solid var(--border-color)',
+                  background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.85) 0%, rgba(30, 41, 59, 0.85) 100%)',
+                  border: activeWordIndex !== -1 ? '1px solid rgba(6, 182, 212, 0.6)' : '1px solid var(--border-color)',
                   borderRadius: '14px',
                   padding: '1.1rem 1.25rem',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '0.75rem',
-                  boxShadow: ttsActiveSpeakingText ? '0 0 25px rgba(6, 182, 212, 0.2)' : 'none',
+                  boxShadow: activeWordIndex !== -1 ? '0 0 30px rgba(6, 182, 212, 0.25)' : 'none',
                   transition: 'all 0.3s ease'
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span className={ttsActiveSpeakingText || ttsIsStreaming ? 'pulse-icon' : ''} style={{
+                      <span className={activeWordIndex !== -1 || ttsIsStreaming ? 'pulse-icon' : ''} style={{
                         width: '10px',
                         height: '10px',
                         borderRadius: '50%',
-                        background: ttsActiveSpeakingText ? '#38bdf8' : ttsIsStreaming ? '#f59e0b' : 'var(--text-muted)'
+                        background: activeWordIndex !== -1 ? '#38bdf8' : ttsIsStreaming ? '#f59e0b' : 'var(--text-muted)'
                       }} />
-                      <span style={{ fontSize: '0.82rem', fontWeight: 800, letterSpacing: '0.05em', color: ttsActiveSpeakingText ? 'var(--accent-cyan)' : 'var(--text-muted)', textTransform: 'uppercase' }}>
-                        {ttsActiveSpeakingText ? '● LIVE AUDIO TELEPROMPTER' : ttsIsStreaming ? '● STREAMING LIVE' : 'SOTTOTITOLI LIVE AUDIO'}
+                      <span style={{ fontSize: '0.82rem', fontWeight: 800, letterSpacing: '0.05em', color: activeWordIndex !== -1 ? 'var(--accent-cyan)' : 'var(--text-muted)', textTransform: 'uppercase' }}>
+                        {activeWordIndex !== -1 ? '● LIVE AUDIO TELEPROMPTER' : ttsIsStreaming ? '● STREAMING LIVE' : 'SOTTOTITOLI LIVE AUDIO'}
                       </span>
                     </div>
 
-                    {ttsActiveSpeakingText && (
+                    {activeWordIndex !== -1 && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                         <span style={{ width: '3px', height: '14px', background: '#38bdf8', borderRadius: '2px' }} />
                         <span style={{ width: '3px', height: '22px', background: '#818cf8', borderRadius: '2px' }} />
@@ -1436,47 +1598,85 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                     )}
                   </div>
 
-                  {/* Karaoke Highlighted Prompt Body */}
+                  {/* Full Text Karaoke Highlighted Prompt Body */}
                   <div style={{
-                    fontSize: '1.05rem',
-                    lineHeight: 1.65,
+                    fontSize: '1.08rem',
+                    lineHeight: 1.75,
                     fontFamily: 'system-ui, -apple-system, sans-serif',
-                    padding: '0.5rem 0'
+                    padding: '0.5rem 0',
+                    minHeight: '4rem',
+                    wordBreak: 'break-word',
+                    whiteSpace: 'pre-wrap'
                   }}>
-                    {ttsActiveSpeakingText || ttsPlayedSegments.length > 0 ? (
+                    {karaokeTokens.length > 0 ? (
                       <div>
-                        {ttsPlayedSegments.length > 0 && (
-                          <span style={{ color: 'var(--text-muted)', opacity: 0.65, transition: 'all 0.3s ease' }}>
-                            {ttsPlayedSegments.join(' ')}{' '}
-                          </span>
-                        )}
-                        {ttsActiveSpeakingText && (
-                          <span style={{
-                            background: 'linear-gradient(90deg, rgba(6, 182, 212, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%)',
-                            color: '#38bdf8',
-                            fontWeight: 700,
-                            padding: '0.2rem 0.5rem',
-                            borderRadius: '6px',
-                            border: '1px solid rgba(56, 189, 248, 0.4)',
-                            boxShadow: '0 0 15px rgba(56, 189, 248, 0.35)',
-                            display: 'inline-block',
-                            transform: 'scale(1.02)',
-                            transition: 'all 0.2s ease'
-                          }}>
-                            🔊 {ttsActiveSpeakingText}
-                          </span>
-                        )}
-                        {!ttsActiveSpeakingText && ttsIsStreaming && (
+                        {karaokeTokens.map((token) => {
+                          if (!token.isWord) {
+                            return <span key={token.id}>{token.text}</span>;
+                          }
+
+                          const isActive = token.id === activeWordIndex;
+                          const isPlayed = token.endTime !== null && currentAudioTime > token.endTime;
+
+                          if (isActive) {
+                            return (
+                              <span
+                                key={token.id}
+                                ref={activeWordRef}
+                                style={{
+                                  background: 'linear-gradient(90deg, rgba(6, 182, 212, 0.3) 0%, rgba(139, 92, 246, 0.3) 100%)',
+                                  color: '#38bdf8',
+                                  fontWeight: 800,
+                                  padding: '0.15rem 0.45rem',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(56, 189, 248, 0.6)',
+                                  boxShadow: '0 0 16px rgba(56, 189, 248, 0.45)',
+                                  display: 'inline-block',
+                                  transform: 'scale(1.05)',
+                                  transition: 'all 0.1s ease',
+                                  margin: '0 1px'
+                                }}
+                              >
+                                {token.text}
+                              </span>
+                            );
+                          } else if (isPlayed) {
+                            return (
+                              <span
+                                key={token.id}
+                                style={{
+                                  color: 'rgba(148, 163, 184, 0.7)',
+                                  transition: 'color 0.2s ease'
+                                }}
+                              >
+                                {token.text}
+                              </span>
+                            );
+                          } else {
+                            return (
+                              <span
+                                key={token.id}
+                                style={{
+                                  color: 'var(--text-main, #f1f5f9)',
+                                  transition: 'color 0.2s ease'
+                                }}
+                              >
+                                {token.text}
+                              </span>
+                            );
+                          }
+                        })}
+                        {ttsIsStreaming && activeWordIndex === -1 && ttsStreamingStatus === 'streaming' && (
                           <span style={{
                             color: '#f59e0b',
                             fontSize: '0.88rem',
                             fontStyle: 'italic',
-                            marginLeft: ttsPlayedSegments.length > 0 ? '0.5rem' : '0',
+                            marginLeft: '0.5rem',
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: '0.35rem'
                           }}>
-                            ⏳ In elaborazione prossimo blocco...
+                            ⏳ In elaborazione audio...
                           </span>
                         )}
                       </div>
@@ -1600,8 +1800,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                           fontWeight: 600
                         }}
                       >
-                        <option value="clauses">Clausole / Punteggiatura (Bassa Latenza TTFA &lt; 250ms)</option>
-                        <option value="sentences">Frasi Intere (Massima Naturalezza)</option>
+                        <option value="sentences">Frasi Complete (Prosodia Naturale Audio8: . ! ? ; :)</option>
                         <option value="words">Buffer a {ttsWordsPerChunk} Parole</option>
                       </select>
                     </div>
