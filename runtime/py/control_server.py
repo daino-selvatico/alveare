@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from runtime.py.whisper_stt import WhisperSTT
+from runtime.py.live_orchestrator import LiveSession
 
 # Root directory of the repository
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -154,27 +155,143 @@ app.add_middleware(
 from tools.setup_model import SUPPORTED_MODELS
 
 # Global State
-class ServerState:
-    def __init__(self):
-        self.process: Optional[subprocess.Popen] = None
+class ModelSlot:
+    def __init__(self, slot_id: str, default_task: str, default_model: str, default_device: str, default_port: int = 8000):
+        self.slot_id: str = slot_id  # "llm", "stt", "tts"
+        self.task: str = default_task  # "text-generation", "speech-to-text", "text-to-speech"
         self.status: str = "stopped"  # "stopped", "starting", "running", "error"
-        self.active_model: str = "gemma4"
+        self.model: str = default_model
+        self.device: str = default_device  # "gpu", "npu", "cpu"
         self.host: str = "127.0.0.1"
-        self.port: int = 8000
-        self.device: str = "npu"  # "npu" | "cpu"
-        self.legacy: bool = False
-        self.offline: bool = False
-        self.start_time: float = 0
-        self.last_error: str = ""
-        self.log_buffer: List[str] = []
-        self.max_logs: int = 500
+        self.port: int = default_port
+        self.process: Optional[subprocess.Popen] = None
+        self.instance: Any = None
         self.load_progress: float = 0.0
         self.load_step: str = ""
         self.is_loaded: bool = False
         self.tok_per_sec: float = 0.0
-        self.total_layers: int = 48
+        self.total_layers: int = 32
+        self.last_error: str = ""
+        self.start_time: float = 0.0
+
+# Global State supporting concurrent multi-hardware slots
+class ServerState:
+    def __init__(self):
+        self.slots: Dict[str, ModelSlot] = {
+            "llm": ModelSlot("llm", "text-generation", "gemma3", "gpu", 8000),
+            "stt": ModelSlot("stt", "speech-to-text", "openai/whisper-base", "npu", 8001),
+            "tts": ModelSlot("tts", "text-to-speech", "Audio8/Audio8-TTS-Preview-0.1b", "cpu", 8002),
+        }
+        self.legacy: bool = False
+        self.offline: bool = False
+        self.log_buffer: List[str] = []
+        self.max_logs: int = 500
         self.is_transcribing: bool = False
         self.last_transcribe_time: float = 0.0
+
+    @property
+    def process(self) -> Optional[subprocess.Popen]:
+        return self.slots["llm"].process
+
+    @process.setter
+    def process(self, val: Optional[subprocess.Popen]):
+        self.slots["llm"].process = val
+
+    @property
+    def status(self) -> str:
+        return self.slots["llm"].status
+
+    @status.setter
+    def status(self, val: str):
+        self.slots["llm"].status = val
+
+    @property
+    def active_model(self) -> str:
+        return self.slots["llm"].model
+
+    @active_model.setter
+    def active_model(self, val: str):
+        self.slots["llm"].model = val
+
+    @property
+    def device(self) -> str:
+        return self.slots["llm"].device
+
+    @device.setter
+    def device(self, val: str):
+        self.slots["llm"].device = val
+
+    @property
+    def host(self) -> str:
+        return self.slots["llm"].host
+
+    @host.setter
+    def host(self, val: str):
+        self.slots["llm"].host = val
+
+    @property
+    def port(self) -> int:
+        return self.slots["llm"].port
+
+    @port.setter
+    def port(self, val: int):
+        self.slots["llm"].port = val
+
+    @property
+    def load_progress(self) -> float:
+        return self.slots["llm"].load_progress
+
+    @load_progress.setter
+    def load_progress(self, val: float):
+        self.slots["llm"].load_progress = val
+
+    @property
+    def load_step(self) -> str:
+        return self.slots["llm"].load_step
+
+    @load_step.setter
+    def load_step(self, val: str):
+        self.slots["llm"].load_step = val
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.slots["llm"].is_loaded
+
+    @is_loaded.setter
+    def is_loaded(self, val: bool):
+        self.slots["llm"].is_loaded = val
+
+    @property
+    def tok_per_sec(self) -> float:
+        return self.slots["llm"].tok_per_sec
+
+    @tok_per_sec.setter
+    def tok_per_sec(self, val: float):
+        self.slots["llm"].tok_per_sec = val
+
+    @property
+    def total_layers(self) -> int:
+        return self.slots["llm"].total_layers
+
+    @total_layers.setter
+    def total_layers(self, val: int):
+        self.slots["llm"].total_layers = val
+
+    @property
+    def last_error(self) -> str:
+        return self.slots["llm"].last_error
+
+    @last_error.setter
+    def last_error(self, val: str):
+        self.slots["llm"].last_error = val
+
+    @property
+    def start_time(self) -> float:
+        return self.slots["llm"].start_time
+
+    @start_time.setter
+    def start_time(self, val: float):
+        self.slots["llm"].start_time = val
 
 class SetupState:
     def __init__(self):
@@ -194,6 +311,11 @@ class HardwareTelemetryTracker:
         self.npu_active_contexts: int = 0
         self.npu_submissions: int = 0
         self.npu_completions: int = 0
+        self.gpu_percent: float = 0.0
+        self.gpu_present: bool = False
+        self.gpu_vram_used_mb: float = 0.0
+        self.gpu_vram_total_mb: float = 0.0
+        self.gpu_name: str = "AMD Radeon 890M"
         self.last_cpu_total: float = 0.0
         self.last_cpu_idle: float = 0.0
         self.last_npu_subs: int = 0
@@ -263,7 +385,7 @@ class HardwareTelemetryTracker:
                                 self.last_npu_subs = total_subs
                                 self.last_npu_time = now
 
-                                if state.is_loaded and state.device == "npu":
+                                if state.is_loaded and (state.device == "npu" or state.slots["stt"].device == "npu"):
                                     if getattr(state, "is_transcribing", False) or (now - getattr(state, "last_transcribe_time", 0.0) < 2.5):
                                         self.npu_percent = 92.4
                                     elif getattr(state, "tok_per_sec", 0.0) > 0:
@@ -277,6 +399,24 @@ class HardwareTelemetryTracker:
                                     self.npu_percent = 0.0
                 except Exception:
                     pass
+
+                # 3. Real GPU Telemetry (AMD Radeon 890M)
+                try:
+                    import glob
+                    busy_files = glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
+                    if busy_files:
+                        with open(busy_files[0], "r") as gf:
+                            self.gpu_percent = float(gf.read().strip())
+                        self.gpu_present = True
+                    vram_used_files = glob.glob("/sys/class/drm/card*/device/mem_info_vram_used")
+                    vram_total_files = glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
+                    if vram_used_files and vram_total_files:
+                        with open(vram_used_files[0], "r") as uf, open(vram_total_files[0], "r") as tf:
+                            self.gpu_vram_used_mb = round(float(uf.read().strip()) / (1024 * 1024), 1)
+                            self.gpu_vram_total_mb = round(float(tf.read().strip()) / (1024 * 1024), 1)
+                except Exception:
+                    pass
+
             except Exception:
                 time.sleep(1.0)
 
@@ -409,7 +549,8 @@ def discover_models() -> List[Dict[str, Any]]:
             if size_mb == 0:
                 size_mb = 1200.0 if "0.6b" in alias else 340.0
 
-        supported_devices = ["npu", "cpu"] if ("whisper" in alias or arch == "whisper" or "audio8" in alias or arch == "audio8" or task in ("speech-to-text", "text-to-speech")) else ["npu"]
+        supported_devices = ["gpu", "npu", "cpu"]
+        default_dev = "npu" if task == "speech-to-text" else ("cpu" if task == "text-to-speech" else "gpu")
         models.append({
             "id": alias,
             "alias": alias,
@@ -420,7 +561,7 @@ def discover_models() -> List[Dict[str, Any]]:
             "path": str(real_p),
             "size_mb": size_mb,
             "supported_devices": supported_devices,
-            "default_device": "npu",
+            "default_device": default_dev,
             "has_config": cfg_path.exists(),
             "active": (alias == state.active_model)
         })
@@ -501,10 +642,104 @@ def parse_server_log_line(line_str: str):
         state.last_error = line_str.strip()
 
 
-def start_inference_server(model: str, host: str, port: int, device: str = "npu", legacy: bool = False, offline: bool = False) -> bool:
+def start_stt_slot(model: str = "openai/whisper-base", device: str = "npu") -> bool:
     device = (device or "npu").lower()
-    if state.process and state.process.poll() is None:
-        stop_inference_server()
+    dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else ("GPU (AMD Radeon 890M)" if device in ("gpu", "vulkan") else "CPU (Multi-Threaded)")
+    append_log(f"[STT Slot] Avvio del motore Speech-to-Text ({model}) su {dev_label}...")
+    stt_slot = state.slots["stt"]
+    stt_slot.status = "starting"
+    stt_slot.model = model
+    stt_slot.device = device
+    stt_slot.load_progress = 15.0
+    stt_slot.load_step = f"Caricamento modello STT {model} su {dev_label}..."
+    stt_slot.is_loaded = False
+    stt_slot.last_error = ""
+    stt_slot.start_time = time.time()
+
+    def _load_stt_async():
+        try:
+            stt_id = "openai/whisper-base"
+            if "large-v3-turbo" in model.lower() or "turbo" in model.lower():
+                stt_id = "openai/whisper-large-v3-turbo"
+            elif "large-v3" in model.lower() or "large" in model.lower():
+                stt_id = "openai/whisper-large-v3"
+            else:
+                cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
+                if cfg_path.exists():
+                    try:
+                        with open(cfg_path) as cf:
+                            cdata = json.load(cf)
+                            if "hf_model_id" in cdata:
+                                stt_id = cdata["hf_model_id"]
+                    except Exception:
+                        pass
+
+            from runtime.py.whisper_stt import WhisperSTT
+            stt = WhisperSTT.get_instance(model_id=stt_id, device=device)
+            stt._ensure_loaded()
+            stt_slot.load_progress = 100.0
+            stt_slot.is_loaded = True
+            stt_slot.load_step = "Modello pronto"
+            stt_slot.status = "running"
+            append_log(f"[STT Slot] Server STT attivo su {dev_label} con {stt_id}. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
+        except Exception as e:
+            stt_slot.status = "error"
+            stt_slot.last_error = str(e)
+            append_log(f"[STT Slot] Errore avvio modello STT: {e}")
+
+    threading.Thread(target=_load_stt_async, daemon=True).start()
+    return True
+
+def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = "cpu") -> bool:
+    device = (device or "cpu").lower()
+    dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else ("GPU (AMD Radeon 890M)" if device in ("gpu", "vulkan") else "CPU (Multi-Threaded)")
+    append_log(f"[TTS Slot] Avvio del motore Audio8 TTS ({model}) su {dev_label}...")
+    tts_slot = state.slots["tts"]
+    tts_slot.status = "starting"
+    tts_slot.model = model
+    tts_slot.device = device
+    tts_slot.load_progress = 15.0
+    tts_slot.load_step = f"Caricamento modello TTS {model} su {dev_label}..."
+    tts_slot.is_loaded = False
+    tts_slot.last_error = ""
+    tts_slot.start_time = time.time()
+
+    def _load_tts_async():
+        try:
+            tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
+            if "0.6b" in model.lower() or "600m" in model.lower():
+                tts_id = "Audio8/Audio8-TTS-Preview-0.6b"
+            elif "0.1b" in model.lower() or "100m" in model.lower():
+                tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
+            else:
+                cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
+                if cfg_path.exists():
+                    try:
+                        with open(cfg_path) as cf:
+                            cdata = json.load(cf)
+                            if "hf_model_id" in cdata:
+                                tts_id = cdata["hf_model_id"]
+                    except Exception:
+                        pass
+
+            from runtime.py.audio8_tts import Audio8TTS
+            tts = Audio8TTS.get_instance(model_id=tts_id, device=device)
+            tts._ensure_loaded()
+            tts_slot.load_progress = 100.0
+            tts_slot.is_loaded = True
+            tts_slot.load_step = "Modello pronto"
+            tts_slot.status = "running"
+            append_log(f"[TTS Slot] Server TTS attivo su {dev_label} con {tts_id}. Pronto per sintesi vocale (/v1/audio/speech).")
+        except Exception as e:
+            tts_slot.status = "error"
+            tts_slot.last_error = str(e)
+            append_log(f"[TTS Slot] Errore avvio modello TTS: {e}")
+
+    threading.Thread(target=_load_tts_async, daemon=True).start()
+    return True
+
+def start_inference_server(model: str, host: str, port: int, device: str = "gpu", legacy: bool = False, offline: bool = False) -> bool:
+    device = (device or "gpu").lower()
 
     is_stt = "whisper" in model.lower()
     if not is_stt:
@@ -514,115 +749,16 @@ def start_inference_server(model: str, host: str, port: int, device: str = "npu"
                 break
 
     if is_stt:
-        dev_label = "NPU (XDNA2)" if device == "npu" else "CPU"
-        append_log(f"Avvio del motore Speech-to-Text ({model}) su {dev_label}...")
-        state.status = "starting"
-        state.active_model = model
-        state.host = host
-        state.port = port
-        state.device = device
-        state.legacy = legacy
-        state.offline = offline
-        state.load_progress = 15.0
-        state.load_step = f"Caricamento modello {model} su {dev_label}..."
-        state.is_loaded = False
-        state.tok_per_sec = 0.0
-        state.last_error = ""
-        state.start_time = time.time()
-        
-        def _load_stt_async():
-            try:
-                stt_id = "openai/whisper-base"
-                if "large-v3-turbo" in model.lower() or "turbo" in model.lower():
-                    stt_id = "openai/whisper-large-v3-turbo"
-                elif "large-v3" in model.lower() or "large" in model.lower():
-                    stt_id = "openai/whisper-large-v3"
-                else:
-                    cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
-                    if cfg_path.exists():
-                        try:
-                            with open(cfg_path) as cf:
-                                cdata = json.load(cf)
-                                if "hf_model_id" in cdata:
-                                    stt_id = cdata["hf_model_id"]
-                        except Exception:
-                            pass
-
-                from runtime.py.whisper_stt import WhisperSTT
-                stt = WhisperSTT.get_instance(model_id=stt_id, device=device)
-                stt._ensure_loaded()
-                state.load_progress = 100.0
-                state.is_loaded = True
-                state.load_step = "Modello pronto"
-                state.status = "running"
-                append_log(f"[STT Engine] Server STT attivo su {dev_label} con {stt_id}. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
-            except Exception as e:
-                state.status = "error"
-                state.last_error = str(e)
-                append_log(f"[STT Engine] Errore avvio modello: {e}")
-        
-        threading.Thread(target=_load_stt_async, daemon=True).start()
         save_config({"default_model": model, "host": host, "port": port, "device": device})
-        return True
+        return start_stt_slot(model=model, device=device)
 
-    if is_active_tts_model() or model.startswith("audio8"):
-        dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else "CPU (Multi-Threaded Vectorized)"
-        append_log(f"[TTS Engine] Avvio modello Audio8 TTS '{model}' su {dev_label}...")
-        state.status = "starting"
-        state.active_model = model
-        state.host = host
-        state.port = port
-        state.device = device
-        state.legacy = legacy
-        state.offline = offline
-        state.load_progress = 15.0
-        state.load_step = f"Caricamento modello TTS {model} su {dev_label}..."
-        state.is_loaded = False
-        state.tok_per_sec = 0.0
-        state.last_error = ""
-        state.start_time = time.time()
-
-        def _load_tts_async():
-            try:
-                tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
-                if "0.6b" in model.lower() or "600m" in model.lower():
-                    tts_id = "Audio8/Audio8-TTS-Preview-0.6b"
-                elif "0.1b" in model.lower() or "100m" in model.lower():
-                    tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
-                else:
-                    cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
-                    if cfg_path.exists():
-                        try:
-                            with open(cfg_path) as cf:
-                                cdata = json.load(cf)
-                                if "hf_model_id" in cdata:
-                                    tts_id = cdata["hf_model_id"]
-                        except Exception:
-                            pass
-
-                from runtime.py.audio8_tts import Audio8TTS
-                tts = Audio8TTS.get_instance(model_id=tts_id, device=device)
-                tts._ensure_loaded()
-                state.load_progress = 100.0
-                state.is_loaded = True
-                state.load_step = "Modello pronto"
-                state.status = "running"
-                append_log(f"[TTS Engine] Server TTS attivo su {dev_label} con {tts_id}. Pronto per sintesi vocale (/v1/audio/speech).")
-            except Exception as e:
-                state.status = "error"
-                state.last_error = str(e)
-                append_log(f"[TTS Engine] Errore avvio modello TTS: {e}")
-
-        threading.Thread(target=_load_tts_async, daemon=True).start()
+    if is_active_tts_model() or model.startswith("audio8") or "tts" in model.lower():
         save_config({"default_model": model, "host": host, "port": port, "device": device})
-        return True
+        return start_tts_slot(model=model, device=device)
 
-    if device == "cpu":
-        state.status = "error"
-        err_msg = f"L'esecuzione su CPU non è disponibile per il modello '{model}'. Solo NPU (XDNA2) è supportato."
-        state.last_error = err_msg
-        append_log(f"Errore avvio: {err_msg}")
-        return False
+    # LLM Slot
+    if state.slots["llm"].process and state.slots["llm"].process.poll() is None:
+        stop_slot("llm")
 
     alveare_bin = ROOT_DIR / "alveare"
     cmd = [str(alveare_bin), "serve", model, "--device", device, "--host", host, "--port", str(port)]
@@ -735,34 +871,38 @@ def start_inference_server(model: str, host: str, port: int, device: str = "npu"
         append_log(f"Failed to start server: {e}")
         return False
 
-def stop_inference_server():
-    if is_active_stt_model():
-        state.status = "stopped"
-        state.is_loaded = False
-        state.load_progress = 0.0
-        state.tok_per_sec = 0.0
-        state.load_step = "Server arrestato"
-        append_log(f"[{state.active_model}] Server STT arrestato.")
+def stop_slot(slot_name: str):
+    if slot_name not in state.slots:
         return
-
-    if state.process and state.process.poll() is None:
-        append_log("Stopping inference server process...")
+    slot = state.slots[slot_name]
+    if slot.process and slot.process.poll() is None:
+        append_log(f"Arresto processo slot '{slot_name}'...")
         try:
-            pgid = os.getpgid(state.process.pid)
+            pgid = os.getpgid(slot.process.pid)
             os.killpg(pgid, signal.SIGTERM)
-            state.process.wait(timeout=1.5)
+            slot.process.wait(timeout=1.5)
         except Exception:
             try:
-                pgid = os.getpgid(state.process.pid)
+                pgid = os.getpgid(slot.process.pid)
                 os.killpg(pgid, signal.SIGKILL)
             except Exception:
                 pass
-        state.process = None
-    state.status = "stopped"
-    state.is_loaded = False
-    state.load_progress = 0.0
-    state.tok_per_sec = 0.0
-    append_log("Inference server stopped.")
+        slot.process = None
+    slot.status = "stopped"
+    slot.is_loaded = False
+    slot.load_progress = 0.0
+    slot.tok_per_sec = 0.0
+    slot.load_step = "Arrestato"
+    append_log(f"[{slot_name.upper()} Slot] Arrestato con successo.")
+
+def stop_inference_server():
+    if is_active_stt_model():
+        stop_slot("stt")
+        return
+    if is_active_tts_model():
+        stop_slot("tts")
+        return
+    stop_slot("llm")
 
 class StartRequest(BaseModel):
     model: Optional[str] = None
@@ -824,6 +964,28 @@ async def get_status():
             "command_submissions": telemetry_tracker.npu_submissions,
             "command_completions": telemetry_tracker.npu_completions,
             "device_name": "AMD Ryzen AI XDNA2"
+        },
+        "gpu_usage": {
+            "percent": telemetry_tracker.gpu_percent,
+            "present": telemetry_tracker.gpu_present,
+            "vram_used_mb": telemetry_tracker.gpu_vram_used_mb,
+            "vram_total_mb": telemetry_tracker.gpu_vram_total_mb,
+            "device_name": telemetry_tracker.gpu_name
+        },
+        "slots": {
+            k: {
+                "slot_id": v.slot_id,
+                "task": v.task,
+                "status": v.status,
+                "model": v.model,
+                "device": v.device,
+                "is_loaded": v.is_loaded,
+                "tok_per_sec": v.tok_per_sec,
+                "port": v.port,
+                "load_progress": v.load_progress,
+                "load_step": v.load_step,
+                "last_error": v.last_error
+            } for k, v in state.slots.items()
         }
     }
 
@@ -841,6 +1003,13 @@ async def get_system_metrics():
             "command_submissions": telemetry_tracker.npu_submissions,
             "command_completions": telemetry_tracker.npu_completions,
             "device_name": "AMD Ryzen AI XDNA2"
+        },
+        "gpu": {
+            "percent": telemetry_tracker.gpu_percent,
+            "present": telemetry_tracker.gpu_present,
+            "vram_used_mb": telemetry_tracker.gpu_vram_used_mb,
+            "vram_total_mb": telemetry_tracker.gpu_vram_total_mb,
+            "device_name": telemetry_tracker.gpu_name
         }
     }
 
@@ -1827,6 +1996,175 @@ async def control_restart(req: StartRequest):
     if not success:
         raise HTTPException(status_code=500, detail=state.last_error or "Failed to restart server")
     return {"status": "ok", "message": f"Server restarted with model {model} on {req.device or 'npu'}"}
+
+@app.get("/v1/models")
+async def openai_get_models():
+    models_data = []
+    for m in discover_models():
+        task = m.get("task", "text-generation")
+        active_dev = "cpu"
+        if task == "speech-to-text":
+            active_dev = state.slots["stt"].device
+        elif task == "text-to-speech":
+            active_dev = state.slots["tts"].device
+        else:
+            active_dev = state.slots["llm"].device
+
+        models_data.append({
+            "id": m["id"],
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "alveare",
+            "task": task,
+            "device": active_dev
+        })
+    return {"object": "list", "data": models_data}
+
+class SlotControlRequest(BaseModel):
+    slot: str = "llm"  # "llm", "stt", "tts"
+    model: Optional[str] = None
+    device: Optional[str] = None
+    host: Optional[str] = "127.0.0.1"
+    port: Optional[int] = None
+
+class LiveStartRequest(BaseModel):
+    llm_model: Optional[str] = "gemma3"
+    llm_device: Optional[str] = "gpu"
+    stt_model: Optional[str] = "openai/whisper-base"
+    stt_device: Optional[str] = "npu"
+    tts_model: Optional[str] = "Audio8/Audio8-TTS-Preview-0.1b"
+    tts_device: Optional[str] = "cpu"
+    voice: Optional[str] = "valeria"
+    system_prompt: Optional[str] = None
+
+@app.post("/api/control/slot/start")
+async def control_slot_start(req: SlotControlRequest):
+    slot_id = req.slot.lower()
+    if slot_id not in state.slots:
+        raise HTTPException(status_code=400, detail=f"Slot '{slot_id}' sconosciuto. Opzioni: llm, stt, tts")
+
+    if slot_id == "stt":
+        model = req.model or state.slots["stt"].model or "openai/whisper-base"
+        device = req.device or state.slots["stt"].device or "npu"
+        start_stt_slot(model=model, device=device)
+    elif slot_id == "tts":
+        model = req.model or state.slots["tts"].model or "Audio8/Audio8-TTS-Preview-0.1b"
+        device = req.device or state.slots["tts"].device or "cpu"
+        start_tts_slot(model=model, device=device)
+    else:
+        model = req.model or state.slots["llm"].model or "gemma3"
+        device = req.device or state.slots["llm"].device or "gpu"
+        start_inference_server(model=model, host=req.host or "127.0.0.1", port=req.port or 8000, device=device)
+
+    return {"status": "ok", "message": f"Slot '{slot_id}' in avvio"}
+
+@app.post("/api/control/slot/stop")
+async def control_slot_stop(req: SlotControlRequest):
+    slot_id = req.slot.lower()
+    if slot_id not in state.slots:
+        raise HTTPException(status_code=400, detail=f"Slot '{slot_id}' sconosciuto.")
+    stop_slot(slot_id)
+    return {"status": "ok", "message": f"Slot '{slot_id}' arrestato"}
+
+@app.post("/api/live/start")
+async def api_live_start(req: LiveStartRequest):
+    llm_model = req.llm_model or "gemma3"
+    llm_device = req.llm_device or "gpu"
+    start_inference_server(model=llm_model, host="127.0.0.1", port=8000, device=llm_device)
+
+    stt_model = req.stt_model or "openai/whisper-base"
+    stt_device = req.stt_device or "npu"
+    start_stt_slot(model=stt_model, device=stt_device)
+
+    tts_model = req.tts_model or "Audio8/Audio8-TTS-Preview-0.1b"
+    tts_device = req.tts_device or "cpu"
+    start_tts_slot(model=tts_model, device=tts_device)
+
+    return {
+        "status": "ok",
+        "message": "Live engine avviato con routing tri-hardware",
+        "profile": {
+            "llm": {"model": llm_model, "device": llm_device, "port": 8000},
+            "stt": {"model": stt_model, "device": stt_device},
+            "tts": {"model": tts_model, "device": tts_device, "voice": req.voice or "valeria"}
+        }
+    }
+
+@app.post("/api/live/stop")
+async def api_live_stop():
+    stop_slot("llm")
+    stop_slot("stt")
+    stop_slot("tts")
+    return {"status": "ok", "message": "Live engine arrestato"}
+
+@app.websocket("/ws/live")
+async def websocket_live_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    session_id = str(uuid.uuid4())
+
+    async def send_event(event_dict: Dict[str, Any]):
+        try:
+            await websocket.send_text(json.dumps(event_dict))
+        except Exception:
+            pass
+
+    llm_slot = state.slots["llm"]
+    stt_slot = state.slots["stt"]
+    tts_slot = state.slots["tts"]
+
+    session = LiveSession(
+        session_id=session_id,
+        send_event_fn=send_event,
+        llm_host=llm_slot.host,
+        llm_port=llm_slot.port,
+        llm_model=llm_slot.model or "gemma3",
+        stt_device=stt_slot.device or "npu",
+        tts_device=tts_slot.device or "cpu",
+        stt_model=stt_slot.model or "openai/whisper-base",
+        tts_model=tts_slot.model or "Audio8/Audio8-TTS-Preview-0.1b",
+        voice="valeria"
+    )
+    session.initialize_workers()
+
+    await send_event({
+        "event": "live_connected",
+        "session_id": session_id,
+        "hardware_profile": {
+            "llm": {"model": session.llm_model, "device": llm_slot.device, "status": llm_slot.status},
+            "stt": {"model": session.stt_model, "device": session.stt_device, "status": stt_slot.status},
+            "tts": {"model": session.tts_model, "device": session.tts_device, "status": tts_slot.status}
+        },
+        "sample_rate": session.sample_rate
+    })
+
+    try:
+        while True:
+            message = await websocket.receive()
+            if "bytes" in message and message["bytes"]:
+                await session.handle_audio_chunk(message["bytes"])
+            elif "text" in message and message["text"]:
+                try:
+                    payload = json.loads(message["text"])
+                    msg_type = payload.get("type", "")
+                    if msg_type == "audio":
+                        audio_b64 = payload.get("data", "")
+                        if audio_b64:
+                            raw_pcm = base64.b64decode(audio_b64)
+                            await session.handle_audio_chunk(raw_pcm)
+                    elif msg_type == "interrupt":
+                        session.is_ai_speaking = False
+                        session.turn_id += 1
+                        if session.current_processing_task and not session.current_processing_task.done():
+                            session.current_processing_task.cancel()
+                        await send_event({"event": "interrupted", "turn_id": session.turn_id})
+                    elif msg_type == "ping":
+                        await send_event({"event": "pong", "timestamp": time.time()})
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
 
 class BuildKernelsRequest(BaseModel):
     model: Optional[str] = None

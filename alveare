@@ -105,6 +105,7 @@ COMMANDS:
     list  (or: models)    List installed models (quantized weight directories).
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
     start [opts]          Start the Web UI & Control Center dashboard (port 8080).
+    live [opts]           Start the full-duplex Live voice-to-voice interactive session.
     chat [opts]           Minimal terminal chat against a running server.
     test                  Run the integration test suite (starts server and chat).
     bench [model]         Benchmark every NPU kernel + end-to-end prefill/decode;
@@ -153,12 +154,24 @@ SERVE:
     Options:
         --host <addr>   Bind address (default 127.0.0.1, or $ALVEARE_HOST).
         --port <port>   Port (default 8000, or $ALVEARE_PORT).
+        --device <dev>  Target hardware backend: gpu (Vulkan 1.4), npu (XDNA2), or cpu (AVX2/AVX-512) (default: gpu).
         --offline       Run completely offline (sets HF_HUB_OFFLINE=1).
         --legacy        Run the legacy Python server instead of the Native C++ server.
 
     Examples:
-        alveare serve gemma4
+        alveare serve gemma3 --device gpu
+        alveare serve gemma4 --device npu
         alveare serve g4-12b --port 9000
+
+LIVE:
+    alveare live [--host H] [--port P]
+
+    Starts an interactive, full-duplex voice-to-voice Live session using the 
+    tri-hardware concurrent pipeline (GPU LLM + NPU STT + CPU TTS) with real-time HUD.
+
+    Examples:
+        alveare live
+        alveare live --port 8080
 
 CHAT:
     alveare chat [--host H] [--port P] [--model NAME] [--no-stream]
@@ -299,11 +312,9 @@ cmd_serve() {
   done
 
   device="$(echo "$device" | tr '[:upper:]' '[:lower:]')"
-  if [ "$device" = "cpu" ]; then
-    if [ "$model" != "whisper" ] && [ "$model" != "whisper-base" ] && [[ "$model" != *"whisper"* ]] && [[ "$model" != *"audio8"* ]] && [[ "$model" != *"tts"* ]]; then
-      echo "error: CPU execution is not supported for model '$model'. Only NPU (XDNA2) is supported." >&2
-      exit 1
-    fi
+  if [ "$device" != "npu" ] && [ "$device" != "gpu" ] && [ "$device" != "cpu" ] && [ "$device" != "vulkan" ]; then
+    echo "error: unsupported device '$device'. Supported devices: npu, gpu, cpu." >&2
+    exit 1
   fi
 
   if [ "$offline" -eq 1 ]; then
@@ -343,6 +354,7 @@ cmd_serve() {
   fi
 
   echo "Serving model from: $weights_dir"
+  echo "Compute Device:     $device"
   echo "OpenAI-compatible endpoint: http://$host:$port/v1"
   echo "  GET  /v1/models"
   echo "  POST /v1/chat/completions"
@@ -355,7 +367,8 @@ cmd_serve() {
 
   if [ "$model" = "whisper" ] || [ "$model" = "whisper-base" ] || [[ "$model" == *"whisper"* ]]; then
     local dev_label="NPU (XDNA2 Native)"
-    [ "$device" = "cpu" ] && dev_label="CPU"
+    [ "$device" = "cpu" ] && dev_label="CPU (Multi-Threaded)"
+    [ "$device" = "gpu" ] && dev_label="GPU (AMD Radeon 890M)"
     echo "Starting Whisper Speech-to-Text Server on $dev_label..."
     echo "  WebSocket Live Stream: ws://$host:$port/ws/stt"
     echo "  OpenAI STT Endpoint:   http://$host:$port/v1/audio/transcriptions"
@@ -370,7 +383,8 @@ uvicorn.run(app, host='$host', port=$port, log_level='info')
 
   if [ "$model" = "audio8" ] || [[ "$model" == *"audio8"* ]] || [[ "$model" == *"tts"* ]]; then
     local dev_label="NPU (XDNA2 Native)"
-    [ "$device" = "cpu" ] && dev_label="CPU"
+    [ "$device" = "cpu" ] && dev_label="CPU (Multi-Threaded)"
+    [ "$device" = "gpu" ] && dev_label="GPU (AMD Radeon 890M)"
     echo "Starting Audio8 Text-to-Speech Server on $dev_label..."
     echo "  OpenAI TTS Endpoint:   http://$host:$port/v1/audio/speech"
     echo "  Web UI Studio:         http://$host:$port"
@@ -401,13 +415,17 @@ uvicorn.run(app, host='$host', port=$port, log_level='info')
       manifest="$weights_dir/manifest.json"
     elif [ -f "$ROOT/kernels/build/manifest.json" ]; then
       manifest="$ROOT/kernels/build/manifest.json"
+    elif [ "$device" = "cpu" ] || [ "$device" = "gpu" ] || [ "$device" = "vulkan" ]; then
+      manifest="none"
     else
       echo "error: manifest.json not found for model '$model' ($alias). Ensure kernels are built." >&2
       exit 1
     fi
 
-    echo "Using NPU manifest: $manifest"
-    exec "$ROOT/runtime/cpp/build/alveare_runtime" "$weights_dir" "$manifest" "$port"
+    if [ "$manifest" != "none" ]; then
+      echo "Using NPU manifest: $manifest"
+    fi
+    exec "$ROOT/runtime/cpp/build/alveare_runtime" "$weights_dir" "$manifest" "$port" --device "$device"
   fi
 }
 
@@ -585,13 +603,35 @@ cmd_start() {
   exec "$PY" "$ROOT/runtime/py/control_server.py"
 }
 
+cmd_live() {
+  local host="${ALVEARE_HOST:-127.0.0.1}"
+  local port="${ALVEARE_PORT:-8080}"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --host) host="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      -h|--help)
+        echo "alveare live — start full-duplex voice-to-voice live session"
+        echo "Usage: alveare live [--host <addr>] [--port <port>]"
+        exit 0
+        ;;
+      *) echo "error: unknown live option '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  export ALVEARE_HOST="$host"
+  export ALVEARE_PORT="$port"
+  exec "$PY" "$ROOT/runtime/py/live_cli.py"
+}
+
 main() {
   local cmd="${1:-help}"
   # Commands that touch the NPU / Python runtime get auto-bootstrapped into the
   # alveare-aie env (see ensure_runtime_env). 'install'/'setup'/'help' must NOT —
   # install creates the env, setup diagnoses it, help needs nothing.
   case "$cmd" in
-    serve|check|build-kernels|quantize|bench|test|chat|list|models|start|setup)
+    serve|check|build-kernels|quantize|bench|test|chat|list|models|start|setup|live)
       ensure_runtime_env "$@" ;;
   esac
   [ "$#" -gt 0 ] && shift || true
@@ -604,6 +644,7 @@ main() {
     list|models)  cmd_list "$@" ;;
     serve)        cmd_serve "$@" ;;
     start)        cmd_start "$@" ;;
+    live)         cmd_live "$@" ;;
     chat)         cmd_chat "$@" ;;
     test)         cmd_test "$@" ;;
     bench)        cmd_bench "$@" ;;

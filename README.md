@@ -4,13 +4,18 @@
 
 Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-source stack** — including open AIE hardware kernels (MLIR-AIE / IRON), a high-throughput native C++ inference engine (`alveare_runtime`), a Python control server, and an interactive React Web UI dashboard.
 
+> **🔥 Alveare 3.0 Release:** Introduces **Tri-Hardware Concurrent Execution** across **GPU** (AMD Radeon 890M / Vulkan 1.4 Native), **NPU** (AMD Ryzen AI XDNA2), and **CPU** (24-Thread AVX2/512). Features a real-time full-duplex **"Live" Voice-to-Voice Studio** with RMS VAD, sub-second turn-taking, interactive user barge-in, and simultaneous multi-model serving (LLM Chat on GPU, Whisper STT on NPU, Audio8 TTS on CPU).
+>
 > **Alveare 2.0:** Supports **THREE Gemma model families** end-to-end on the NPU (**Gemma-4-12B**, **Gemma-4-E4B**, **Gemma-3-1B**) and **Llama-3.2-1B**. Includes a full-featured **React Web UI Dashboard** with in-browser Hugging Face model setup, real-time streaming chat, conversation history management, multimodal file upload, generation sampling controls (`temperature`, `top_p`, `top_k`, `enable_thinking`), and a dark/light theme switcher.
 
 ---
 
 ## 🌟 Key Features
 
-- **🚀 Native C++ Inference Server (`alveare_runtime`)**: Zero Python overhead in the execution loop. Direct XRT device management, fused FFN NPU kernels (gate/up + GeGLU + down), native KV caching, and multi-core GEMV tiled across all 32 NPU compute tiles.
+- **🎮 High-Performance Vulkan 1.4 GPU Engine**: Direct RDNA 3.5 compute shaders with subgroup horizontal arithmetic (`GL_KHR_shader_subgroup_arithmetic`) achieving **32–45+ tok/s** on Gemma-3-1B on the AMD Radeon 890M integrated GPU with zero external hardware.
+- **⚡ Tri-Hardware Concurrent Serving**: Run independent models across GPU, NPU, and CPU simultaneously without thrashing or context switching (e.g. LLM Chat on GPU + Whisper STT on NPU + Audio8 TTS on CPU).
+- **🎙️ Full-Duplex "Live" Voice-to-Voice Studio**: Natural conversational experience with real-time VAD, streaming Whisper transcription, token-chunked neural TTS, sub-second TTFA, and instant user barge-in interruption. Available via Web UI Live Studio, WebSocket (`/ws/live`), and CLI (`./alveare live`).
+- **🚀 Native C++ Inference Server (`alveare_runtime`)**: Zero Python overhead in the execution loop. Direct XRT NPU device management, Vulkan GPU backend, AVX-512 CPU backend, fused FFN kernels, native KV caching, and multi-core GEMV.
 - **🖥️ Modern React Web UI Dashboard**: A sleek, real-time control center at `http://127.0.0.1:8000`. Monitors NPU telemetry, streams server logs live, manages model lifecycle, and provides an interactive chat playground.
 - **⚡ In-Browser & Automated 1-Click Model Setup**: "Aggiungi Modello" modal enables 1-click GGUF downloading and quantization from Hugging Face for Gemma-4 12B, Gemma-4 E4B, Gemma-3 1B, and Llama 3.2 1B.
 - **💬 Rich Chat Experience**: Real-time token streaming with Markdown & code highlighting, persistent multi-turn conversation sessions (sidebar history manager), multimodal file upload (PDF/text/image/audio parsing), and dark/light theme toggle.
@@ -75,6 +80,9 @@ For the complete guide, see 🚀 [**Quickstart Guide**](docs/quickstart.md).
 
 ## 📚 Documentation & Guides
 
+- 🎙️ [**Live Voice-to-Voice Engine**](docs/live.md): Full-duplex conversational live assistant, VAD, sentence streaming, and barge-in.
+- ⚡ [**Tri-Hardware Multi-Device Serving**](docs/multi-device.md): Simultaneous execution across GPU, NPU, and CPU with slot management.
+- 🎮 [**Vulkan 1.4 GPU Engine**](docs/gpu-engine.md): Architecture of the AMD Radeon 890M GPU backend, subgroup GLSL shaders, and benchmarks.
 - 🚀 [**Quickstart Guide**](docs/quickstart.md): Step-by-step 5-minute setup and usage.
 - 📦 [**Adding & Quantizing Models**](docs/adding_models.md): 1-click HF downloads, CLI setup, manual GGUF quantization, and quantizer plugins.
 - 🎛️ [**Sampling Controls & API Reference**](docs/sampling.md): Sampling parameters (`temperature`, `top_p`, `top_k`, `seed`, `enable_thinking`, system prompt) and OpenAI API schema.
@@ -95,7 +103,9 @@ alveare quantize [alias] <gguf> [--arch A]    Quantize local GGUF into Alveare Q
 alveare setup <alias> --arch A [--url URL]    Download HF GGUF and quantize in one step.
 alveare list  (or: models)                    List all installed model packages.
 alveare delete <model_id>                     Remove a quantized model package from disk.
-alveare serve [model] [--host H] [--port P]   Launch C++ runtime & Python API/Web UI server.
+alveare serve [model] [--device gpu|npu|cpu]  Launch C++ runtime on chosen hardware backend.
+alveare start [--host H] [--port P]           Start Web UI & Control Center dashboard (port 8080).
+alveare live [--host H] [--port P]            Start interactive full-duplex live voice session.
 alveare chat [--host H] [--port P]            Interactive terminal chat client.
 alveare help                                  Show help message.
 ```

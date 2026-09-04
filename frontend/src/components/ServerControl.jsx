@@ -172,12 +172,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 <>
                   <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>
                   <span className="badge" style={{
-                    background: status.device === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                    color: status.device === 'cpu' ? '#60a5fa' : '#34d399',
-                    border: status.device === 'cpu' ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                    background: status.device === 'gpu' ? 'rgba(168, 85, 247, 0.2)' : (status.device === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)'),
+                    color: status.device === 'gpu' ? '#c084fc' : (status.device === 'cpu' ? '#60a5fa' : '#34d399'),
+                    border: status.device === 'gpu' ? '1px solid rgba(168, 85, 247, 0.4)' : (status.device === 'cpu' ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)'),
                     fontWeight: 700
                   }}>
-                    {status.device === 'cpu' ? '🖥️ CPU' : '⚡ NPU (XDNA2 Native)'}
+                    {status.device === 'gpu' ? '🎮 GPU (Radeon 890M Native)' : (status.device === 'cpu' ? '🖥️ CPU' : '⚡ NPU (XDNA2 Native)')}
                   </span>
                 </>
               )}
@@ -444,20 +444,37 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                       <div style={{ display: 'flex', gap: '0.35rem' }} onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
-                          onClick={() => setModelDevices(prev => ({ ...prev, [m.id]: 'npu' }))}
+                          onClick={() => setModelDevices(prev => ({ ...prev, [m.id]: 'gpu' }))}
                           style={{
                             padding: '0.25rem 0.55rem',
                             borderRadius: '6px',
-                            border: (modelDevices[m.id] || 'npu') === 'npu' ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid transparent',
-                            background: (modelDevices[m.id] || 'npu') === 'npu' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
-                            color: (modelDevices[m.id] || 'npu') === 'npu' ? '#34d399' : 'var(--text-muted)',
+                            border: (modelDevices[m.id] || m.default_device || 'gpu') === 'gpu' ? '1px solid rgba(168, 85, 247, 0.5)' : '1px solid transparent',
+                            background: (modelDevices[m.id] || m.default_device || 'gpu') === 'gpu' ? 'rgba(168, 85, 247, 0.2)' : 'transparent',
+                            color: (modelDevices[m.id] || m.default_device || 'gpu') === 'gpu' ? '#c084fc' : 'var(--text-muted)',
                             fontSize: '0.75rem',
                             fontWeight: 700,
                             cursor: 'pointer',
                             transition: 'all 0.15s ease'
                           }}
                         >
-                          ⚡ NPU (Default)
+                          🎮 GPU
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setModelDevices(prev => ({ ...prev, [m.id]: 'npu' }))}
+                          style={{
+                            padding: '0.25rem 0.55rem',
+                            borderRadius: '6px',
+                            border: (modelDevices[m.id] || m.default_device || 'gpu') === 'npu' ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid transparent',
+                            background: (modelDevices[m.id] || m.default_device || 'gpu') === 'npu' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
+                            color: (modelDevices[m.id] || m.default_device || 'gpu') === 'npu' ? '#34d399' : 'var(--text-muted)',
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          ⚡ NPU
                         </button>
                         <button
                           type="button"
@@ -465,9 +482,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                           style={{
                             padding: '0.25rem 0.55rem',
                             borderRadius: '6px',
-                            border: (modelDevices[m.id] || 'npu') === 'cpu' ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
-                            background: (modelDevices[m.id] || 'npu') === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
-                            color: (modelDevices[m.id] || 'npu') === 'cpu' ? '#60a5fa' : 'var(--text-muted)',
+                            border: (modelDevices[m.id] || m.default_device || 'gpu') === 'cpu' ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
+                            background: (modelDevices[m.id] || m.default_device || 'gpu') === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
+                            color: (modelDevices[m.id] || m.default_device || 'gpu') === 'cpu' ? '#60a5fa' : 'var(--text-muted)',
                             fontSize: '0.75rem',
                             fontWeight: 700,
                             cursor: 'pointer',
