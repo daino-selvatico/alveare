@@ -6,6 +6,7 @@
 #include "alveare/npy.h"
 
 #include "alveare/cpu_backend.h"
+#include "alveare/gpu_backend.h"
 
 #include <iostream>
 #include <vector>
@@ -39,6 +40,9 @@ int main(int argc, char** argv) {
         if (device_str == "cpu") {
             std::cout << "Using CPU Compute Backend...\n";
             dev = std::make_unique<CpuBackend>();
+        } else if (device_str == "gpu" || device_str == "vulkan") {
+            std::cout << "Using GPU Compute Backend (AMD Radeon 890M / Vulkan 1.4)...\n";
+            dev = std::make_unique<GpuBackend>();
         } else {
             std::cout << "Using NPU Compute Backend with manifest: " << manifest_path << "\n";
             dev = std::make_unique<NpuRegistry>(manifest_path);

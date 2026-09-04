@@ -17,6 +17,7 @@
 #include "alveare/audio_embedder.h"
 #include "alveare/server.h"
 #include "alveare/cpu_backend.h"
+#include "alveare/gpu_backend.h"
 
 using namespace alveare;
 
@@ -56,6 +57,9 @@ int main(int argc, char** argv) {
         if (device_str == "cpu") {
             std::cout << "Initializing CPU Compute Backend (OpenMP + AVX2/AVX-512)...\n";
             dev = std::make_unique<CpuBackend>();
+        } else if (device_str == "gpu" || device_str == "vulkan") {
+            std::cout << "Initializing GPU Compute Backend (AMD Radeon 890M / Vulkan 1.4)...\n";
+            dev = std::make_unique<GpuBackend>();
         } else {
             std::cout << "Initializing NPU Registry with manifest: " << manifest_path << "\n";
             dev = std::make_unique<NpuRegistry>(manifest_path);

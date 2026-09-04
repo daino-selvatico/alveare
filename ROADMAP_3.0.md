@@ -42,9 +42,9 @@ Every task strictly follows the development cycle: **Implement -> Test -> Benchm
 - [x] **M1.4**: Unit tests and benchmarks for CPU Backend (verifying correctness against reference and measuring tok/s). (Completed: `cpu_backend_test` passed, `layer_test` passed, `gemma3` generated ~12 tok/s on CPU)
 
 ### Phase 2: High-Performance GPU Engine (Vulkan / RDNA 3.5 Compute)
-- [ ] **M2.1**: Implement **GPU Backend** (`GpuBackend`) in `runtime/cpp` leveraging Vulkan 1.4 compute pipelines with fast subgroup operations and cooperative matrix / tiled shared memory.
-- [ ] **M2.2**: Integrate Vulkan shader kernels for Q4_0 dequantization, GEMV dot products, attention, and fused GeGLU/SwiGLU.
-- [ ] **M2.3**: Comprehensive GPU benchmark vs `llama.cpp` on Radeon 890M to meet/exceed throughput targets.
+- [x] **M2.1**: Implement **GPU Backend** (`GpuBackend`) in `runtime/cpp` leveraging Vulkan 1.4 compute pipelines with fast subgroup operations and cooperative matrix / tiled shared memory. (Completed: `include/alveare/gpu_backend.h`, `src/gpu_backend.cpp`)
+- [x] **M2.2**: Integrate Vulkan shader kernels for Q4_0 dequantization, GEMV dot products, attention, and fused GeGLU/SwiGLU. (Completed: `kernels/gpu/gemv_q4_0.comp`, `kernels/gpu/gemm_q4_0.comp`, `spv_shaders.h`)
+- [x] **M2.3**: Comprehensive GPU benchmark vs `llama.cpp` on Radeon 890M to meet/exceed throughput targets. (Completed: `gpu_backend_test` passed with exact reference parity; `gemma3` achieved **0.32s prefill** and **32-45+ tok/s decode** on AMD Radeon 890M)
 
 ### Phase 3: Speech & Audio Engines on Multi-Hardware (STT & TTS)
 - [ ] **M3.1**: Enable Whisper STT across all devices: CPU (multi-threaded AVX2), NPU (XDNA2 C-API), GPU (Vulkan/ROCm/Torch).

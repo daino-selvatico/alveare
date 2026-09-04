@@ -1,0 +1,91 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    int N;
+    int K;
+} pc;
+
+layout(std430, binding = 0) readonly buffer WeightsBuffer {
+    uint weights_data[];
+};
+
+layout(std430, binding = 1) readonly buffer InputBuffer {
+    uint16_t input_data[];
+};
+
+layout(std430, binding = 2) writeonly buffer OutputBuffer {
+    uint16_t output_data[];
+};
+
+float bf16_to_f32(uint16_t v) {
+    return uintBitsToFloat(uint(v) << 16);
+}
+
+uint16_t f32_to_bf16(float f) {
+    uint u = floatBitsToUint(f);
+    return uint16_t((u + 0x7FFFu + ((u >> 16) & 1u)) >> 16);
+}
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    if (row >= uint(pc.N)) return;
+
+    uint lane = gl_LocalInvocationID.x;
+    uint K_blocks = uint(pc.K) / 32u;
+    uint row_words = K_blocks * 5u;
+    uint row_word_offset = row * row_words;
+
+    float thread_sum = 0.0;
+
+    for (uint bk = lane; bk < K_blocks; bk += 64u) {
+        uint blk_word_start = row_word_offset + bk * 5u;
+
+        // Scale is at byte 16-17 of block (word 4, lower 16 bits)
+        uint scale_word = weights_data[blk_word_start + 4u];
+        uint16_t scale_u16 = uint16_t(scale_word & 0xFFFFu);
+        float scale = bf16_to_f32(scale_u16);
+
+        uint x_base = bk * 32u;
+        float block_dot = 0.0;
+
+        for (int w = 0; w < 4; ++w) {
+            uint val = weights_data[blk_word_start + uint(w)];
+            uint idx = x_base + uint(w * 8);
+
+            float x0 = bf16_to_f32(input_data[idx + 0u]);
+            float x1 = bf16_to_f32(input_data[idx + 1u]);
+            float x2 = bf16_to_f32(input_data[idx + 2u]);
+            float x3 = bf16_to_f32(input_data[idx + 3u]);
+            float x4 = bf16_to_f32(input_data[idx + 4u]);
+            float x5 = bf16_to_f32(input_data[idx + 5u]);
+            float x6 = bf16_to_f32(input_data[idx + 6u]);
+            float x7 = bf16_to_f32(input_data[idx + 7u]);
+
+            int q0 = int(val & 0x0Fu); if (q0 >= 8) q0 -= 16;
+            int q1 = int((val >> 4) & 0x0Fu); if (q1 >= 8) q1 -= 16;
+            int q2 = int((val >> 8) & 0x0Fu); if (q2 >= 8) q2 -= 16;
+            int q3 = int((val >> 12) & 0x0Fu); if (q3 >= 8) q3 -= 16;
+            int q4 = int((val >> 16) & 0x0Fu); if (q4 >= 8) q4 -= 16;
+            int q5 = int((val >> 20) & 0x0Fu); if (q5 >= 8) q5 -= 16;
+            int q6 = int((val >> 24) & 0x0Fu); if (q6 >= 8) q6 -= 16;
+            int q7 = int((val >> 28) & 0x0Fu); if (q7 >= 8) q7 -= 16;
+
+            block_dot += float(q0) * x0 + float(q1) * x1;
+            block_dot += float(q2) * x2 + float(q3) * x3;
+            block_dot += float(q4) * x4 + float(q5) * x5;
+            block_dot += float(q6) * x6 + float(q7) * x7;
+        }
+
+        thread_sum += block_dot * scale;
+    }
+
+    float row_sum = subgroupAdd(thread_sum);
+
+    if (lane == 0u) {
+        output_data[row] = f32_to_bf16(row_sum);
+    }
+}
