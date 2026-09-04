@@ -182,7 +182,7 @@ static inline float q4_0_dot_product(const uint8_t* row, const alveare::bf16* x,
 
 namespace alveare {
 
-Model::Model(const ModelConfig& config, const ModelWeights& weights, NpuRegistry& reg)
+Model::Model(const ModelConfig& config, const ModelWeights& weights, ComputeDevice& reg)
     : config_(config), weights_(weights), reg_(reg) {
     init_kv_caches();
     init_scratch();

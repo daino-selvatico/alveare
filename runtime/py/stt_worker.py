@@ -35,6 +35,17 @@ def init_npu_lib():
         return None
     try:
         lib = ctypes.CDLL(str(LIB_PATH))
+        lib.alveare_device_create.restype = ctypes.c_void_p
+        lib.alveare_device_create.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        lib.alveare_device_free.argtypes = [ctypes.c_void_p]
+        lib.alveare_device_create_gemv_weight.restype = ctypes.c_uint32
+        lib.alveare_device_create_gemv_weight.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+        lib.alveare_device_run_gemv.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
+        lib.alveare_device_run_gemv_seq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        lib.alveare_device_has_shape.restype = ctypes.c_int
+        lib.alveare_device_has_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        
+        # Legacy NPU bindings fallback
         lib.alveare_npu_create_registry.restype = ctypes.c_void_p
         lib.alveare_npu_create_registry.argtypes = [ctypes.c_char_p]
         lib.alveare_npu_free_registry.argtypes = [ctypes.c_void_p]
@@ -46,7 +57,7 @@ def init_npu_lib():
         lib.alveare_npu_has_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         return lib
     except Exception as e:
-        sys.stderr.write(f"[WhisperSTT] NPU lib load failed: {e}\n")
+        sys.stderr.write(f"[WhisperSTT] Hardware accel lib load failed: {e}\n")
         return None
 
 def main():
@@ -75,13 +86,13 @@ def main():
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, torch_dtype=torch.float32, low_cpu_mem_usage=True)
         model.eval()
 
-        if device == "npu":
+        if device in ("npu", "gpu"):
             npu_lib = init_npu_lib()
             manifest_path = ROOT_DIR / "kernels" / "build" / "manifest.json"
             if not manifest_path.exists():
                 manifest_path = ROOT_DIR / "kernels" / "build" / "whisper-base" / "manifest.json"
-            if npu_lib and manifest_path.exists():
-                reg = npu_lib.alveare_npu_create_registry(str(manifest_path).encode("utf-8"))
+            if npu_lib:
+                reg = npu_lib.alveare_device_create(device.encode("utf-8"), str(manifest_path).encode("utf-8") if manifest_path.exists() else None)
                 if reg:
                     class FusedQKVNPU(nn.Module):
                         def __init__(self, q_proj: nn.Linear, k_proj: nn.Linear, v_proj: nn.Linear):
@@ -191,7 +202,7 @@ def main():
                             layer.fc2 = NPULinear(layer.fc2)
                             converted_count += 1
 
-                    sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} decoder layers to AMD Ryzen AI NPU hardware (XDNA2)!\n")
+                    sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} decoder layers to {device.upper()} hardware acceleration!\n")
     else:
         from funasr import AutoModel
         target_device = "cpu" if device in ("cpu", "npu") else device

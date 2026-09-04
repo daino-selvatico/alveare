@@ -6,6 +6,7 @@ import AudioPlayground from './components/AudioPlayground';
 import ServerControl from './components/ServerControl';
 import LogsViewer from './components/LogsViewer';
 import BenchmarksView from './components/BenchmarksView';
+import LiveStudio from './components/LiveStudio';
 import ErrorBoundary from './components/ErrorBoundary';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import KeyboardShortcutsModal from './components/KeyboardShortcutsModal';
@@ -199,6 +200,30 @@ export default function App() {
                 <MessageSquare size={16} aria-hidden="true" /> {t('nav.playground')}
               </>
             )}
+          </button>
+
+          <button
+            id="tab-live"
+            aria-controls="panel-live"
+            onClick={() => setActiveTab('live')}
+            aria-selected={activeTab === 'live'}
+            role="tab"
+            style={{
+              padding: '0.5rem 1rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: activeTab === 'live' ? 'var(--gradient-brand)' : 'transparent',
+              color: activeTab === 'live' ? 'white' : 'var(--text-muted)',
+              fontWeight: 600,
+              fontSize: '0.85rem',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Radio size={16} aria-hidden="true" /> Live Studio
           </button>
 
           <button
@@ -397,6 +422,14 @@ export default function App() {
                 onOpenShortcutsHelp={() => setShowShortcutsModal(true)}
               />
             )}
+          </div>
+
+          <div id="panel-live" role="tabpanel" aria-labelledby="tab-live" style={{ flex: 1, display: activeTab === 'live' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+            <LiveStudio
+              apiBase={apiBase}
+              status={status}
+              onNavigateToControl={() => setActiveTab('control')}
+            />
           </div>
 
           <div id="panel-control" role="tabpanel" aria-labelledby="tab-control" style={{ flex: 1, display: activeTab === 'control' ? 'block' : 'none' }}>

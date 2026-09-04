@@ -44,6 +44,10 @@ if(OpenMP_CXX_FOUND)
     message(STATUS "OpenMP enabled for host decode parallelism")
 endif()
 
+# Vulkan 1.4 Compute for AMD Radeon 890M iGPU acceleration
+find_package(Vulkan REQUIRED)
+message(STATUS "Vulkan enabled for AMD Radeon 890M GPU acceleration: ${Vulkan_LIBRARIES}")
+
 set(LLAMA_MTP_DIR "/home/daino/llama-mtp/llama.cpp")
 if(EXISTS "${LLAMA_MTP_DIR}/build/bin/libmtmd.so")
     include_directories(
@@ -65,6 +69,8 @@ set(ALVEARE_CORE_SRC
     src/npy.cpp
     src/config.cpp
     src/npu.cpp
+    src/cpu_backend.cpp
+    src/gpu_backend.cpp
     src/weights.cpp
     src/model.cpp
     src/tokenizer.cpp
@@ -79,34 +85,44 @@ set(ALVEARE_CORE_SRC
 
 add_executable(alveare_runtime src/main.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(alveare_runtime PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+target_link_libraries(alveare_runtime PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
 
 # C-API Shared library for Python ctypes / PyTorch acceleration
 add_library(alveare_npu_c SHARED src/npu_c_api.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(alveare_npu_c PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(alveare_npu_c PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+target_link_libraries(alveare_npu_c PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
 
 # NPU registry smoke test: runs a harvested GEMV shape and checks parity.
 add_executable(parity_test test/parity_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(parity_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+target_link_libraries(parity_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
 
 # Layer decode test
 add_executable(layer_test test/layer_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(layer_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+target_link_libraries(layer_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
 
 # Gemma-4-E4B oracle test
 add_executable(e4b_test test/e4b_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(e4b_test PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+target_link_libraries(e4b_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
 
 # Micro-benchmark: NPU kernel context-switch cost (see test/bench_switch.cpp)
 add_executable(bench_switch test/bench_switch.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(bench_switch PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(bench_switch PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+target_link_libraries(bench_switch PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
 
 # Statistical kernel benchmark (median + spread) — see test/bench_stat.cpp
 add_executable(bench_stat test/bench_stat.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(bench_stat PRIVATE ${XRT_INCLUDE_DIRS})
-target_link_libraries(bench_stat PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+target_link_libraries(bench_stat PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
+
+# CPU Backend correctness and benchmark test
+add_executable(cpu_backend_test test/cpu_backend_test.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(cpu_backend_test PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(cpu_backend_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
+
+# GPU Backend correctness and benchmark test (AMD Radeon 890M)
+add_executable(gpu_backend_test test/gpu_backend_test.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(gpu_backend_test PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(gpu_backend_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})

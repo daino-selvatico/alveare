@@ -52,13 +52,14 @@ struct LayerScratch {
 
 class Model {
 public:
-    Model(const ModelConfig& config, const ModelWeights& weights, NpuRegistry& reg);
+    Model(const ModelConfig& config, const ModelWeights& weights, ComputeDevice& reg);
 
     // Returns the model config
     const ModelConfig& get_config() const { return config_; }
 
-    // Access to the NPU registry (e.g. for the LM head gemv driven by Generator).
-    NpuRegistry& registry() { return reg_; }
+    // Access to the compute device (e.g. for the LM head gemv driven by Generator).
+    ComputeDevice& registry() { return reg_; }
+    ComputeDevice& device() { return reg_; }
 
     // Compute Gemma-4-E4B per-layer input embeddings for a token
     void compute_per_layer_inputs(int token_id, const float* inpL, float* out_per_layer);
@@ -81,7 +82,7 @@ public:
 private:
     ModelConfig config_;
     const ModelWeights& weights_;
-    NpuRegistry& reg_;
+    ComputeDevice& reg_;
 
     // KV Caches
     // Stored as [layer][head][pos][dim]
