@@ -65,6 +65,7 @@ set(ALVEARE_CORE_SRC
     src/npy.cpp
     src/config.cpp
     src/npu.cpp
+    src/cpu_backend.cpp
     src/weights.cpp
     src/model.cpp
     src/tokenizer.cpp
@@ -110,3 +111,8 @@ target_link_libraries(bench_switch PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVE
 add_executable(bench_stat test/bench_stat.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(bench_stat PRIVATE ${XRT_INCLUDE_DIRS})
 target_link_libraries(bench_stat PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})
+
+# CPU Backend correctness and benchmark test
+add_executable(cpu_backend_test test/cpu_backend_test.cpp ${ALVEARE_CORE_SRC})
+target_include_directories(cpu_backend_test PRIVATE ${XRT_INCLUDE_DIRS})
+target_link_libraries(cpu_backend_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS})

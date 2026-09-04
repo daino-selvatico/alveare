@@ -131,7 +131,7 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
     return fused;
 }
 
-ModelWeights load_weights(const std::string& dir, const ModelConfig& config, NpuRegistry& reg) {
+ModelWeights load_weights(const std::string& dir, const ModelConfig& config, ComputeDevice& reg) {
     ModelWeights mw;
     mw.token_embd = load_float_npy(dir + "/token_embd.npy");
     mw.output_norm = load_float_npy(dir + "/output_norm.weight.npy");

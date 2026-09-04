@@ -36,10 +36,10 @@ Every task strictly follows the development cycle: **Implement -> Test -> Benchm
 ## 📋 Milestones & Task Breakdown
 
 ### Phase 1: Architecture & Multi-Device Abstraction Foundation
-- [ ] **M1.1**: Create `ROADMAP_3.0.md`, establish git branch `rc-3.0`, and open tracking PR.
-- [ ] **M1.2**: Design unified C++ compute engine abstraction (`ComputeDevice` / `DeviceBackend`) in `runtime/cpp` decoupling model logic from raw XRT NPU calls.
-- [ ] **M1.3**: Implement native high-performance **CPU Backend** in C++ (`CpuBackend`) using AVX2/AVX-512 + OpenMP for vectorized Q4_0 GEMV, batched GEMM, and fused FFN.
-- [ ] **M1.4**: Unit tests and benchmarks for CPU Backend (verifying correctness against reference and measuring tok/s).
+- [x] **M1.1**: Create `ROADMAP_3.0.md`, establish git branch `rc-3.0`, and open tracking PR. (Completed: PR #33 opened)
+- [x] **M1.2**: Design unified C++ compute engine abstraction (`ComputeDevice` / `DeviceBackend`) in `runtime/cpp` decoupling model logic from raw XRT NPU calls. (Completed: `include/alveare/device.h`)
+- [x] **M1.3**: Implement native high-performance **CPU Backend** in C++ (`CpuBackend`) using AVX2/AVX-512 + OpenMP for vectorized Q4_0 GEMV, batched GEMM, and fused FFN. (Completed: `include/alveare/cpu_backend.h`, `src/cpu_backend.cpp`)
+- [x] **M1.4**: Unit tests and benchmarks for CPU Backend (verifying correctness against reference and measuring tok/s). (Completed: `cpu_backend_test` passed, `layer_test` passed, `gemma3` generated ~12 tok/s on CPU)
 
 ### Phase 2: High-Performance GPU Engine (Vulkan / RDNA 3.5 Compute)
 - [ ] **M2.1**: Implement **GPU Backend** (`GpuBackend`) in `runtime/cpp` leveraging Vulkan 1.4 compute pipelines with fast subgroup operations and cooperative matrix / tiled shared memory.
