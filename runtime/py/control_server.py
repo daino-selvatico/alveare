@@ -1617,9 +1617,16 @@ async def handle_tts_stream_connection(websocket: WebSocket):
             seq_id += 1
             is_first_chunk = False
             return True
+        except (WebSocketDisconnect, RuntimeError):
+            return False
         except Exception as e:
+            if "websocket.send" in str(e) or "disconnect" in str(e).lower() or "close" in str(e).lower():
+                return False
             print(f"[WebSocket TTS] Chunk synthesis error: {e}")
-            await websocket.send_json({"event": "error", "message": str(e)})
+            try:
+                await websocket.send_json({"event": "error", "message": str(e)})
+            except Exception:
+                pass
             return False
         finally:
             state.is_transcribing = False
@@ -1628,6 +1635,8 @@ async def handle_tts_stream_connection(websocket: WebSocket):
     try:
         while True:
             msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
             if "text" in msg and msg["text"]:
                 try:
                     payload = json.loads(msg["text"])
@@ -1758,14 +1767,21 @@ async def handle_tts_stream_connection(websocket: WebSocket):
 
                 except json.JSONDecodeError:
                     pass
+                except (WebSocketDisconnect, RuntimeError):
+                    break
                 except Exception as err:
-                    print(f"[WebSocket TTS] Message handling error: {err}")
-                    await websocket.send_json({"event": "error", "message": str(err)})
+                    if "disconnect" not in str(err).lower() and "close" not in str(err).lower():
+                        print(f"[WebSocket TTS] Message handling error: {err}")
+                        try:
+                            await websocket.send_json({"event": "error", "message": str(err)})
+                        except Exception:
+                            pass
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         pass
     except Exception as e:
-        print(f"[WebSocket TTS] Connection exception: {e}")
+        if "disconnect" not in str(e).lower() and "close" not in str(e).lower() and "receive" not in str(e).lower():
+            print(f"[WebSocket TTS] Connection exception: {e}")
 
 @app.websocket("/ws/tts")
 async def websocket_tts_root(websocket: WebSocket):
