@@ -178,9 +178,9 @@ class ModelSlot:
 class ServerState:
     def __init__(self):
         self.slots: Dict[str, ModelSlot] = {
-            "llm": ModelSlot("llm", "text-generation", "gemma3", "gpu", 8000),
-            "stt": ModelSlot("stt", "speech-to-text", "openai/whisper-base", "npu", 8001),
-            "tts": ModelSlot("tts", "text-to-speech", "Audio8/Audio8-TTS-Preview-0.1b", "cpu", 8002),
+            "llm": ModelSlot("llm", "text-generation", "gemma4", "gpu", 8000),
+            "stt": ModelSlot("stt", "speech-to-text", "openai/whisper-base", "cpu", 8001),
+            "tts": ModelSlot("tts", "text-to-speech", "Audio8/Audio8-TTS-Preview-0.1b", "npu", 8002),
         }
         self.legacy: bool = False
         self.offline: bool = False
@@ -549,8 +549,15 @@ def discover_models() -> List[Dict[str, Any]]:
             if size_mb == 0:
                 size_mb = 1200.0 if "0.6b" in alias else 340.0
 
-        supported_devices = ["gpu", "npu", "cpu"]
-        default_dev = "npu" if task == "speech-to-text" else ("cpu" if task == "text-to-speech" else "gpu")
+        if task == "speech-to-text":
+            supported_devices = ["cpu", "npu", "gpu"]
+            default_dev = "cpu"
+        elif task == "text-to-speech":
+            supported_devices = ["npu", "cpu", "gpu"]
+            default_dev = "npu"
+        else:
+            supported_devices = ["gpu", "npu", "cpu"]
+            default_dev = "gpu"
         models.append({
             "id": alias,
             "alias": alias,
@@ -642,11 +649,19 @@ def parse_server_log_line(line_str: str):
         state.last_error = line_str.strip()
 
 
-def start_stt_slot(model: str = "openai/whisper-base", device: str = "npu") -> bool:
-    device = (device or "npu").lower()
+def start_stt_slot(model: str = "openai/whisper-base", device: str = "cpu") -> bool:
+    device = (device or "cpu").lower()
     dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else ("GPU (AMD Radeon 890M)" if device in ("gpu", "vulkan") else "CPU (Multi-Threaded)")
     append_log(f"[STT Slot] Avvio del motore Speech-to-Text ({model}) su {dev_label}...")
     stt_slot = state.slots["stt"]
+
+    if stt_slot.status in ("starting", "running") and stt_slot.model == model and stt_slot.device == device and stt_slot.is_loaded:
+        append_log(f"[STT Slot] Già in esecuzione con {model} su {dev_label}.")
+        return True
+
+    if stt_slot.status in ("starting", "running"):
+        stop_slot("stt")
+
     stt_slot.status = "starting"
     stt_slot.model = model
     stt_slot.device = device
@@ -658,11 +673,13 @@ def start_stt_slot(model: str = "openai/whisper-base", device: str = "npu") -> b
 
     def _load_stt_async():
         try:
-            stt_id = "openai/whisper-base"
+            stt_id = model
             if "large-v3-turbo" in model.lower() or "turbo" in model.lower():
                 stt_id = "openai/whisper-large-v3-turbo"
             elif "large-v3" in model.lower() or "large" in model.lower():
                 stt_id = "openai/whisper-large-v3"
+            elif "whisper" in model.lower():
+                stt_id = "openai/whisper-base"
             else:
                 cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
                 if cfg_path.exists():
@@ -677,24 +694,35 @@ def start_stt_slot(model: str = "openai/whisper-base", device: str = "npu") -> b
             from runtime.py.whisper_stt import WhisperSTT
             stt = WhisperSTT.get_instance(model_id=stt_id, device=device)
             stt._ensure_loaded()
+            stt_slot.process = stt._worker_proc
             stt_slot.load_progress = 100.0
             stt_slot.is_loaded = True
             stt_slot.load_step = "Modello pronto"
             stt_slot.status = "running"
+            stt_slot.last_error = ""
             append_log(f"[STT Slot] Server STT attivo su {dev_label} con {stt_id}. Pronto per streaming WebSocket (/ws/stt) e REST API (/v1/audio/transcriptions).")
         except Exception as e:
             stt_slot.status = "error"
             stt_slot.last_error = str(e)
+            stt_slot.is_loaded = False
             append_log(f"[STT Slot] Errore avvio modello STT: {e}")
 
     threading.Thread(target=_load_stt_async, daemon=True).start()
     return True
 
-def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = "cpu") -> bool:
-    device = (device or "cpu").lower()
+def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = "npu") -> bool:
+    device = (device or "npu").lower()
     dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else ("GPU (AMD Radeon 890M)" if device in ("gpu", "vulkan") else "CPU (Multi-Threaded)")
     append_log(f"[TTS Slot] Avvio del motore Audio8 TTS ({model}) su {dev_label}...")
     tts_slot = state.slots["tts"]
+
+    if tts_slot.status in ("starting", "running") and tts_slot.model == model and tts_slot.device == device and tts_slot.is_loaded:
+        append_log(f"[TTS Slot] Già in esecuzione con {model} su {dev_label}.")
+        return True
+
+    if tts_slot.status in ("starting", "running"):
+        stop_slot("tts")
+
     tts_slot.status = "starting"
     tts_slot.model = model
     tts_slot.device = device
@@ -706,10 +734,10 @@ def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = 
 
     def _load_tts_async():
         try:
-            tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
+            tts_id = model
             if "0.6b" in model.lower() or "600m" in model.lower():
                 tts_id = "Audio8/Audio8-TTS-Preview-0.6b"
-            elif "0.1b" in model.lower() or "100m" in model.lower():
+            elif "0.1b" in model.lower() or "100m" in model.lower() or model in ("audio8-0.1b", "audio8"):
                 tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
             else:
                 cfg_path = ROOT_DIR / f"quantized_weights_{model}" / "config.json"
@@ -725,39 +753,31 @@ def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = 
             from runtime.py.audio8_tts import Audio8TTS
             tts = Audio8TTS.get_instance(model_id=tts_id, device=device)
             tts._ensure_loaded()
+            tts_slot.process = tts._worker_proc
             tts_slot.load_progress = 100.0
             tts_slot.is_loaded = True
             tts_slot.load_step = "Modello pronto"
             tts_slot.status = "running"
+            tts_slot.last_error = ""
             append_log(f"[TTS Slot] Server TTS attivo su {dev_label} con {tts_id}. Pronto per sintesi vocale (/v1/audio/speech).")
         except Exception as e:
             tts_slot.status = "error"
             tts_slot.last_error = str(e)
+            tts_slot.is_loaded = False
             append_log(f"[TTS Slot] Errore avvio modello TTS: {e}")
 
     threading.Thread(target=_load_tts_async, daemon=True).start()
     return True
 
-def start_inference_server(model: str, host: str, port: int, device: str = "gpu", legacy: bool = False, offline: bool = False) -> bool:
+def start_llm_slot(model: str = "gemma4", host: str = "127.0.0.1", port: int = 8000, device: str = "gpu", legacy: bool = False, offline: bool = False) -> bool:
     device = (device or "gpu").lower()
+    llm_slot = state.slots["llm"]
 
-    is_stt = "whisper" in model.lower()
-    if not is_stt:
-        for m in discover_models():
-            if m["id"] == model and m.get("task") == "speech-to-text":
-                is_stt = True
-                break
+    if llm_slot.process and llm_slot.process.poll() is None and llm_slot.model == model and llm_slot.device == device and llm_slot.is_loaded:
+        append_log(f"[LLM Slot] Già in esecuzione con {model} su {device}.")
+        return True
 
-    if is_stt:
-        save_config({"default_model": model, "host": host, "port": port, "device": device})
-        return start_stt_slot(model=model, device=device)
-
-    if is_active_tts_model() or model.startswith("audio8") or "tts" in model.lower():
-        save_config({"default_model": model, "host": host, "port": port, "device": device})
-        return start_tts_slot(model=model, device=device)
-
-    # LLM Slot
-    if state.slots["llm"].process and state.slots["llm"].process.poll() is None:
+    if llm_slot.process and llm_slot.process.poll() is None:
         stop_slot("llm")
 
     alveare_bin = ROOT_DIR / "alveare"
@@ -771,27 +791,27 @@ def start_inference_server(model: str, host: str, port: int, device: str = "gpu"
     if stdbuf_bin:
         cmd = [stdbuf_bin, "-oL", "-eL"] + cmd
 
-    append_log(f"Starting inference server: {' '.join(cmd)}")
-    state.status = "starting"
-    state.active_model = model
-    state.host = host
-    state.port = port
-    state.device = device
+    append_log(f"[LLM Slot] Avvio LLM server: {' '.join(cmd)}")
+    llm_slot.status = "starting"
+    llm_slot.model = model
+    llm_slot.host = host
+    llm_slot.port = port
+    llm_slot.device = device
     state.legacy = legacy
     state.offline = offline
-    state.load_progress = 0.0
-    state.load_step = "Avvio processo server..."
-    state.is_loaded = False
-    state.tok_per_sec = 0.0
-    state.last_error = ""
+    llm_slot.load_progress = 0.0
+    llm_slot.load_step = "Avvio processo server..."
+    llm_slot.is_loaded = False
+    llm_slot.tok_per_sec = 0.0
+    llm_slot.last_error = ""
 
     # Estimate total layers based on model name/arch
     if "12b" in model.lower() or "gemma4" in model.lower():
-        state.total_layers = 48
+        llm_slot.total_layers = 48
     elif "gemma3" in model.lower() or "1b" in model.lower() or "llama" in model.lower():
-        state.total_layers = 26
+        llm_slot.total_layers = 26
     else:
-        state.total_layers = 32
+        llm_slot.total_layers = 32
 
     env = os.environ.copy()
     if offline:
@@ -799,7 +819,7 @@ def start_inference_server(model: str, host: str, port: int, device: str = "gpu"
     env["PYTHONUNBUFFERED"] = "1"
 
     try:
-        state.process = subprocess.Popen(
+        llm_slot.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -809,10 +829,9 @@ def start_inference_server(model: str, host: str, port: int, device: str = "gpu"
             env=env,
             start_new_session=True
         )
-        state.start_time = time.time()
-        proc_ref = state.process
+        llm_slot.start_time = time.time()
+        proc_ref = llm_slot.process
 
-        # Start background log reader
         def log_reader():
             if not proc_ref or not proc_ref.stdout:
                 return
@@ -824,24 +843,23 @@ def start_inference_server(model: str, host: str, port: int, device: str = "gpu"
 
             exit_code = proc_ref.poll() if proc_ref else None
             if exit_code is not None and exit_code != 0 and exit_code != -signal.SIGTERM and exit_code != -signal.SIGKILL:
-                state.status = "error"
-                if not state.last_error:
-                    state.last_error = f"Il server di inferenza si è arrestato in modo anomalo (exit code {exit_code})."
+                llm_slot.status = "error"
+                if not llm_slot.last_error:
+                    llm_slot.last_error = f"Il server di inferenza si è arrestato in modo anomalo (exit code {exit_code})."
             else:
-                state.status = "stopped"
-            append_log("Inference server process exited.")
+                llm_slot.status = "stopped"
+            append_log("[LLM Slot] Processo di inferenza terminato.")
 
         t_log = threading.Thread(target=log_reader, daemon=True)
         t_log.start()
 
-        # Start HTTP health-check worker to detect model readiness independently of stdout line buffering
         def health_check_worker():
             check_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
             url_models = f"http://{check_host}:{port}/v1/models"
             url_root = f"http://{check_host}:{port}/"
 
             time.sleep(0.5)
-            while state.process is proc_ref and proc_ref.poll() is None and not state.is_loaded and state.status == "starting":
+            while llm_slot.process is proc_ref and proc_ref.poll() is None and not llm_slot.is_loaded and llm_slot.status == "starting":
                 try:
                     with httpx.Client(timeout=1.5) as client:
                         try:
@@ -850,12 +868,12 @@ def start_inference_server(model: str, host: str, port: int, device: str = "gpu"
                             resp = client.get(url_root)
 
                         if resp.status_code < 500:
-                            if state.process is proc_ref and not state.is_loaded and state.status == "starting":
-                                state.load_progress = 100.0
-                                state.is_loaded = True
-                                state.load_step = "Modello pronto"
-                                state.status = "running"
-                                append_log("Inference server HTTP health-check succeeded: model ready.")
+                            if llm_slot.process is proc_ref and not llm_slot.is_loaded and llm_slot.status == "starting":
+                                llm_slot.load_progress = 100.0
+                                llm_slot.is_loaded = True
+                                llm_slot.load_step = "Modello pronto"
+                                llm_slot.status = "running"
+                                append_log("[LLM Slot] Health check riuscito: modello LLM pronto.")
                             break
                 except Exception:
                     pass
@@ -866,15 +884,82 @@ def start_inference_server(model: str, host: str, port: int, device: str = "gpu"
 
         return True
     except Exception as e:
-        state.status = "error"
-        state.last_error = str(e)
-        append_log(f"Failed to start server: {e}")
+        llm_slot.status = "error"
+        llm_slot.last_error = str(e)
+        append_log(f"[LLM Slot] Errore avvio server LLM: {e}")
         return False
 
+def start_inference_server(model: str, host: str, port: int, device: str = "gpu", legacy: bool = False, offline: bool = False) -> bool:
+    is_stt = "whisper" in model.lower()
+    if not is_stt:
+        for m in discover_models():
+            if m["id"] == model and m.get("task") == "speech-to-text":
+                is_stt = True
+                break
+
+    if is_stt:
+        save_config({"default_model": model, "host": host, "port": port, "device": device})
+        return start_stt_slot(model=model, device=device)
+
+    is_tts = model.startswith("audio8") or "tts" in model.lower() or "audio" in model.lower()
+    if not is_tts:
+        for m in discover_models():
+            if m["id"] == model and m.get("task") == "text-to-speech":
+                is_tts = True
+                break
+
+    if is_tts:
+        save_config({"default_model": model, "host": host, "port": port, "device": device})
+        return start_tts_slot(model=model, device=device)
+
+    save_config({"default_model": model, "host": host, "port": port, "device": device})
+    return start_llm_slot(model=model, host=host, port=port, device=device, legacy=legacy, offline=offline)
+
 def stop_slot(slot_name: str):
+    if slot_name == "all":
+        stop_slot("llm")
+        stop_slot("stt")
+        stop_slot("tts")
+        return
+
     if slot_name not in state.slots:
         return
     slot = state.slots[slot_name]
+
+    if slot_name == "stt":
+        try:
+            from runtime.py.whisper_stt import WhisperSTT
+            if WhisperSTT._instance:
+                if WhisperSTT._instance._worker_proc:
+                    try:
+                        WhisperSTT._instance._worker_proc.terminate()
+                        WhisperSTT._instance._worker_proc.wait(timeout=1.0)
+                    except Exception:
+                        try:
+                            WhisperSTT._instance._worker_proc.kill()
+                        except Exception:
+                            pass
+                WhisperSTT._instance = None
+        except Exception as e:
+            append_log(f"[STT Slot] Errore arresto worker: {e}")
+
+    elif slot_name == "tts":
+        try:
+            from runtime.py.audio8_tts import Audio8TTS
+            if Audio8TTS._instance:
+                if Audio8TTS._instance._worker_proc:
+                    try:
+                        Audio8TTS._instance._worker_proc.terminate()
+                        Audio8TTS._instance._worker_proc.wait(timeout=1.0)
+                    except Exception:
+                        try:
+                            Audio8TTS._instance._worker_proc.kill()
+                        except Exception:
+                            pass
+                Audio8TTS._instance = None
+        except Exception as e:
+            append_log(f"[TTS Slot] Errore arresto worker: {e}")
+
     if slot.process and slot.process.poll() is None:
         append_log(f"Arresto processo slot '{slot_name}'...")
         try:
@@ -887,7 +972,7 @@ def stop_slot(slot_name: str):
                 os.killpg(pgid, signal.SIGKILL)
             except Exception:
                 pass
-        slot.process = None
+    slot.process = None
     slot.status = "stopped"
     slot.is_loaded = False
     slot.load_progress = 0.0
@@ -896,12 +981,6 @@ def stop_slot(slot_name: str):
     append_log(f"[{slot_name.upper()} Slot] Arrestato con successo.")
 
 def stop_inference_server():
-    if is_active_stt_model():
-        stop_slot("stt")
-        return
-    if is_active_tts_model():
-        stop_slot("tts")
-        return
     stop_slot("llm")
 
 class StartRequest(BaseModel):
@@ -922,18 +1001,17 @@ class ConfigUpdateRequest(BaseModel):
 
 @app.get("/api/status")
 async def get_status():
-    is_running_tts = is_active_tts_model() and state.is_loaded and (state.status in ("starting", "running"))
-    is_running_stt = is_active_stt_model() and (state.status in ("starting", "running"))
+    for s in state.slots.values():
+        if s.process and s.process.poll() is not None and s.status == "running":
+            s.status = "stopped"
+            s.is_loaded = False
 
-    if is_running_tts or is_running_stt:
-        is_running = True
-    else:
-        is_running = state.process is not None and state.process.poll() is None
-        if not is_running and state.status == "running":
-            state.status = "stopped"
+    is_running_llm = state.slots["llm"].is_loaded or (state.slots["llm"].process is not None and state.slots["llm"].process.poll() is None)
+    is_running_stt = state.slots["stt"].is_loaded or (state.slots["stt"].process is not None and state.slots["stt"].process.poll() is None)
+    is_running_tts = state.slots["tts"].is_loaded or (state.slots["tts"].process is not None and state.slots["tts"].process.poll() is None)
+    is_running = is_running_llm or is_running_stt or is_running_tts
 
-
-    uptime = round(time.time() - state.start_time, 1) if (is_running and state.start_time > 0) else 0
+    uptime = round(time.time() - state.slots["llm"].start_time, 1) if (is_running and state.slots["llm"].start_time > 0) else 0
     cfg = load_config()
 
     return {
@@ -944,12 +1022,12 @@ async def get_status():
         "load_step": state.load_step,
         "tok_per_sec": state.tok_per_sec,
         "model": state.active_model,
-        "device": getattr(state, "device", "npu"),
+        "device": getattr(state, "device", "gpu"),
         "host": state.host,
         "port": state.port,
         "legacy": state.legacy,
         "offline": state.offline,
-        "pid": state.process.pid if (state.process and is_running) else None,
+        "pid": state.process.pid if (state.process and is_running_llm) else None,
         "uptime_seconds": uptime,
         "first_launch": cfg.get("first_launch", True),
         "last_error": state.last_error,
@@ -984,6 +1062,7 @@ async def get_status():
                 "port": v.port,
                 "load_progress": v.load_progress,
                 "load_step": v.load_step,
+                "error": v.last_error,
                 "last_error": v.last_error
             } for k, v in state.slots.items()
         }
@@ -2028,56 +2107,73 @@ class SlotControlRequest(BaseModel):
     port: Optional[int] = None
 
 class LiveStartRequest(BaseModel):
-    llm_model: Optional[str] = "gemma3"
+    llm_model: Optional[str] = "gemma4"
     llm_device: Optional[str] = "gpu"
     stt_model: Optional[str] = "openai/whisper-base"
-    stt_device: Optional[str] = "npu"
+    stt_device: Optional[str] = "cpu"
     tts_model: Optional[str] = "Audio8/Audio8-TTS-Preview-0.1b"
-    tts_device: Optional[str] = "cpu"
+    tts_device: Optional[str] = "npu"
     voice: Optional[str] = "valeria"
     system_prompt: Optional[str] = None
 
 @app.post("/api/control/slot/start")
 async def control_slot_start(req: SlotControlRequest):
     slot_id = req.slot.lower()
+    if slot_id == "all":
+        llm_m = req.model or state.slots["llm"].model or "gemma4"
+        llm_d = req.device or state.slots["llm"].device or "gpu"
+        start_llm_slot(model=llm_m, host=req.host or "127.0.0.1", port=req.port or 8000, device=llm_d)
+
+        stt_m = state.slots["stt"].model or "openai/whisper-base"
+        stt_d = state.slots["stt"].device or "cpu"
+        start_stt_slot(model=stt_m, device=stt_d)
+
+        tts_m = state.slots["tts"].model or "Audio8/Audio8-TTS-Preview-0.1b"
+        tts_d = state.slots["tts"].device or "npu"
+        start_tts_slot(model=tts_m, device=tts_d)
+        return {"status": "ok", "message": "Tutti gli slot avviati con preset tri-hardware"}
+
     if slot_id not in state.slots:
-        raise HTTPException(status_code=400, detail=f"Slot '{slot_id}' sconosciuto. Opzioni: llm, stt, tts")
+        raise HTTPException(status_code=400, detail=f"Slot '{slot_id}' sconosciuto. Opzioni: llm, stt, tts, all")
 
     if slot_id == "stt":
         model = req.model or state.slots["stt"].model or "openai/whisper-base"
-        device = req.device or state.slots["stt"].device or "npu"
+        device = req.device or state.slots["stt"].device or "cpu"
         start_stt_slot(model=model, device=device)
     elif slot_id == "tts":
         model = req.model or state.slots["tts"].model or "Audio8/Audio8-TTS-Preview-0.1b"
-        device = req.device or state.slots["tts"].device or "cpu"
+        device = req.device or state.slots["tts"].device or "npu"
         start_tts_slot(model=model, device=device)
     else:
-        model = req.model or state.slots["llm"].model or "gemma3"
+        model = req.model or state.slots["llm"].model or "gemma4"
         device = req.device or state.slots["llm"].device or "gpu"
-        start_inference_server(model=model, host=req.host or "127.0.0.1", port=req.port or 8000, device=device)
+        start_llm_slot(model=model, host=req.host or "127.0.0.1", port=req.port or 8000, device=device)
 
-    return {"status": "ok", "message": f"Slot '{slot_id}' in avvio"}
+    return {"status": "ok", "message": f"Slot '{slot_id}' in avvio", "slot": slot_id, "model": model, "device": device}
 
 @app.post("/api/control/slot/stop")
 async def control_slot_stop(req: SlotControlRequest):
     slot_id = req.slot.lower()
+    if slot_id == "all":
+        stop_slot("all")
+        return {"status": "ok", "message": "Tutti gli slot arrestati"}
     if slot_id not in state.slots:
         raise HTTPException(status_code=400, detail=f"Slot '{slot_id}' sconosciuto.")
     stop_slot(slot_id)
-    return {"status": "ok", "message": f"Slot '{slot_id}' arrestato"}
+    return {"status": "ok", "message": f"Slot '{slot_id}' arrestato", "slot": slot_id}
 
 @app.post("/api/live/start")
 async def api_live_start(req: LiveStartRequest):
-    llm_model = req.llm_model or "gemma3"
+    llm_model = req.llm_model or "gemma4"
     llm_device = req.llm_device or "gpu"
-    start_inference_server(model=llm_model, host="127.0.0.1", port=8000, device=llm_device)
+    start_llm_slot(model=llm_model, host="127.0.0.1", port=8000, device=llm_device)
 
     stt_model = req.stt_model or "openai/whisper-base"
-    stt_device = req.stt_device or "npu"
+    stt_device = req.stt_device or "cpu"
     start_stt_slot(model=stt_model, device=stt_device)
 
     tts_model = req.tts_model or "Audio8/Audio8-TTS-Preview-0.1b"
-    tts_device = req.tts_device or "cpu"
+    tts_device = req.tts_device or "npu"
     start_tts_slot(model=tts_model, device=tts_device)
 
     return {
@@ -2117,9 +2213,9 @@ async def websocket_live_endpoint(websocket: WebSocket):
         send_event_fn=send_event,
         llm_host=llm_slot.host,
         llm_port=llm_slot.port,
-        llm_model=llm_slot.model or "gemma3",
-        stt_device=stt_slot.device or "npu",
-        tts_device=tts_slot.device or "cpu",
+        llm_model=llm_slot.model or "gemma4",
+        stt_device=stt_slot.device or "cpu",
+        tts_device=tts_slot.device or "npu",
         stt_model=stt_slot.model or "openai/whisper-base",
         tts_model=tts_slot.model or "Audio8/Audio8-TTS-Preview-0.1b",
         voice="valeria"

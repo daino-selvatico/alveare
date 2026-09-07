@@ -1071,7 +1071,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       
       {/* Header Banner */}
       <div style={{
-        padding: '1.25rem 2rem',
+        padding: '1rem clamp(0.75rem, 2vw, 1.5rem)',
         borderBottom: '1px solid var(--border-color)',
         background: 'linear-gradient(90deg, rgba(6, 182, 212, 0.12) 0%, rgba(139, 92, 246, 0.08) 100%)',
         display: 'flex',

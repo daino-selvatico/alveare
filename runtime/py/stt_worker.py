@@ -62,11 +62,19 @@ def init_npu_lib():
 
 def main():
     model_id = "openai/whisper-base"
-    device = "npu"
+    device = "cpu"
     if len(sys.argv) > 1 and sys.argv[1]:
         model_id = sys.argv[1]
     if len(sys.argv) > 2 and sys.argv[2]:
         device = sys.argv[2].lower()
+
+    # Normalize aliases
+    if model_id in ("whisper-base", "openai/whisper-base"):
+        model_id = "openai/whisper-base"
+    elif model_id in ("whisper-large-v3-turbo", "openai/whisper-large-v3-turbo"):
+        model_id = "openai/whisper-large-v3-turbo"
+    elif model_id in ("whisper-large-v3", "openai/whisper-large-v3"):
+        model_id = "openai/whisper-large-v3"
 
     # Save real IPC stdout descriptor and redirect sys.stdout to sys.stderr during model load
     ipc_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)

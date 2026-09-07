@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw, BarChart2, Keyboard, Radio } from 'lucide-react';
+import { MessageSquare, Server, Terminal, Zap, Settings, Moon, Sun, AlertTriangle, RefreshCw, BarChart2, Keyboard, Radio, Menu, X, Volume2 } from 'lucide-react';
 import OnboardingWizard from './components/OnboardingWizard';
 import ChatPlayground from './components/ChatPlayground';
 import AudioPlayground from './components/AudioPlayground';
@@ -19,12 +19,13 @@ export default function App() {
     ? 'http://127.0.0.1:8080'
     : window.location.origin;
 
-  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'control' | 'logs'
+  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'audio' | 'live' | 'control' | 'logs' | 'benchmarks'
   const [status, setStatus] = useState(null);
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [showWizard, setShowWizard] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
 
   const isSttActive = Boolean(
     status?.is_running &&
@@ -130,7 +131,7 @@ export default function App() {
         aria-label="Navigazione Principale"
         style={{
           height: '64px',
-          padding: '0 1.5rem',
+          padding: '0 clamp(0.75rem, 2vw, 1.5rem)',
           borderBottom: '1px solid var(--border-color)',
           background: 'var(--navbar-bg)',
           backdropFilter: 'blur(12px)',
@@ -138,13 +139,12 @@ export default function App() {
           alignItems: 'center',
           justifyContent: 'space-between',
           zIndex: 50,
-          flexWrap: 'wrap',
           gap: '0.5rem'
         }}
       >
         
         {/* Brand */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
           <div style={{
             width: '36px',
             height: '36px',
@@ -159,49 +159,17 @@ export default function App() {
           </div>
 
           <div>
-            <div style={{ fontWeight: 800, fontSize: '1.1rem', letterSpacing: '-0.02em', background: 'var(--gradient-brand)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+            <div style={{ fontWeight: 800, fontSize: '1.05rem', letterSpacing: '-0.02em', background: 'var(--gradient-brand)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
               {t('nav.brandTitle')}
             </div>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: '1' }}>
+            <div className="desktop-nav-tabs" style={{ fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: '1' }}>
               {t('nav.brandSubtitle')}
             </div>
           </div>
         </div>
 
-        {/* Tab Navigation */}
-        <div role="tablist" aria-label={t('nav.brandTitle')} style={{ display: 'flex', gap: '0.5rem', background: 'var(--nav-tab-bg)', padding: '0.25rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
-          <button
-            id="tab-chat"
-            aria-controls="panel-chat"
-            onClick={() => setActiveTab('chat')}
-            aria-selected={activeTab === 'chat'}
-            role="tab"
-            style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              border: 'none',
-              background: activeTab === 'chat' ? 'var(--gradient-brand)' : 'transparent',
-              color: activeTab === 'chat' ? 'white' : 'var(--text-muted)',
-              fontWeight: 600,
-              fontSize: '0.85rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              transition: 'all 0.2s ease'
-            }}
-          >
-            {isSttActive ? (
-              <>
-                <Radio size={16} aria-hidden="true" /> {t('nav.audioPlayground')}
-              </>
-            ) : (
-              <>
-                <MessageSquare size={16} aria-hidden="true" /> {t('nav.playground')}
-              </>
-            )}
-          </button>
-
+        {/* Tab Navigation (Desktop Only) */}
+        <div className="desktop-nav-tabs" role="tablist" aria-label={t('nav.brandTitle')} style={{ display: 'flex', gap: '0.4rem', background: 'var(--nav-tab-bg)', padding: '0.25rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
           <button
             id="tab-live"
             aria-controls="panel-live"
@@ -209,13 +177,13 @@ export default function App() {
             aria-selected={activeTab === 'live'}
             role="tab"
             style={{
-              padding: '0.5rem 1rem',
+              padding: '0.5rem 0.85rem',
               borderRadius: '8px',
               border: 'none',
               background: activeTab === 'live' ? 'var(--gradient-brand)' : 'transparent',
               color: activeTab === 'live' ? 'white' : 'var(--text-muted)',
               fontWeight: 600,
-              fontSize: '0.85rem',
+              fontSize: '0.82rem',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -223,7 +191,55 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <Radio size={16} aria-hidden="true" /> Live Studio
+            <Radio size={15} aria-hidden="true" /> Live Studio
+          </button>
+
+          <button
+            id="tab-chat"
+            aria-controls="panel-chat"
+            onClick={() => setActiveTab('chat')}
+            aria-selected={activeTab === 'chat'}
+            role="tab"
+            style={{
+              padding: '0.5rem 0.85rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: activeTab === 'chat' ? 'var(--gradient-brand)' : 'transparent',
+              color: activeTab === 'chat' ? 'white' : 'var(--text-muted)',
+              fontWeight: 600,
+              fontSize: '0.82rem',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <MessageSquare size={15} aria-hidden="true" /> {t('nav.chat')}
+          </button>
+
+          <button
+            id="tab-audio"
+            aria-controls="panel-audio"
+            onClick={() => setActiveTab('audio')}
+            aria-selected={activeTab === 'audio'}
+            role="tab"
+            style={{
+              padding: '0.5rem 0.85rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: activeTab === 'audio' ? 'var(--gradient-brand)' : 'transparent',
+              color: activeTab === 'audio' ? 'white' : 'var(--text-muted)',
+              fontWeight: 600,
+              fontSize: '0.82rem',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Volume2 size={15} aria-hidden="true" /> {t('nav.audio')}
           </button>
 
           <button
@@ -233,13 +249,13 @@ export default function App() {
             aria-selected={activeTab === 'control'}
             role="tab"
             style={{
-              padding: '0.5rem 1rem',
+              padding: '0.5rem 0.85rem',
               borderRadius: '8px',
               border: 'none',
               background: activeTab === 'control' ? 'var(--gradient-brand)' : 'transparent',
               color: activeTab === 'control' ? 'white' : 'var(--text-muted)',
               fontWeight: 600,
-              fontSize: '0.85rem',
+              fontSize: '0.82rem',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -247,7 +263,7 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <Server size={16} aria-hidden="true" /> {t('nav.controlPanel')}
+            <Server size={15} aria-hidden="true" /> {t('nav.controlPanel')}
             {models.length === 0 && !modelsLoading && (
               <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-amber)', display: 'inline-block' }} title={t('nav.noModelsBadge')} />
             )}
@@ -260,13 +276,13 @@ export default function App() {
             aria-selected={activeTab === 'logs'}
             role="tab"
             style={{
-              padding: '0.5rem 1rem',
+              padding: '0.5rem 0.85rem',
               borderRadius: '8px',
               border: 'none',
               background: activeTab === 'logs' ? 'var(--gradient-brand)' : 'transparent',
               color: activeTab === 'logs' ? 'white' : 'var(--text-muted)',
               fontWeight: 600,
-              fontSize: '0.85rem',
+              fontSize: '0.82rem',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -274,7 +290,7 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <Terminal size={16} aria-hidden="true" /> {t('nav.logs')}
+            <Terminal size={15} aria-hidden="true" /> {t('nav.logs')}
           </button>
 
           <button
@@ -284,13 +300,13 @@ export default function App() {
             aria-selected={activeTab === 'benchmarks'}
             role="tab"
             style={{
-              padding: '0.5rem 1rem',
+              padding: '0.5rem 0.85rem',
               borderRadius: '8px',
               border: 'none',
               background: activeTab === 'benchmarks' ? 'var(--gradient-brand)' : 'transparent',
               color: activeTab === 'benchmarks' ? 'white' : 'var(--text-muted)',
               fontWeight: 600,
-              fontSize: '0.85rem',
+              fontSize: '0.82rem',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -298,59 +314,79 @@ export default function App() {
               transition: 'all 0.2s ease'
             }}
           >
-            <BarChart2 size={16} aria-hidden="true" /> {t('nav.benchmarks')}
+            <BarChart2 size={15} aria-hidden="true" /> {t('nav.benchmarks')}
           </button>
         </div>
 
         {/* Server Status & Controls Header Badge */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           {connectionError ? (
-            <span className="badge badge-danger">
-              ● {t('nav.serverUnreachable')}
+            <span className="badge badge-danger" style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem' }}>
+              ● <span className="desktop-nav-tabs">{t('nav.serverUnreachable')}</span>
             </span>
           ) : status?.is_running ? (
-            <span className="badge badge-success">
-              <span className="pulse-icon">●</span> {t('nav.serverActive', { model: status.model })}
+            <span className="badge badge-success" style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem' }}>
+              <span className="pulse-icon">●</span> <span className="desktop-nav-tabs">{t('nav.serverActive', { model: status.model })}</span>
             </span>
           ) : (
-            <span className="badge badge-danger">
-              ● {t('nav.serverStopped')}
+            <span className="badge badge-danger" style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem' }}>
+              ● <span className="desktop-nav-tabs">{t('nav.serverStopped')}</span>
             </span>
           )}
 
-          {/* Language Switcher */}
-          <LanguageSwitcher />
+          {/* Desktop-only action buttons */}
+          <div className="desktop-nav-tabs" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <LanguageSwitcher />
 
-          {/* Theme Switcher Button */}
-          <button
-            className="btn-secondary"
-            style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
-            onClick={toggleTheme}
-            title={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
-            aria-label={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
-          >
-            {theme === 'dark' ? <Sun size={14} color="var(--accent-amber)" aria-hidden="true" /> : <Moon size={14} color="var(--accent-purple)" aria-hidden="true" />}
-            <span style={{ fontSize: '0.78rem' }}>{theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}</span>
-          </button>
+            <button
+              className="btn-secondary"
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+              onClick={toggleTheme}
+              title={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
+              aria-label={theme === 'dark' ? t('nav.themeToggleLight') : t('nav.themeToggleDark')}
+            >
+              {theme === 'dark' ? <Sun size={14} color="var(--accent-amber)" aria-hidden="true" /> : <Moon size={14} color="var(--accent-purple)" aria-hidden="true" />}
+              <span style={{ fontSize: '0.78rem' }}>{theme === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}</span>
+            </button>
 
-          <button
-            className="btn-secondary"
-            style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
-            onClick={() => setShowWizard(true)}
-            title={t('nav.reopenWizard')}
-            aria-label={t('nav.reopenWizard')}
-          >
-            <Settings size={14} aria-hidden="true" /> {t('nav.wizard')}
-          </button>
+            <button
+              className="btn-secondary"
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+              onClick={() => setShowWizard(true)}
+              title={t('nav.reopenWizard')}
+              aria-label={t('nav.reopenWizard')}
+            >
+              <Settings size={14} aria-hidden="true" /> {t('nav.wizard')}
+            </button>
 
+            <button
+              className="btn-secondary"
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+              onClick={() => setShowShortcutsModal(true)}
+              title={t('shortcuts.buttonTitle')}
+              aria-label={t('shortcuts.buttonTitle')}
+            >
+              <Keyboard size={14} aria-hidden="true" />
+            </button>
+          </div>
+
+          {/* Mobile Hamburger Drawer Button */}
           <button
-            className="btn-secondary"
-            style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
-            onClick={() => setShowShortcutsModal(true)}
-            title={t('shortcuts.buttonTitle')}
-            aria-label={t('shortcuts.buttonTitle')}
+            className="btn-secondary mobile-nav-toggle mobile-touch-target"
+            onClick={() => setIsMobileDrawerOpen(true)}
+            title={t('nav.menu') || 'Menu'}
+            aria-label={t('nav.menu') || 'Menu'}
+            style={{
+              display: 'none',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: '44px',
+              minHeight: '44px',
+              padding: '0.4rem',
+              borderRadius: '8px'
+            }}
           >
-            <Keyboard size={14} aria-hidden="true" />
+            <Menu size={20} />
           </button>
         </div>
 
@@ -399,35 +435,35 @@ export default function App() {
       {/* Main View Body with ErrorBoundary protection */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         <ErrorBoundary onReset={handleRetryConnection}>
-          <div id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
-            {isSttActive ? (
-              <AudioPlayground
-                apiBase={apiBase}
-                status={status}
-                activeModel={status?.model || 'whisper-base'}
-                isServerRunning={status?.is_running || false}
-                models={models}
-                onNavigateToControl={() => setActiveTab('control')}
-              />
-            ) : (
-              <ChatPlayground
-                apiBase={apiBase}
-                status={status}
-                activeModel={status?.model || (models.length > 0 ? models[0].id : t('nav.noModelsBadge'))}
-                isServerRunning={status?.is_running || false}
-                models={models}
-                modelsLoading={modelsLoading}
-                onNavigateToControl={() => setActiveTab('control')}
-                onNavigateToChat={() => setActiveTab('chat')}
-                onOpenShortcutsHelp={() => setShowShortcutsModal(true)}
-              />
-            )}
-          </div>
-
           <div id="panel-live" role="tabpanel" aria-labelledby="tab-live" style={{ flex: 1, display: activeTab === 'live' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
             <LiveStudio
               apiBase={apiBase}
               status={status}
+              onNavigateToControl={() => setActiveTab('control')}
+            />
+          </div>
+
+          <div id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" style={{ flex: 1, display: activeTab === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+            <ChatPlayground
+              apiBase={apiBase}
+              status={status}
+              activeModel={status?.slots?.llm?.model || status?.model || (models.length > 0 ? models[0].id : t('nav.noModelsBadge'))}
+              isServerRunning={status?.slots?.llm?.status === 'running' || status?.is_running || false}
+              models={models}
+              modelsLoading={modelsLoading}
+              onNavigateToControl={() => setActiveTab('control')}
+              onNavigateToChat={() => setActiveTab('chat')}
+              onOpenShortcutsHelp={() => setShowShortcutsModal(true)}
+            />
+          </div>
+
+          <div id="panel-audio" role="tabpanel" aria-labelledby="tab-audio" style={{ flex: 1, display: activeTab === 'audio' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+            <AudioPlayground
+              apiBase={apiBase}
+              status={status}
+              activeModel={status?.slots?.stt?.model || status?.slots?.tts?.model || status?.model || 'whisper-base'}
+              isServerRunning={status?.slots?.stt?.status === 'running' || status?.slots?.tts?.status === 'running' || status?.is_running || false}
+              models={models}
               onNavigateToControl={() => setActiveTab('control')}
             />
           </div>
@@ -457,6 +493,187 @@ export default function App() {
           </div>
         </ErrorBoundary>
       </main>
+
+      {/* Mobile Bottom Navigation Bar */}
+      <nav className="mobile-bottom-nav" role="navigation" aria-label="Mobile Navigation">
+        <button
+          type="button"
+          className={`mobile-bottom-nav-item ${activeTab === 'live' ? 'active' : ''}`}
+          onClick={() => setActiveTab('live')}
+          aria-label="Live Studio"
+        >
+          <Radio size={18} aria-hidden="true" />
+          <span>Live</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-bottom-nav-item ${activeTab === 'chat' ? 'active' : ''}`}
+          onClick={() => setActiveTab('chat')}
+          aria-label="Chat"
+        >
+          <MessageSquare size={18} aria-hidden="true" />
+          <span>Chat</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-bottom-nav-item ${activeTab === 'audio' ? 'active' : ''}`}
+          onClick={() => setActiveTab('audio')}
+          aria-label="Audio"
+        >
+          <Volume2 size={18} aria-hidden="true" />
+          <span>Audio</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-bottom-nav-item ${activeTab === 'control' ? 'active' : ''}`}
+          onClick={() => setActiveTab('control')}
+          aria-label="Control"
+        >
+          <Server size={18} aria-hidden="true" />
+          <span>Slot</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-bottom-nav-item ${activeTab === 'logs' ? 'active' : ''}`}
+          onClick={() => setActiveTab('logs')}
+          aria-label="Logs"
+        >
+          <Terminal size={18} aria-hidden="true" />
+          <span>Logs</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-bottom-nav-item ${activeTab === 'benchmarks' ? 'active' : ''}`}
+          onClick={() => setActiveTab('benchmarks')}
+          aria-label="Benchmarks"
+        >
+          <BarChart2 size={18} aria-hidden="true" />
+          <span>Bench</span>
+        </button>
+      </nav>
+
+      {/* Mobile Drawer Menu Modal */}
+      {isMobileDrawerOpen && (
+        <div
+          className="mobile-drawer-overlay"
+          onClick={() => setIsMobileDrawerOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('nav.menu') || 'Menu'}
+        >
+          <div className="mobile-drawer-content" onClick={(e) => e.stopPropagation()}>
+            {/* Drawer Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.85rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'var(--gradient-brand)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Zap size={18} color="white" aria-hidden="true" />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: '1rem', background: 'var(--gradient-brand)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                    {t('nav.brandTitle')}
+                  </div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                    {t('nav.brandSubtitle')}
+                  </div>
+                </div>
+              </div>
+              <button
+                className="btn-secondary mobile-touch-target"
+                onClick={() => setIsMobileDrawerOpen(false)}
+                aria-label={t('nav.closeMenu') || 'Chiudi menu'}
+                style={{ padding: '0.4rem', borderRadius: '8px', minWidth: '40px', minHeight: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+
+            {/* Drawer Navigation Links */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              {[
+                { id: 'live', label: 'Live Voice-to-Voice', icon: Radio },
+                { id: 'chat', label: t('nav.playground') || 'Playground Chat', icon: MessageSquare },
+                { id: 'audio', label: t('nav.audioPlayground') || 'Playground Audio (STT/TTS)', icon: Volume2 },
+                { id: 'control', label: t('nav.controlPanel') || 'Control Panel & Slot', icon: Server },
+                { id: 'logs', label: t('nav.logs') || 'Log & Diagnostica', icon: Terminal },
+                { id: 'benchmarks', label: t('nav.benchmarks') || 'Modelli & Benchmark', icon: BarChart2 },
+              ].map(item => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    className="mobile-touch-target"
+                    onClick={() => {
+                      setActiveTab(item.id);
+                      setIsMobileDrawerOpen(false);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                      padding: '0.75rem 1rem',
+                      borderRadius: '10px',
+                      border: 'none',
+                      background: isActive ? 'var(--gradient-brand)' : 'rgba(255,255,255,0.04)',
+                      color: isActive ? 'white' : 'var(--text-main)',
+                      fontWeight: isActive ? 700 : 500,
+                      fontSize: '0.9rem',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      minHeight: '48px',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    <Icon size={18} aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Drawer Settings & Actions */}
+            <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border-color)', paddingTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Lingua / Language</span>
+                <LanguageSwitcher />
+              </div>
+
+              <button
+                className="btn-secondary mobile-touch-target"
+                onClick={toggleTheme}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.6rem 1rem', minHeight: '44px' }}
+              >
+                <span style={{ fontSize: '0.85rem' }}>Tema: {theme === 'dark' ? t('nav.themeDark') : t('nav.themeLight')}</span>
+                {theme === 'dark' ? <Sun size={16} color="var(--accent-amber)" aria-hidden="true" /> : <Moon size={16} color="var(--accent-purple)" aria-hidden="true" />}
+              </button>
+
+              <button
+                className="btn-secondary mobile-touch-target"
+                onClick={() => {
+                  setShowWizard(true);
+                  setIsMobileDrawerOpen(false);
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.6rem 1rem', minHeight: '44px' }}
+              >
+                <Settings size={16} aria-hidden="true" />
+                <span style={{ fontSize: '0.85rem' }}>{t('nav.reopenWizard')}</span>
+              </button>
+
+              <button
+                className="btn-secondary mobile-touch-target"
+                onClick={() => {
+                  setShowShortcutsModal(true);
+                  setIsMobileDrawerOpen(false);
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.6rem 1rem', minHeight: '44px' }}
+              >
+                <Keyboard size={16} aria-hidden="true" />
+                <span style={{ fontSize: '0.85rem' }}>{t('shortcuts.buttonTitle')}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <KeyboardShortcutsModal
         isOpen={showShortcutsModal}

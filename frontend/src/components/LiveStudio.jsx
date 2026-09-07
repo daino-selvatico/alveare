@@ -24,6 +24,9 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   // Voice preset selection
   const [selectedVoice, setSelectedVoice] = useState('valeria');
 
+  // Mobile collapsible telemetry HUD
+  const [showLatencyHud, setShowLatencyHud] = useState(true);
+
   // Audio & WebSocket refs
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -157,12 +160,12 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            llm_model: 'gemma3',
-            llm_device: 'gpu',
-            stt_model: 'openai/whisper-base',
-            stt_device: 'npu',
-            tts_model: 'Audio8/Audio8-TTS-Preview-0.1b',
-            tts_device: 'cpu',
+            llm_model: llmSlot.model || 'gemma4',
+            llm_device: llmSlot.device || 'gpu',
+            stt_model: sttSlot.model || 'openai/whisper-base',
+            stt_device: sttSlot.device || 'cpu',
+            tts_model: ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b',
+            tts_device: ttsSlot.device || 'npu',
             voice: selectedVoice
           })
         });
@@ -325,94 +328,102 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   };
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1.5rem', maxWidth: '1200px', margin: '0 auto', width: '100%', gap: '1.5rem' }}>
+    <div className="responsive-page-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', maxWidth: '1200px', margin: '0 auto', width: '100%', gap: '1.25rem', overflowX: 'hidden' }}>
       
       {/* 1. TOP TRI-HARDWARE CONCURRENT ALLOCATION BANNER */}
-      <div className="glass-card" style={{ padding: '1.25rem 1.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.3rem' }}>
+      <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+        <div style={{ flex: '1 1 300px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.3rem', flexWrap: 'wrap' }}>
             <Radio size={22} color="var(--accent-purple)" className={isLiveActive ? "pulse-icon" : ""} />
-            <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Live Voice-to-Voice Studio</h2>
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 800 }}>{t('liveStudio.title')}</h2>
             <span className="badge" style={{ background: 'rgba(168, 85, 247, 0.2)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.4)', fontWeight: 700 }}>
-              v3.0 Tri-Hardware Engine
+              {t('liveStudio.badge')}
             </span>
           </div>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-            Full-duplex real-time conversation streaming directly across AMD Radeon 890M GPU, Ryzen AI NPU, and multi-core CPU.
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', lineHeight: '1.4' }}>
+            {t('liveStudio.subtitle')}
           </p>
         </div>
 
         {/* Live Status Indicators */}
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
           {interrupted && (
             <span className="badge badge-danger" style={{ animation: 'pulse 1s infinite' }}>
-              ⚡ Barge-in Interrupted
+              {t('liveStudio.bargeIn')}
             </span>
           )}
           {isLiveActive ? (
-            <button className="btn-danger" onClick={handleStopLive} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem' }}>
-              <Square size={16} /> Stop Live Session
+            <button className="btn-danger mobile-touch-target" onClick={handleStopLive} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.4rem', minHeight: '48px', minWidth: '48px', fontSize: '0.9rem', fontWeight: 700 }}>
+              <Square size={18} /> {t('liveStudio.stopSession')}
             </button>
           ) : (
-            <button className="btn-primary" onClick={handleStartLive} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem', background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
-              <Play size={16} /> Start Live Session
+            <button className="btn-primary mobile-touch-target" onClick={handleStartLive} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.4rem', minHeight: '48px', minWidth: '48px', fontSize: '0.9rem', fontWeight: 700, background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}>
+              <Play size={18} /> {t('liveStudio.startSession')}
             </button>
           )}
         </div>
       </div>
 
       {/* 2. TRI-HARDWARE ROUTING CARDS */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
         {/* GPU: LLM Chat */}
-        <div className="glass-card" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #c084fc' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-            <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#c084fc', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-              🎮 AMD Radeon 890M GPU
+        <div className="glass-card" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #c084fc', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#c084fc', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              🎮 {t('liveStudio.gpuCardTitle')}
             </span>
-            <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>LLM Chat</span>
+            <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>{t('liveStudio.gpuCardRole')}</span>
           </div>
-          <div style={{ fontSize: '1rem', fontWeight: 800 }}>{llmSlot.model || 'Gemma-3-1B-it'}</div>
+          <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>{llmSlot.model || 'gemma4'}</div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-            Vulkan 1.4 Native • {status?.gpu_usage?.percent || 0}% GPU load • {status?.tok_per_sec || 35}+ tok/s
+            {t('liveStudio.gpuCardDesc', { load: status?.gpu_usage?.percent || 0, tps: status?.tok_per_sec || 35 })}
           </div>
         </div>
 
-        {/* NPU: Speech-to-Text */}
-        <div className="glass-card" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #34d399' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-            <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#34d399', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-              ⚡ AMD Ryzen AI NPU
+        {/* NPU: Audio8 TTS */}
+        <div className="glass-card" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #34d399', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#34d399', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              ⚡ {t('liveStudio.npuCardTitle')}
             </span>
-            <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>Whisper STT</span>
+            <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>
+              {ttsSlot.device === 'npu' ? t('liveStudio.npuCardRole') : (sttSlot.device === 'npu' ? t('liveStudio.cpuCardRole') : t('liveStudio.npuCardRole'))}
+            </span>
           </div>
-          <div style={{ fontSize: '1rem', fontWeight: 800 }}>{sttSlot.model || 'Whisper-Base'}</div>
+          <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>
+            {ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b'}
+          </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-            XDNA2 Hardware Cores • Continuous audio listening & VAD
+            {t('liveStudio.npuCardDesc')}
           </div>
         </div>
 
-        {/* CPU: Audio8 TTS */}
-        <div className="glass-card" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #60a5fa' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-            <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-              🖥️ AMD Ryzen 24-Thread CPU
+        {/* CPU: Whisper STT */}
+        <div className="glass-card" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #60a5fa', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              🖥️ {t('liveStudio.cpuCardTitle')}
             </span>
-            <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>Audio8 TTS</span>
+            <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>
+              {sttSlot.device === 'cpu' ? t('liveStudio.cpuCardRole') : (ttsSlot.device === 'cpu' ? t('liveStudio.npuCardRole') : t('liveStudio.cpuCardRole'))}
+            </span>
           </div>
-          <div style={{ fontSize: '1rem', fontWeight: 800 }}>{ttsSlot.model || 'Audio8-TTS-0.1b'}</div>
+          <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>
+            {sttSlot.model || 'openai/whisper-base'}
+          </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-            AVX2 Vectorized • Zero-shot Italian voice synthesis
+            {t('liveStudio.cpuCardDesc')}
           </div>
         </div>
       </div>
 
       {/* 3. CENTRAL LIVE INTERACTIVE CONSOLE */}
-      <div className="glass-card" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1.5rem', gap: '1.25rem', minHeight: '400px' }}>
+      <div className="glass-card" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1.25rem', gap: '1.25rem', minHeight: '380px' }}>
         
         {/* Visualizer and Mic Status Circle */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1.5rem 0', gap: '1rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1rem 0', gap: '1rem', width: '100%' }}>
           
-          <div style={{ position: 'relative', width: '120px', height: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ position: 'relative', width: '110px', height: '110px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div
               style={{
                 position: 'absolute',
@@ -431,9 +442,13 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             />
             <button
               onClick={isLiveActive ? handleStopLive : handleStartLive}
+              className="mobile-touch-target"
+              aria-label={isLiveActive ? t('liveStudio.stopSession') : t('liveStudio.startSession')}
               style={{
                 width: '80px',
                 height: '80px',
+                minWidth: '80px',
+                minHeight: '80px',
                 borderRadius: '50%',
                 border: 'none',
                 background: isLiveActive ? 'var(--gradient-brand)' : 'rgba(255,255,255,0.08)',
@@ -451,12 +466,12 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             </button>
           </div>
 
-          <div style={{ textAlign: 'center' }}>
+          <div style={{ textAlign: 'center', maxWidth: '500px', width: '100%' }}>
             <div style={{ fontWeight: 700, fontSize: '1.05rem' }}>
-              {assistantSpeaking ? '🔊 Alveare Speaking...' : userSpeaking ? '🎙️ Listening to you...' : isLiveActive ? '● Live Ready (speak anytime)' : 'Live Voice Inactive'}
+              {assistantSpeaking ? t('liveStudio.statusSpeaking') : userSpeaking ? t('liveStudio.statusListening') : isLiveActive ? t('liveStudio.statusReady') : t('liveStudio.statusInactive')}
             </div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-              {isLiveActive ? 'Speak directly or interrupt at any time — full-duplex active.' : 'Click the microphone button to start a continuous voice session.'}
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem', lineHeight: '1.4' }}>
+              {isLiveActive ? t('liveStudio.descActive') : t('liveStudio.descInactive')}
             </div>
           </div>
 
@@ -465,35 +480,60 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             ref={canvasRef}
             width={320}
             height={60}
-            style={{ width: '320px', height: '60px', borderRadius: '8px', background: 'rgba(0,0,0,0.2)' }}
+            style={{ width: '100%', maxWidth: '340px', height: '60px', borderRadius: '8px', background: 'rgba(0,0,0,0.2)', display: 'block' }}
           />
 
-          {/* Real-Time Latency Telemetry HUD */}
-          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', justifyContent: 'center', background: 'rgba(0,0,0,0.3)', padding: '0.6rem 1.25rem', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>STT Latency</div>
-              <div style={{ fontSize: '1rem', fontWeight: 800, color: '#34d399' }}>{sttLatency > 0 ? `${sttLatency} ms` : '—'}</div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Time to First Token (TTFT)</div>
-              <div style={{ fontSize: '1rem', fontWeight: 800, color: '#c084fc' }}>{ttft > 0 ? `${ttft} ms` : '—'}</div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Time to First Audio (TTFA)</div>
-              <div style={{ fontSize: '1rem', fontWeight: 800, color: '#60a5fa' }}>{ttfa > 0 ? `${ttfa} ms` : '—'}</div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>E2E Turnaround</div>
-              <div style={{ fontSize: '1rem', fontWeight: 800, color: '#f59e0b' }}>{e2eLatency > 0 ? `${e2eLatency} ms` : '—'}</div>
-            </div>
+          {/* Telemetry HUD Collapsible Toggle Button */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '0.25rem' }}>
+            <button
+              type="button"
+              onClick={() => setShowLatencyHud(prev => !prev)}
+              className="btn-secondary mobile-touch-target"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                padding: '0.45rem 1rem',
+                fontSize: '0.8rem',
+                borderRadius: '20px',
+                cursor: 'pointer',
+                minHeight: '44px'
+              }}
+              aria-expanded={showLatencyHud}
+            >
+              <Activity size={15} color="var(--accent-cyan)" />
+              <span>{showLatencyHud ? t('liveStudio.hideMetrics') : t('liveStudio.showMetrics')}</span>
+            </button>
           </div>
+
+          {/* Real-Time Latency Telemetry HUD */}
+          {showLatencyHud && (
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', justifyContent: 'center', background: 'rgba(0,0,0,0.3)', padding: '0.75rem 1.25rem', borderRadius: '12px', border: '1px solid var(--border-color)', width: '100%', maxWidth: '640px' }}>
+              <div style={{ textAlign: 'center', minWidth: '90px', flex: '1 1 90px' }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('liveStudio.sttLatency')}</div>
+                <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#34d399' }}>{sttLatency > 0 ? `${sttLatency} ms` : '—'}</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: '120px', flex: '1 1 120px' }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('liveStudio.ttft')}</div>
+                <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#c084fc' }}>{ttft > 0 ? `${ttft} ms` : '—'}</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: '120px', flex: '1 1 120px' }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('liveStudio.ttfa')}</div>
+                <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#60a5fa' }}>{ttfa > 0 ? `${ttfa} ms` : '—'}</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: '100px', flex: '1 1 100px' }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('liveStudio.e2e')}</div>
+                <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#f59e0b' }}>{e2eLatency > 0 ? `${e2eLatency} ms` : '—'}</div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 4. STREAMING CONVERSATION LOG */}
-        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '350px', paddingRight: '0.5rem' }}>
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '350px', paddingRight: '0.35rem', width: '100%' }}>
           {messages.length === 0 && !streamingAssistantText ? (
             <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem 0', fontSize: '0.9rem' }}>
-              Live speech transcripts and assistant reasoning will stream here in real time.
+              {t('liveStudio.emptyTranscript')}
             </div>
           ) : (
             messages.map(msg => (
@@ -501,13 +541,15 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
                 key={msg.id}
                 style={{
                   alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                  maxWidth: '80%',
+                  maxWidth: '85%',
                   padding: '0.75rem 1rem',
                   borderRadius: '12px',
                   background: msg.role === 'user' ? 'var(--gradient-brand)' : 'rgba(255,255,255,0.06)',
                   color: 'white',
                   border: msg.role === 'user' ? 'none' : '1px solid var(--border-color)',
-                  fontSize: '0.92rem'
+                  fontSize: '0.92rem',
+                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word'
                 }}
               >
                 <div style={{ fontSize: '0.7rem', opacity: 0.7, marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between', gap: '1rem' }}>
@@ -529,13 +571,15 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             <div
               style={{
                 alignSelf: 'flex-start',
-                maxWidth: '80%',
+                maxWidth: '85%',
                 padding: '0.75rem 1rem',
                 borderRadius: '12px',
                 background: 'rgba(255,255,255,0.06)',
                 color: 'white',
                 border: '1px solid var(--border-color)',
-                fontSize: '0.92rem'
+                fontSize: '0.92rem',
+                wordBreak: 'break-word',
+                overflowWrap: 'break-word'
               }}
             >
               <div style={{ fontSize: '0.7rem', opacity: 0.7, marginBottom: '0.25rem' }}>Alveare Live (Reasoning...)</div>

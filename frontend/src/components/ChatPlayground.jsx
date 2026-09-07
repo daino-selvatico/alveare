@@ -1390,7 +1390,7 @@ export default function ChatPlayground({
               {/* Prompt Suggestions */}
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 250px), 1fr))',
                 gap: '0.85rem',
                 width: '100%',
                 marginTop: '1rem'

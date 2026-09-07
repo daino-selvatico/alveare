@@ -8,6 +8,7 @@ build/
 # Python
 __pycache__/
 *.pyc
+*.log
 .venv/
 venv/
 *.egg-info/

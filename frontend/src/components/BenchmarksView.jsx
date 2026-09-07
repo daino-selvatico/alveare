@@ -86,7 +86,7 @@ export default function BenchmarksView({
   const isNpuActive = (activeDevice === 'npu' && isModelRunning && isLoaded && (Number(npuPercent) > 0 || npuActiveContexts > 0));
 
   return (
-    <div role="region" aria-label={t('benchmarks.title')} style={{ padding: '1.5rem 2rem', maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
+    <div role="region" aria-label={t('benchmarks.title')} className="responsive-page-container" style={{ maxWidth: '1200px', margin: '0 auto', width: '100%', overflowX: 'hidden' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
@@ -291,7 +291,7 @@ export default function BenchmarksView({
             <p style={{ margin: 0, fontSize: '0.95rem' }}>{t('benchmarks.noModels')}</p>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.25rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))', gap: '1rem' }}>
             {models.map((model) => {
               const modelId = model.id || model.alias || 'unnamed-model';
               const isActive = model.active || (activeModelId === modelId && isModelRunning);

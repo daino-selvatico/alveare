@@ -54,14 +54,14 @@ class WhisperSTT:
     _loading = False
     _external_py = None
 
-    def __init__(self, model_id: str = "openai/whisper-base", device: str = "npu"):
+    def __init__(self, model_id: str = "openai/whisper-base", device: str = "cpu"):
         self.model_id = model_id
-        self.device = device or "npu"
+        self.device = device or "cpu"
         self._external_py = None
 
     @classmethod
-    def get_instance(cls, model_id: str = "openai/whisper-base", device: str = "npu"):
-        dev = device or "npu"
+    def get_instance(cls, model_id: str = "openai/whisper-base", device: str = "cpu"):
+        dev = device or "cpu"
         if cls._instance is None or cls._instance.model_id != model_id or cls._instance.device != dev:
             if cls._instance and cls._instance._worker_proc:
                 try:

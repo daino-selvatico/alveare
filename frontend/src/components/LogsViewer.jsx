@@ -49,7 +49,7 @@ export default function LogsViewer({ apiBase }) {
   }, [logs, autoScroll]);
 
   return (
-    <div role="region" aria-label={t('logsViewer.realtimeServerLogs')} style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div role="region" aria-label={t('logsViewer.realtimeServerLogs')} className="responsive-page-container" style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.25rem', width: '100%', overflowX: 'hidden' }}>
       
       {/* NPU Health Card */}
       <div className="glass-card" style={{ padding: '1.25rem' }}>
@@ -58,7 +58,7 @@ export default function LogsViewer({ apiBase }) {
         </h3>
 
         {npu ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.85rem' }}>
             <div style={{ padding: '0.85rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('logsViewer.deviceNodeLabel')}</div>
               <div style={{ fontWeight: 600, marginTop: '0.2rem', color: npu.device_node ? '#34d399' : '#fca5a5' }}>
@@ -87,17 +87,17 @@ export default function LogsViewer({ apiBase }) {
 
       {/* Terminal Console Log View */}
       <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', flex: 1 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Terminal size={20} color="var(--accent-purple)" aria-hidden="true" /> {t('logsViewer.realtimeServerLogs')}
           </h3>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer', minHeight: '40px' }}>
               <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
               <span>{t('logsViewer.autoScroll')}</span>
             </label>
-            <button className="btn-secondary" onClick={fetchLogs} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }} aria-label={t('logsViewer.refresh')}>
+            <button className="btn-secondary mobile-touch-target" onClick={fetchLogs} style={{ padding: '0.45rem 0.85rem', fontSize: '0.85rem', minHeight: '44px', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }} aria-label={t('logsViewer.refresh')}>
               <RefreshCw size={14} aria-hidden="true" /> {t('logsViewer.refresh')}
             </button>
           </div>
