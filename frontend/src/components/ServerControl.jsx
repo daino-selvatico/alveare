@@ -3,6 +3,55 @@ import { Play, Square, RotateCw, Server, HardDrive, Settings, AlertCircle, Check
 import AddModelModal from './AddModelModal';
 import { useTranslation } from '../i18n/I18nContext';
 
+export const CANONICAL_MODEL_MAP = {
+  // STT
+  'whisper-base': 'openai/whisper-base',
+  'whisper-large-v3-turbo': 'openai/whisper-large-v3-turbo',
+  'whisper-large-v3': 'openai/whisper-large-v3',
+  // TTS
+  'audio8-0.1b': 'Audio8/Audio8-TTS-Preview-0.1b',
+  'audio8-100m': 'Audio8/Audio8-TTS-Preview-0.1b',
+  '0.1b': 'Audio8/Audio8-TTS-Preview-0.1b',
+  'audio8-0.6b': 'Audio8/Audio8-TTS-Preview-0.6b',
+  'audio8-600m': 'Audio8/Audio8-TTS-Preview-0.6b',
+  '0.6b': 'Audio8/Audio8-TTS-Preview-0.6b',
+};
+
+export const DEFAULT_MODEL_LABELS = {
+  // LLM
+  'gemma4': 'Gemma 4 12B',
+  'gemma4-e4b': 'Gemma 4 E4B',
+  'gemma3': 'Gemma 3 4B',
+  'llama': 'Llama 3.2 3B',
+  // STT
+  'openai/whisper-base': 'Whisper Base',
+  'openai/whisper-large-v3-turbo': 'Whisper Large v3 Turbo',
+  'openai/whisper-large-v3': 'Whisper Large v3',
+  // TTS
+  'Audio8/Audio8-TTS-Preview-0.1b': 'Audio8 0.1B',
+  'Audio8/Audio8-TTS-Preview-0.6b': 'Audio8 0.6B',
+};
+
+export const normalizeModelOption = (m) => {
+  const rawId = typeof m === 'string' ? m : m.id;
+  const canonicalId = CANONICAL_MODEL_MAP[rawId] || rawId;
+  const label = DEFAULT_MODEL_LABELS[canonicalId] || (typeof m === 'object' && m.name) || canonicalId;
+  return { id: canonicalId, label };
+};
+
+export const deduplicateModelOptions = (options) => {
+  const seen = new Set();
+  const result = [];
+  for (const opt of options) {
+    const norm = normalizeModelOption(opt);
+    if (!seen.has(norm.id)) {
+      seen.add(norm.id);
+      result.push(norm);
+    }
+  }
+  return result;
+};
+
 export default function ServerControl({ apiBase, status, models = [], modelsLoading = false, onRefresh }) {
   const { t } = useTranslation();
   const [loadingSlot, setLoadingSlot] = useState({}); // { llm: boolean, stt: boolean, tts: boolean, all: boolean }
@@ -14,9 +63,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
   // Slot Model & Device selections
   const [slotModels, setSlotModels] = useState({
-    llm: llmSlot.model || 'gemma4',
-    stt: sttSlot.model || 'openai/whisper-base',
-    tts: ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b'
+    llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model || 'gemma4',
+    stt: CANONICAL_MODEL_MAP[sttSlot.model] || sttSlot.model || 'openai/whisper-base',
+    tts: CANONICAL_MODEL_MAP[ttsSlot.model] || ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b'
   });
 
   const [slotDevices, setSlotDevices] = useState({
@@ -27,9 +76,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
   // Keep state in sync with status when it arrives
   useEffect(() => {
-    if (llmSlot.model) setSlotModels(prev => ({ ...prev, llm: llmSlot.model }));
-    if (sttSlot.model) setSlotModels(prev => ({ ...prev, stt: sttSlot.model }));
-    if (ttsSlot.model) setSlotModels(prev => ({ ...prev, tts: ttsSlot.model }));
+    if (llmSlot.model) setSlotModels(prev => ({ ...prev, llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model }));
+    if (sttSlot.model) setSlotModels(prev => ({ ...prev, stt: CANONICAL_MODEL_MAP[sttSlot.model] || sttSlot.model }));
+    if (ttsSlot.model) setSlotModels(prev => ({ ...prev, tts: CANONICAL_MODEL_MAP[ttsSlot.model] || ttsSlot.model }));
 
     if (llmSlot.device) setSlotDevices(prev => ({ ...prev, llm: llmSlot.device }));
     if (sttSlot.device) setSlotDevices(prev => ({ ...prev, stt: sttSlot.device }));
@@ -67,20 +116,20 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   }, [status?.model, fetchKernelStatus]);
 
   // Available model options for each slot
-  const llmModelOptions = [
-    ...models.filter(m => m.task === 'text-generation').map(m => m.id),
+  const llmModelOptions = deduplicateModelOptions([
+    ...models.filter(m => m.task === 'text-generation'),
     'gemma4', 'gemma4-e4b', 'gemma3', 'llama'
-  ].filter((v, i, a) => a.indexOf(v) === i);
+  ]);
 
-  const sttModelOptions = [
-    ...models.filter(m => m.task === 'speech-to-text').map(m => m.id),
-    'openai/whisper-base', 'whisper-large-v3-turbo', 'whisper-base'
-  ].filter((v, i, a) => a.indexOf(v) === i);
+  const sttModelOptions = deduplicateModelOptions([
+    ...models.filter(m => m.task === 'speech-to-text'),
+    'openai/whisper-base', 'openai/whisper-large-v3-turbo'
+  ]);
 
-  const ttsModelOptions = [
-    ...models.filter(m => m.task === 'text-to-speech').map(m => m.id),
-    'Audio8/Audio8-TTS-Preview-0.1b', 'audio8-0.6b', 'audio8-0.1b'
-  ].filter((v, i, a) => a.indexOf(v) === i);
+  const ttsModelOptions = deduplicateModelOptions([
+    ...models.filter(m => m.task === 'text-to-speech'),
+    'Audio8/Audio8-TTS-Preview-0.1b', 'Audio8/Audio8-TTS-Preview-0.6b'
+  ]);
 
   // Slot start & stop handlers
   const handleStartSlot = async (slotId) => {
@@ -344,8 +393,8 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 fontFamily: 'var(--font-mono)'
               }}
             >
-              {llmModelOptions.map(m => (
-                <option key={m} value={m} style={{ background: '#131b2e' }}>{m}</option>
+              {llmModelOptions.map(opt => (
+                <option key={opt.id} value={opt.id} style={{ background: '#131b2e' }}>{opt.label}</option>
               ))}
             </select>
           </div>
@@ -482,8 +531,8 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 fontFamily: 'var(--font-mono)'
               }}
             >
-              {sttModelOptions.map(m => (
-                <option key={m} value={m} style={{ background: '#131b2e' }}>{m}</option>
+              {sttModelOptions.map(opt => (
+                <option key={opt.id} value={opt.id} style={{ background: '#131b2e' }}>{opt.label}</option>
               ))}
             </select>
           </div>
@@ -617,8 +666,8 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                 fontFamily: 'var(--font-mono)'
               }}
             >
-              {ttsModelOptions.map(m => (
-                <option key={m} value={m} style={{ background: '#131b2e' }}>{m}</option>
+              {ttsModelOptions.map(opt => (
+                <option key={opt.id} value={opt.id} style={{ background: '#131b2e' }}>{opt.label}</option>
               ))}
             </select>
           </div>
@@ -785,9 +834,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '1.25rem' }}>
             {models.map(m => {
-              const isLlmServed = llmSlot.status === 'running' && llmSlot.model === m.id;
-              const isSttServed = sttSlot.status === 'running' && sttSlot.model === m.id;
-              const isTtsServed = ttsSlot.status === 'running' && ttsSlot.model === m.id;
+              const isLlmServed = llmSlot.status === 'running' && (llmSlot.model === m.id || CANONICAL_MODEL_MAP[llmSlot.model] === m.id || llmSlot.model === CANONICAL_MODEL_MAP[m.id]);
+              const isSttServed = sttSlot.status === 'running' && (sttSlot.model === m.id || CANONICAL_MODEL_MAP[sttSlot.model] === m.id || sttSlot.model === CANONICAL_MODEL_MAP[m.id]);
+              const isTtsServed = ttsSlot.status === 'running' && (ttsSlot.model === m.id || CANONICAL_MODEL_MAP[ttsSlot.model] === m.id || ttsSlot.model === CANONICAL_MODEL_MAP[m.id]);
               const isServed = isLlmServed || isSttServed || isTtsServed;
 
               const mKernel = kernelStatus?.[m.id] || (kernelStatus?.manifest_model_type === m.arch ? kernelStatus : null);

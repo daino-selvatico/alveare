@@ -19,22 +19,18 @@ import numpy as np
 
 def find_torch_python() -> Optional[str]:
     """Find a Python interpreter that has torch installed."""
-    # 1. Check current interpreter
-    try:
-        import torch
-        return sys.executable
-    except Exception:
-        pass
-
-    # 2. Check known conda envs
     clean_env = os.environ.copy()
     clean_env.pop("PYTHONPATH", None)
 
     candidates = [
-        Path(os.path.expanduser("~/miniconda3/envs/gemma4-ref/bin/python")),
         Path(os.path.expanduser("~/miniconda3/envs/comfyui/bin/python")),
+        Path(os.path.expanduser("~/miniconda3/envs/gemma4-ref/bin/python")),
+        Path(os.path.expanduser("~/progetti/voice-studio/.venv/bin/python")),
+        Path(os.path.expanduser("~/miniconda3/envs/alveare-aie/bin/python")),
+        Path(os.path.expanduser("~/anaconda3/envs/comfyui/bin/python")),
         Path(os.path.expanduser("~/anaconda3/envs/gemma4-ref/bin/python")),
-        Path("/opt/conda/envs/gemma4-ref/bin/python")
+        Path("/opt/conda/envs/comfyui/bin/python"),
+        Path("/opt/conda/envs/gemma4-ref/bin/python"),
     ]
     for cand in candidates:
         if cand.exists():
@@ -44,6 +40,15 @@ def find_torch_python() -> Optional[str]:
                     return str(cand)
             except Exception:
                 pass
+
+    # Robust fallback: check sys.executable
+    try:
+        res = subprocess.run([sys.executable, "-c", "import torch; print('ok')"], capture_output=True, text=True, timeout=5, env=clean_env)
+        if res.returncode == 0 and "ok" in res.stdout:
+            return sys.executable
+    except Exception:
+        pass
+
     return None
 
 class WhisperSTT:
@@ -82,7 +87,12 @@ class WhisperSTT:
         self._loading = True
         try:
             print(f"[WhisperSTT] Initializing {self.model_id} on {self.device}...")
-            ext_py = find_torch_python() or sys.executable
+            ext_py = find_torch_python()
+            if not ext_py:
+                raise RuntimeError(
+                    "Python environment with PyTorch not found for STT worker. "
+                    "Please ensure ~/miniconda3/envs/comfyui or ~/miniconda3/envs/gemma4-ref is available with torch installed."
+                )
             self._external_py = ext_py
             worker_script = str(Path(__file__).resolve().parent / "stt_worker.py")
             clean_env = os.environ.copy()

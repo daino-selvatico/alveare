@@ -8,6 +8,8 @@ export default function LogsViewer({ apiBase }) {
   const [npu, setNpu] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const logEndRef = useRef(null);
+  const logContainerRef = useRef(null);
+  const scrollPosRef = useRef(null);
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -43,9 +45,16 @@ export default function LogsViewer({ apiBase }) {
   }, [fetchLogs, fetchNpu]);
 
   useEffect(() => {
-    if (autoScroll) {
-      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!autoScroll) {
+      if (logContainerRef.current && scrollPosRef.current !== null) {
+        logContainerRef.current.scrollTop = scrollPosRef.current;
+      }
+      return;
     }
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, autoScroll]);
 
   return (
@@ -94,7 +103,17 @@ export default function LogsViewer({ apiBase }) {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer', minHeight: '40px' }}>
-              <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={autoScroll}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setAutoScroll(checked);
+                  if (!checked && logContainerRef.current) {
+                    scrollPosRef.current = logContainerRef.current.scrollTop;
+                  }
+                }}
+              />
               <span>{t('logsViewer.autoScroll')}</span>
             </label>
             <button className="btn-secondary mobile-touch-target" onClick={fetchLogs} style={{ padding: '0.45rem 0.85rem', fontSize: '0.85rem', minHeight: '44px', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }} aria-label={t('logsViewer.refresh')}>
@@ -104,9 +123,15 @@ export default function LogsViewer({ apiBase }) {
         </div>
 
         <div
+          ref={logContainerRef}
           role="log"
           aria-live="polite"
           aria-label={t('logsViewer.realtimeServerLogs')}
+          onScroll={(e) => {
+            if (!autoScroll) {
+              scrollPosRef.current = e.currentTarget.scrollTop;
+            }
+          }}
           style={{
             background: '#090d16',
             borderRadius: '8px',

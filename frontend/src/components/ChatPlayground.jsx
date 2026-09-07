@@ -273,7 +273,10 @@ export default function ChatPlayground({
     }
   }, [status, isGenerating]);
 
+  const [autoScroll, setAutoScroll] = useState(true);
   const messagesEndRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  const scrollPosRef = useRef(null);
   const abortControllerRef = useRef(null);
 
   // Global app keyboard shortcuts: Esc, Ctrl+K, Ctrl+/, ?
@@ -347,9 +350,24 @@ export default function ChatPlayground({
   }, [t]);
 
 
+  const scrollToBottom = (force = false) => {
+    if (force || autoScroll) {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
   useEffect(() => {
+    if (!autoScroll) {
+      if (chatContainerRef.current && scrollPosRef.current !== null) {
+        chatContainerRef.current.scrollTop = scrollPosRef.current;
+      }
+      return;
+    }
     scrollToBottom();
-  }, [messages, isGenerating]);
+  }, [messages, isGenerating, autoScroll]);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -360,10 +378,6 @@ export default function ChatPlayground({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
 
   const toggleThinking = (idx) => {
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
@@ -910,6 +924,8 @@ export default function ChatPlayground({
     if ((!messageText || !messageText.trim()) && attachments.length === 0) return;
     if (!isServerRunning) return;
 
+    setAutoScroll(true);
+    scrollPosRef.current = null;
     setGenerationError(null);
     setLastUserPrompt(messageText);
 
@@ -1348,6 +1364,18 @@ export default function ChatPlayground({
 
         {/* Message Stream or Empty Welcome Screen */}
         <div
+          ref={chatContainerRef}
+          onScroll={(e) => {
+            const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+            const isNearBottom = scrollHeight - scrollTop - clientHeight < 60;
+            if (isNearBottom) {
+              setAutoScroll(true);
+              scrollPosRef.current = null;
+            } else {
+              setAutoScroll(false);
+              scrollPosRef.current = scrollTop;
+            }
+          }}
           style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}
           role="log"
           aria-live="polite"
