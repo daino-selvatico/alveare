@@ -16,6 +16,7 @@ import time
 import json
 import uuid
 import re
+import base64
 import asyncio
 import numpy as np
 from pathlib import Path
@@ -63,6 +64,7 @@ class LiveSession:
         stt_model: str = "openai/whisper-base",
         tts_model: str = "Audio8/Audio8-TTS-Preview-0.1b",
         voice: str = "valeria",
+        language: str = "it",
         system_prompt: Optional[str] = None
     ):
         self.session_id = session_id
@@ -75,13 +77,15 @@ class LiveSession:
         self.stt_model = stt_model
         self.tts_model = tts_model
         self.voice = voice
+        self.language = language or "it"
 
         # VAD Parameters
         self.sample_rate = 16000
         self.bytes_per_sample = 2  # 16-bit mono PCM
-        self.speech_energy_threshold = 0.012  # RMS threshold
+        self.speech_energy_threshold = 0.015  # Base RMS threshold
+        self.noise_floor = 0.005  # Adaptive ambient noise floor estimate
         self.min_speech_duration_s = 0.25
-        self.min_silence_duration_s = 0.45
+        self.min_silence_duration_s = 0.35  # Reduced from 0.45s for snappier turn-taking
         self.max_turn_duration_s = 15.0
 
         # State
@@ -135,7 +139,12 @@ class LiveSession:
         rms = float(np.sqrt(np.mean(samples ** 2)))
         chunk_duration_s = len(samples) / self.sample_rate
 
-        is_voice = rms > self.speech_energy_threshold
+        # Adaptive threshold calibration based on background ambient noise
+        if not self.in_speech:
+            self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
+
+        effective_threshold = max(self.speech_energy_threshold, self.noise_floor * 2.2)
+        is_voice = rms > effective_threshold
 
         # --- BARGE-IN INTERRUPTION HANDLING ---
         if is_voice and self.is_ai_speaking:
@@ -229,6 +238,14 @@ class LiveSession:
         # Build WAV in memory for STT
         try:
             samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            if len(samples) < int(self.sample_rate * self.min_speech_duration_s):
+                return
+            rms = float(np.sqrt(np.mean(samples ** 2)))
+            peak = float(np.max(np.abs(samples))) if len(samples) > 0 else 0.0
+            # Filter audio too silent or background noise/tap
+            if rms < self.speech_energy_threshold * 0.7 or peak < 0.03:
+                return
+
             wav_io = io.BytesIO()
             sf.write(wav_io, samples, self.sample_rate, format="WAV", subtype="PCM_16")
             wav_bytes = wav_io.getvalue()
@@ -241,7 +258,7 @@ class LiveSession:
         if not self.stt:
             self.initialize_workers()
 
-        stt_res = await asyncio.to_thread(self.stt.transcribe, wav_bytes)
+        stt_res = await asyncio.to_thread(self.stt.transcribe, wav_bytes, language=self.language)
         metrics.stt_latency_ms = (time.perf_counter() - metrics.stt_start) * 1000.0
 
         if turn_id != self.turn_id:
@@ -250,8 +267,16 @@ class LiveSession:
         user_text = stt_res.get("text", "").strip()
 
         # Filter hallucinations or empty silence
-        cleaned = re.sub(r'\[.*?\]', '', user_text).strip()
+        cleaned = re.sub(r'\[.*?\]|\(.*?\)', '', user_text).strip()
+        noise_phrases = {
+            "grazie", "grazie per la visione", "grazie per l'attenzione",
+            "grazie mille", "sottotitoli", "sottotitoli creati dalla comunità",
+            "you", "thank you", "thanks for watching", "bye", "ciao",
+            "...", ".", ""
+        }
         if not cleaned or len(cleaned) < 2:
+            return
+        if cleaned.lower().strip(".!? ") in noise_phrases and rms < self.speech_energy_threshold * 1.3:
             return
 
         await self.send_event({
@@ -331,18 +356,31 @@ class LiveSession:
                         full_assistant_text += content_piece
                         sentence_buffer += content_piece
 
-                        # Check for sentence boundaries to yield audio chunks early
-                        splits = sentence_delimiters.split(sentence_buffer)
-                        if len(splits) >= 3:
-                            # At least one complete sentence + remaining buffer
-                            ready_sentence = (splits[0] + splits[1]).strip()
-                            sentence_buffer = "".join(splits[2:])
+                        # Clause & Sentence Streaming Pipelining:
+                        # In addition to full stops, allow early splitting on commas/colons if accumulated buffer >= 6-8 words
+                        sent_match = re.search(r'[.!?;\n…]+\s*', sentence_buffer)
+                        clause_match = None
 
-                            if ready_sentence and len(ready_sentence) > 3:
-                                sentence_index += 1
-                                await self._synthesize_and_stream_chunk(
-                                    ready_sentence, sentence_index, turn_id, metrics, turn_start
-                                )
+                        if not sent_match or sent_match.start() > 0:
+                            for m in re.finditer(r'[,:]+\s*', sentence_buffer):
+                                cand = sentence_buffer[:m.end()].strip()
+                                if len(cand.split()) >= 6:
+                                    clause_match = m
+                                    break
+
+                        ready_sentence = ""
+                        if sent_match and (not clause_match or sent_match.end() <= clause_match.end()):
+                            ready_sentence = sentence_buffer[:sent_match.end()].strip()
+                            sentence_buffer = sentence_buffer[sent_match.end():]
+                        elif clause_match:
+                            ready_sentence = sentence_buffer[:clause_match.end()].strip()
+                            sentence_buffer = sentence_buffer[clause_match.end():]
+
+                        if ready_sentence and len(ready_sentence) > 3:
+                            sentence_index += 1
+                            await self._synthesize_and_stream_chunk(
+                                ready_sentence, sentence_index, turn_id, metrics, turn_start
+                            )
 
                     # End of LLM stream: flush remaining buffer
                     if turn_id == self.turn_id and sentence_buffer.strip():

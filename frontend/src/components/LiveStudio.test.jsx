@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import LiveStudio from './LiveStudio';
+import LiveStudio, { downsampleTo16k, base64ToArrayBuffer, decodeAudioBuffer } from './LiveStudio';
 import { I18nProvider } from '../i18n/I18nContext';
 
 describe('LiveStudio Component', () => {
@@ -135,5 +135,81 @@ describe('LiveStudio Component', () => {
       window.fetch = origFetch;
       navigator.mediaDevices = origMediaDevices;
     }
+  });
+
+  describe('Audio Resampling & Buffer Helpers', () => {
+    it('passes through 16kHz PCM data without resampling', () => {
+      const input = new Float32Array([0.0, 0.5, -0.5, 1.0, -1.0]);
+      const resampled = downsampleTo16k(input, 16000);
+      expect(resampled.length).toBe(5);
+      expect(resampled[0]).toBe(0);
+      expect(resampled[1]).toBe(Math.round(0.5 * 32767));
+      expect(resampled[2]).toBe(-16384);
+      expect(resampled[3]).toBe(32767);
+      expect(resampled[4]).toBe(-32768);
+    });
+
+    it('downsamples 48kHz audio to 16000Hz (3x reduction) on mobile phone input', () => {
+      // 48000Hz buffer of 480 samples -> should produce exactly 160 samples at 16kHz
+      const input = new Float32Array(480);
+      for (let i = 0; i < input.length; i++) {
+        input[i] = 0.5;
+      }
+      const resampled = downsampleTo16k(input, 48000);
+      expect(resampled.length).toBe(160);
+      expect(resampled[0]).toBe(Math.round(0.5 * 32767));
+      expect(resampled[159]).toBe(Math.round(0.5 * 32767));
+    });
+
+    it('downsamples 44.1kHz audio to 16000Hz accurately', () => {
+      // 441 samples at 44.1kHz = 10ms -> 160 samples at 16kHz
+      const input = new Float32Array(441);
+      for (let i = 0; i < input.length; i++) {
+        input[i] = 0.25;
+      }
+      const resampled = downsampleTo16k(input, 44100);
+      expect(resampled.length).toBe(160);
+      expect(resampled[50]).toBe(Math.round(0.25 * 32767));
+    });
+
+    it('clamps audio samples within Int16 limits (-32768 to 32767)', () => {
+      const input = new Float32Array([1.5, -2.0, 0.0]);
+      const resampled = downsampleTo16k(input, 16000);
+      expect(resampled[0]).toBe(32767);
+      expect(resampled[1]).toBe(-32768);
+      expect(resampled[2]).toBe(0);
+    });
+
+    it('converts base64 string to ArrayBuffer correctly', () => {
+      // 'QUJD' is base64 for 'ABC' (0x41, 0x42, 0x43)
+      const buffer = base64ToArrayBuffer('QUJD');
+      expect(buffer.byteLength).toBe(3);
+      const uint8 = new Uint8Array(buffer);
+      expect(uint8[0]).toBe(0x41);
+      expect(uint8[1]).toBe(0x42);
+      expect(uint8[2]).toBe(0x43);
+    });
+
+    it('decodes audio buffer with Promise-based decodeAudioData', async () => {
+      const mockAudioBuffer = { duration: 1.5, sampleRate: 16000 };
+      const mockAudioCtx = {
+        decodeAudioData: vi.fn().mockResolvedValue(mockAudioBuffer)
+      };
+      const arrBuf = new ArrayBuffer(8);
+      const res = await decodeAudioBuffer(mockAudioCtx, arrBuf);
+      expect(res).toBe(mockAudioBuffer);
+    });
+
+    it('decodes audio buffer with callback-based decodeAudioData', async () => {
+      const mockAudioBuffer = { duration: 2.0, sampleRate: 48000 };
+      const mockAudioCtx = {
+        decodeAudioData: vi.fn((buf, success) => {
+          success(mockAudioBuffer);
+        })
+      };
+      const arrBuf = new ArrayBuffer(8);
+      const res = await decodeAudioBuffer(mockAudioCtx, arrBuf);
+      expect(res).toBe(mockAudioBuffer);
+    });
   });
 });

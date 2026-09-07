@@ -227,12 +227,14 @@ def main():
         try:
             req = json.loads(line)
             audio_target = req.get("input")
-            language = req.get("language", "auto")
+            language = req.get("language", "it")
+            if not language or language in ("auto", "unknown"):
+                language = "it"
             use_itn = req.get("use_itn", True)
             
             t0 = time.perf_counter()
             raw_text = ""
-            detected_lang = "it"
+            detected_lang = language
 
             if is_whisper:
                 import torch
@@ -244,7 +246,11 @@ def main():
                     speech = torchaudio.functional.resample(speech, sr, 16000)
                 speech_np = speech.squeeze(0).numpy()
 
-                if len(speech_np) >= 1200: # at least 75ms
+                rms = float(np.sqrt(np.mean(speech_np ** 2)))
+                peak = float(np.max(np.abs(speech_np))) if len(speech_np) > 0 else 0.0
+
+                # Filter audio that is too quiet / ambient noise floor
+                if len(speech_np) >= 1200 and rms >= 0.005 and peak >= 0.015:
                     inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
                     gen_kwargs = {
                         "max_new_tokens": 128,
@@ -274,7 +280,7 @@ def main():
                 res = model.generate(
                     input=audio_target,
                     cache={},
-                    language=language if language != "auto" else "auto",
+                    language=language if language != "auto" else "it",
                     use_itn=use_itn
                 )
                 if res and isinstance(res, list) and len(res) > 0:

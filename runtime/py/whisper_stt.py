@@ -123,7 +123,7 @@ class WhisperSTT:
     def transcribe(
         self,
         audio_input: Union[str, bytes, np.ndarray, Path],
-        language: str = "auto",
+        language: str = "it",
         use_itn: bool = True
     ) -> Dict[str, Any]:
         """

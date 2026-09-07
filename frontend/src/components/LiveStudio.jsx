@@ -6,6 +6,74 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
 
+// Convert Base64 string to ArrayBuffer for Web Audio decoding
+export function base64ToArrayBuffer(base64) {
+  const binaryString = typeof window !== 'undefined' ? window.atob(base64) : Buffer.from(base64, 'base64').toString('binary');
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+// Client-side downsampling from native mobile sample rate (e.g. 44.1kHz or 48kHz) to 16000Hz PCM16
+export function downsampleTo16k(inputData, inputSampleRate) {
+  if (!inputSampleRate || inputSampleRate === 16000) {
+    const pcm16 = new Int16Array(inputData.length);
+    for (let i = 0; i < inputData.length; i++) {
+      const s = Math.max(-1, Math.min(1, inputData[i]));
+      pcm16[i] = Math.round(s < 0 ? s * 0x8000 : s * 0x7FFF);
+    }
+    return pcm16;
+  }
+
+  const sampleRateRatio = inputSampleRate / 16000;
+  const newLength = Math.round(inputData.length / sampleRateRatio);
+  const result = new Int16Array(newLength);
+
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < inputData.length; i++) {
+      accum += inputData[i];
+      count++;
+    }
+    const sample = count > 0 ? accum / count : inputData[Math.min(offsetBuffer, inputData.length - 1)];
+    const s = Math.max(-1, Math.min(1, sample));
+    result[offsetResult] = Math.round(s < 0 ? s * 0x8000 : s * 0x7FFF);
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+
+  return result;
+}
+
+// Robust Web Audio decode helper supporting both Promises and callback signatures
+export function decodeAudioBuffer(audioCtx, arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    const onOk = (buf) => {
+      if (!resolved) { resolved = true; resolve(buf); }
+    };
+    const onErr = (err) => {
+      if (!resolved) { resolved = true; reject(err); }
+    };
+    try {
+      const res = audioCtx.decodeAudioData(arrayBuffer, onOk, onErr);
+      if (res && typeof res.then === 'function') {
+        res.then(onOk, onErr);
+      }
+    } catch (e) {
+      onErr(e);
+    }
+  });
+}
+
 export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   const { t } = useTranslation();
 
@@ -63,6 +131,7 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   // Audio & WebSocket refs
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
+  const currentSourceRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const audioQueueRef = useRef([]);
   const isPlayingAudioRef = useRef(false);
@@ -147,35 +216,78 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
     };
   }, [isLiveActive, userSpeaking, assistantSpeaking]);
 
-  // Audio chunk playback queue handler
-  const playNextAudioChunk = () => {
+  // Audio chunk playback queue handler using Web Audio API (mobile autoplay safe)
+  const playNextAudioChunk = async () => {
     if (audioQueueRef.current.length === 0) {
       isPlayingAudioRef.current = false;
+      currentSourceRef.current = null;
       setAssistantSpeaking(false);
+      return;
+    }
+
+    const audioCtx = audioContextRef.current;
+    const audioB64 = audioQueueRef.current.shift();
+    if (!audioB64) {
+      playNextAudioChunk();
       return;
     }
 
     isPlayingAudioRef.current = true;
     setAssistantSpeaking(true);
-    const audioB64 = audioQueueRef.current.shift();
 
-    try {
-      const audio = new Audio(`data:audio/wav;base64,${audioB64}`);
-      audio.onended = () => {
+    if (audioCtx && typeof audioCtx.decodeAudioData === 'function') {
+      try {
+        if (audioCtx.state === 'suspended') {
+          await audioCtx.resume().catch(() => {});
+        }
+
+        const arrayBuffer = base64ToArrayBuffer(audioB64);
+        const audioBuffer = await decodeAudioBuffer(audioCtx, arrayBuffer);
+
+        // If stopped/interrupted while decoding, cancel playback
+        if (!isPlayingAudioRef.current) {
+          return;
+        }
+
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+        currentSourceRef.current = source;
+
+        source.onended = () => {
+          if (currentSourceRef.current === source) {
+            currentSourceRef.current = null;
+            playNextAudioChunk();
+          }
+        };
+
+        source.start(0);
+      } catch (err) {
+        console.warn('Web Audio decode/playback failed, trying next chunk:', err);
+        currentSourceRef.current = null;
         playNextAudioChunk();
-      };
-      audio.onerror = () => {
+      }
+    } else {
+      // Fallback for environments where Web Audio AudioContext is unavailable
+      try {
+        const audio = new Audio(`data:audio/wav;base64,${audioB64}`);
+        audio.onended = () => playNextAudioChunk();
+        audio.onerror = () => playNextAudioChunk();
+        audio.play().catch(() => playNextAudioChunk());
+      } catch {
         playNextAudioChunk();
-      };
-      audio.play().catch(() => {
-        playNextAudioChunk();
-      });
-    } catch {
-      playNextAudioChunk();
+      }
     }
   };
 
   const stopAllPlayback = () => {
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.stop();
+        currentSourceRef.current.disconnect();
+      } catch {}
+      currentSourceRef.current = null;
+    }
     audioQueueRef.current = [];
     isPlayingAudioRef.current = false;
     setAssistantSpeaking(false);
@@ -187,6 +299,17 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
       setMicError(null);
       setConnectionStatus('connecting');
       setInterrupted(false);
+
+      // Unlock Web Audio AudioContext synchronously inside user click gesture (bypasses mobile autoplay blocks)
+      const AudioContextClass = typeof window !== 'undefined' ? (window.AudioContext || window.webkitAudioContext) : null;
+      if (AudioContextClass) {
+        if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+          audioContextRef.current = new AudioContextClass();
+        }
+        if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume().catch(() => {});
+        }
+      }
 
       // 1. Trigger live backend pipeline initialization if not already running
       try {
@@ -238,25 +361,34 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
 
           const AudioContextClass = window.AudioContext || window.webkitAudioContext;
           if (AudioContextClass) {
-            const audioCtx = new AudioContextClass({ sampleRate: 16000 });
-            audioContextRef.current = audioCtx;
+            let audioCtx = audioContextRef.current;
+            if (!audioCtx || audioCtx.state === 'closed') {
+              audioCtx = new AudioContextClass();
+              audioContextRef.current = audioCtx;
+            }
+            if (audioCtx.state === 'suspended') {
+              await audioCtx.resume().catch(() => {});
+            }
             const source = audioCtx.createMediaStreamSource(stream);
 
-            // ScriptProcessor node to capture raw 16kHz PCM
+            // ScriptProcessor node to capture raw PCM and resample to 16kHz
             const processor = audioCtx.createScriptProcessor(2048, 1, 1);
             source.connect(processor);
             processor.connect(audioCtx.destination);
 
             processor.onaudioprocess = (e) => {
               if (ws.readyState !== WebSocket.OPEN) return;
-              const inputData = e.inputBuffer.getChannelData(0);
-
-              // Convert float32 to 16-bit PCM
-              const pcm16 = new Int16Array(inputData.length);
-              for (let i = 0; i < inputData.length; i++) {
-                const s = Math.max(-1, Math.min(1, inputData[i]));
-                pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+              // Mute output buffer to prevent mic feedback into speaker
+              if (e.outputBuffer && typeof e.outputBuffer.getChannelData === 'function') {
+                const outputData = e.outputBuffer.getChannelData(0);
+                outputData.fill(0);
               }
+
+              const inputData = e.inputBuffer.getChannelData(0);
+              const actualSampleRate = audioCtx.sampleRate || e.inputBuffer.sampleRate || 16000;
+
+              // Downsample from native phone rate (44.1k/48k) to 16000Hz before sending to WebSocket
+              const pcm16 = downsampleTo16k(inputData, actualSampleRate);
 
               ws.send(pcm16.buffer);
             };
