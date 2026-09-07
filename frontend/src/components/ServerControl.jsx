@@ -21,7 +21,7 @@ export const DEFAULT_MODEL_LABELS = {
   // LLM
   'gemma4': 'Gemma 4 12B',
   'gemma4-e4b': 'Gemma 4 E4B',
-  'gemma3': 'Gemma 3 4B',
+  'gemma3': 'Gemma 3 1B',
   'llama': 'Llama 3.2 3B',
   // STT
   'openai/whisper-base': 'Whisper Base',
@@ -63,7 +63,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
   // Slot Model & Device selections
   const [slotModels, setSlotModels] = useState({
-    llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model || 'gemma4',
+    llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model || 'gemma3',
     stt: CANONICAL_MODEL_MAP[sttSlot.model] || sttSlot.model || 'openai/whisper-base',
     tts: CANONICAL_MODEL_MAP[ttsSlot.model] || ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b'
   });
@@ -118,7 +118,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   // Available model options for each slot
   const llmModelOptions = deduplicateModelOptions([
     ...models.filter(m => m.task === 'text-generation'),
-    'gemma4', 'gemma4-e4b', 'gemma3', 'llama'
+    'gemma3', 'gemma4-e4b', 'gemma4', 'llama'
   ]);
 
   const sttModelOptions = deduplicateModelOptions([
@@ -180,7 +180,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          llm_model: slotModels.llm || 'gemma4',
+          llm_model: slotModels.llm || 'gemma3',
           llm_device: slotDevices.llm || 'gpu',
           stt_model: slotModels.stt || 'openai/whisper-base',
           stt_device: slotDevices.stt || 'cpu',

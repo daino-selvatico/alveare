@@ -234,6 +234,10 @@
   "liveStudio": {
     "title": "Live Voice-to-Voice Studio",
     "badge": "v3.0 Tri-Hardware Engine",
+    "ultraFastBadge": "Ultra-Fast Live (Gemma 3 1B)",
+    "ultraFastRecommendation": "Consigliato per la voce: usa modelli compatti 1B o E4B (Gemma 3 1B o Gemma 4 E4B) su GPU con Whisper Base per una latenza voce-voce sub-secondo (<500ms TTFA) senza ritardi di thinking.",
+    "ultraFastToggleOn": "Modalità Ultra-Fast (Gemma 3 1B)",
+    "ultraFastToggleOff": "Modalità Standard",
     "subtitle": "Conversazione vocale full-duplex in streaming diretto su GPU AMD Radeon 890M, NPU Ryzen AI e CPU multi-core.",
     "startSession": "Start Live Session",
     "stopSession": "Stop Live Session",

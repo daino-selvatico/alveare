@@ -2132,7 +2132,7 @@ class SlotControlRequest(BaseModel):
     port: Optional[int] = None
 
 class LiveStartRequest(BaseModel):
-    llm_model: Optional[str] = "gemma4"
+    llm_model: Optional[str] = "gemma3"
     llm_device: Optional[str] = "gpu"
     stt_model: Optional[str] = "openai/whisper-base"
     stt_device: Optional[str] = "cpu"
@@ -2189,7 +2189,7 @@ async def control_slot_stop(req: SlotControlRequest):
 
 @app.post("/api/live/start")
 async def api_live_start(req: LiveStartRequest):
-    llm_model = req.llm_model or "gemma4"
+    llm_model = req.llm_model or "gemma3"
     llm_device = req.llm_device or "gpu"
     start_llm_slot(model=llm_model, host="127.0.0.1", port=8000, device=llm_device)
 
@@ -2238,7 +2238,7 @@ async def websocket_live_endpoint(websocket: WebSocket):
         send_event_fn=send_event,
         llm_host=llm_slot.host,
         llm_port=llm_slot.port,
-        llm_model=llm_slot.model or "gemma4",
+        llm_model=llm_slot.model or "gemma3",
         stt_device=stt_slot.device or "cpu",
         tts_device=tts_slot.device or "npu",
         stt_model=stt_slot.model or "openai/whisper-base",

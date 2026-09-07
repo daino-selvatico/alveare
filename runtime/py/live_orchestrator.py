@@ -48,6 +48,73 @@ class LiveTurnMetrics:
             "e2e_latency_ms": round(self.e2e_latency_ms, 1),
         }
 
+class StreamingThoughtFilter:
+    """
+    Real-time streaming filter that detects and removes reasoning/thought blocks
+    such as <thought>...</thought>, <think>...</think>, and channel tokens
+    before tokens reach UI or TTS.
+    """
+    def __init__(self):
+        self.in_thought = False
+        self.tag_buffer = ""
+        self.open_tag_pattern = re.compile(
+            r'<thought\b[^>]*>|<think\b[^>]*>|<\|thought\|>|<\|channel\|>thought|<\|channel>thought',
+            re.IGNORECASE
+        )
+        self.close_tag_pattern = re.compile(
+            r'</thought>|</think>|<\|/thought\|>|<channel\|>|<\|channel\|>',
+            re.IGNORECASE
+        )
+
+    def filter(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+
+        text = self.tag_buffer + chunk
+        self.tag_buffer = ""
+        out = []
+
+        while text:
+            if self.in_thought:
+                m_close = self.close_tag_pattern.search(text)
+                if m_close:
+                    self.in_thought = False
+                    text = text[m_close.end():]
+                else:
+                    partial = re.search(r'</?[a-zA-Z0-9_|]*$', text)
+                    if partial and len(partial.group(0)) < 15:
+                        self.tag_buffer = partial.group(0)
+                        text = text[:partial.start()]
+                    break
+            else:
+                m_open = self.open_tag_pattern.search(text)
+                if m_open:
+                    out.append(text[:m_open.start()])
+                    self.in_thought = True
+                    text = text[m_open.end():]
+                else:
+                    partial = re.search(r'<[a-zA-Z0-9_|]*$', text)
+                    if partial and len(partial.group(0)) < 20:
+                        out.append(text[:partial.start()])
+                        self.tag_buffer = partial.group(0)
+                        break
+                    else:
+                        out.append(text)
+                        break
+
+        filtered = "".join(out)
+        filtered = self.open_tag_pattern.sub("", filtered)
+        filtered = self.close_tag_pattern.sub("", filtered)
+        return filtered
+
+    def flush(self) -> str:
+        if not self.in_thought and self.tag_buffer:
+            res = self.tag_buffer
+            self.tag_buffer = ""
+            return res
+        self.tag_buffer = ""
+        return ""
+
 class LiveSession:
     """
     Manages a single full-duplex live session.
@@ -58,7 +125,7 @@ class LiveSession:
         send_event_fn: Callable[[Dict[str, Any]], Awaitable[None]],
         llm_host: str = "127.0.0.1",
         llm_port: int = 8000,
-        llm_model: str = "gemma4",
+        llm_model: str = "gemma3",
         stt_device: str = "cpu",
         tts_device: str = "npu",
         stt_model: str = "openai/whisper-base",
@@ -99,9 +166,7 @@ class LiveSession:
         self.speech_start_time: float = 0.0
 
         default_prompt = (
-            "Sei Alveare Live, un assistente vocale AI conversazionale ultra-veloce ed empatico che gira su hardware AMD Ryzen AI (NPU, GPU Radeon, CPU). "
-            "Rispondi in modo diretto, conciso, naturale e colloquiale (1-3 frasi al massimo per risposta, senza elenchi puntati o markdown complicato). "
-            "Parla in italiano naturale come in una vera telefonata o conversazione a voce."
+            "Sei Alveare Live, assistente vocale ultra-rapido. Rispondi SEMPRE in modo brevissimo, diretto e conciso (massimo 1-2 frasi brevi, senza preamboli, senza elenchi). Parla in italiano naturale."
         )
         self.history: List[Dict[str, str]] = [
             {"role": "system", "content": system_prompt or default_prompt}
@@ -296,16 +361,18 @@ class LiveSession:
             "model": self.llm_model,
             "messages": self.history,
             "stream": True,
-            "max_tokens": 300,
-            "temperature": 0.7,
+            "max_tokens": 120,
+            "temperature": 0.5,
+            "enable_thinking": False,
         }
 
         full_assistant_text = ""
         sentence_buffer = ""
         sentence_index = 0
         first_token_received = False
+        thought_filter = StreamingThoughtFilter()
 
-        sentence_delimiters = re.compile(r'([.!?;\n:…]+\s*)')
+        delimiter_pattern = re.compile(r'[,;:.?!\n…]+')
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -344,6 +411,11 @@ class LiveSession:
                         if not content_piece:
                             continue
 
+                        # Filter out thought/reasoning blocks in real-time
+                        filtered_piece = thought_filter.filter(content_piece)
+                        if not filtered_piece:
+                            continue
+
                         if not first_token_received:
                             first_token_received = True
                             metrics.ttft_ms = (time.perf_counter() - metrics.llm_start) * 1000.0
@@ -353,34 +425,42 @@ class LiveSession:
                                 "turn_id": turn_id
                             })
 
-                        full_assistant_text += content_piece
-                        sentence_buffer += content_piece
+                        full_assistant_text += filtered_piece
+                        sentence_buffer += filtered_piece
 
-                        # Clause & Sentence Streaming Pipelining:
-                        # In addition to full stops, allow early splitting on commas/colons if accumulated buffer >= 6-8 words
-                        sent_match = re.search(r'[.!?;\n…]+\s*', sentence_buffer)
-                        clause_match = None
-
-                        if not sent_match or sent_match.start() > 0:
-                            for m in re.finditer(r'[,:]+\s*', sentence_buffer):
+                        # Ultra-fast aggressive clause streaming pipelining:
+                        # 1. Split on any punctuation (, ; : . ? ! \n …) as soon as >= 3 words or > 15 characters
+                        # 2. Or split if buffer exceeds 6 words even without punctuation
+                        while True:
+                            ready_sentence = ""
+                            for m in delimiter_pattern.finditer(sentence_buffer):
                                 cand = sentence_buffer[:m.end()].strip()
-                                if len(cand.split()) >= 6:
-                                    clause_match = m
+                                words = cand.split()
+                                if len(words) >= 3 or len(cand) > 15:
+                                    ready_sentence = cand
+                                    sentence_buffer = sentence_buffer[m.end():].lstrip()
                                     break
 
-                        ready_sentence = ""
-                        if sent_match and (not clause_match or sent_match.end() <= clause_match.end()):
-                            ready_sentence = sentence_buffer[:sent_match.end()].strip()
-                            sentence_buffer = sentence_buffer[sent_match.end():]
-                        elif clause_match:
-                            ready_sentence = sentence_buffer[:clause_match.end()].strip()
-                            sentence_buffer = sentence_buffer[clause_match.end():]
+                            if not ready_sentence:
+                                word_matches = list(re.finditer(r'\S+', sentence_buffer))
+                                if len(word_matches) > 6:
+                                    match_6th = word_matches[5]
+                                    ready_sentence = sentence_buffer[:match_6th.end()].strip()
+                                    sentence_buffer = sentence_buffer[match_6th.end():].lstrip()
 
-                        if ready_sentence and len(ready_sentence) > 3:
-                            sentence_index += 1
-                            await self._synthesize_and_stream_chunk(
-                                ready_sentence, sentence_index, turn_id, metrics, turn_start
-                            )
+                            if ready_sentence:
+                                sentence_index += 1
+                                await self._synthesize_and_stream_chunk(
+                                    ready_sentence, sentence_index, turn_id, metrics, turn_start
+                                )
+                            else:
+                                break
+
+                    # Flush any pending tag buffer from thought filter
+                    thought_tail = thought_filter.flush()
+                    if thought_tail:
+                        full_assistant_text += thought_tail
+                        sentence_buffer += thought_tail
 
                     # End of LLM stream: flush remaining buffer
                     if turn_id == self.turn_id and sentence_buffer.strip():

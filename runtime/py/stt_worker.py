@@ -88,7 +88,7 @@ def main():
         import torchaudio
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
         
-        torch.set_num_threads(8)
+        torch.set_num_threads(16)
         
         processor = AutoProcessor.from_pretrained(model_id)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, torch_dtype=torch.float32, low_cpu_mem_usage=True)
@@ -251,20 +251,46 @@ def main():
 
                 # Filter audio that is too quiet / ambient noise floor
                 if len(speech_np) >= 1200 and rms >= 0.005 and peak >= 0.015:
-                    inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
+                    if len(speech_np) < 480000:
+                        # Fast log-mel extraction (< 30s): calculate features only on actual frames (<200ms latency)
+                        raw_features = processor.feature_extractor(
+                            speech_np, sampling_rate=16000, padding=False, return_tensors="pt"
+                        ).input_features
+                        cur_frames = raw_features.shape[-1]
+                        if cur_frames < 3000:
+                            input_features = torch.nn.functional.pad(raw_features, (0, 3000 - cur_frames))
+                        else:
+                            input_features = raw_features[:, :, :3000]
+                    else:
+                        inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
+                        input_features = inputs.input_features
+
+                    lang = language if language and language not in ("auto", "unknown", "") else "it"
                     gen_kwargs = {
-                        "max_new_tokens": 128,
-                        "return_dict_in_generate": True,
-                        "output_scores": False,
+                        "max_new_tokens": 64,
+                        "language": lang,
+                        "task": "transcribe",
                         "do_sample": False,
-                        "num_beams": 1
+                        "num_beams": 1,
+                        "temperature": 0.0,
+                        "condition_on_previous_text": False
                     }
-                    if language and language not in ("auto", "unknown", ""):
-                        gen_kwargs["language"] = language
-                        gen_kwargs["task"] = "transcribe"
+                    model_kwargs = {
+                        "max_new_tokens": 64,
+                        "language": lang,
+                        "task": "transcribe",
+                        "do_sample": False,
+                        "num_beams": 1,
+                        "temperature": 0.0,
+                        "return_dict_in_generate": True,
+                        "output_scores": False
+                    }
 
                     with torch.no_grad():
-                        gen_out = model.generate(inputs.input_features, **gen_kwargs)
+                        try:
+                            gen_out = model.generate(input_features, condition_on_previous_text=False, **model_kwargs)
+                        except (TypeError, ValueError):
+                            gen_out = model.generate(input_features, **model_kwargs)
                     
                     # Extract detected language token if auto-detected
                     if language in ("auto", "unknown", "") and hasattr(gen_out, "sequences") and gen_out.sequences.shape[1] > 1:

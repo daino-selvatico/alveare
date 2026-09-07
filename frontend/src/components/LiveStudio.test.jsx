@@ -64,6 +64,22 @@ describe('LiveStudio Component', () => {
     expect(screen.getByText(/Start Live Session/i)).toBeTruthy();
   });
 
+  it('renders Ultra-Fast Live badge and toggle', () => {
+    render(
+      <I18nProvider>
+        <LiveStudio apiBase="http://localhost:8080" status={mockStatus} />
+      </I18nProvider>
+    );
+
+    expect(screen.getByText(/Ultra-Fast Live \(Gemma 3 1B\)/i)).toBeTruthy();
+    expect(screen.getByText(/Gemma 3 1B or Gemma 4 E4B|Gemma 3 1B o Gemma 4 E4B/i)).toBeTruthy();
+
+    const toggleBtn = screen.getByRole('button', { name: /Ultra-Fast Mode|Modalità Ultra-Fast/i });
+    expect(toggleBtn).toBeTruthy();
+    fireEvent.click(toggleBtn);
+    expect(screen.getByText(/Standard Mode|Modalità Standard/i)).toBeTruthy();
+  });
+
   it('renders insecure context warning and HTTPS button on LAN HTTP', () => {
     const originalLocation = window.location;
     const originalSecure = window.isSecureContext;

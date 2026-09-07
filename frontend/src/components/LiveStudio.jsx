@@ -125,6 +125,9 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   // Voice preset selection
   const [selectedVoice, setSelectedVoice] = useState('valeria');
 
+  // Ultra-Fast Live preset toggle (Gemma 3 1B on GPU)
+  const [ultraFastLive, setUltraFastLive] = useState(true);
+
   // Mobile collapsible telemetry HUD
   const [showLatencyHud, setShowLatencyHud] = useState(true);
 
@@ -317,7 +320,7 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            llm_model: llmSlot.model || 'gemma4',
+            llm_model: ultraFastLive ? (llmSlot.model === 'gemma4' ? 'gemma3' : (llmSlot.model || 'gemma3')) : (llmSlot.model || 'gemma3'),
             llm_device: llmSlot.device || 'gpu',
             stt_model: sttSlot.model || 'openai/whisper-base',
             stt_device: sttSlot.device || 'cpu',
@@ -727,6 +730,66 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
         </div>
       </div>
 
+      {/* ULTRA-FAST LIVE BANNER / BADGE */}
+      <div
+        className="glass-card"
+        style={{
+          padding: '0.85rem 1.25rem',
+          background: 'linear-gradient(90deg, rgba(16, 185, 129, 0.08) 0%, rgba(6, 182, 212, 0.06) 100%)',
+          border: '1px solid rgba(16, 185, 129, 0.3)',
+          borderRadius: '12px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '0.75rem'
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: '1 1 320px' }}>
+          <span
+            className="badge"
+            style={{
+              background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)',
+              color: '#032014',
+              fontWeight: 800,
+              fontSize: '0.82rem',
+              padding: '0.35rem 0.75rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.35rem'
+            }}
+          >
+            <Zap size={14} /> {t('liveStudio.ultraFastBadge')}
+          </span>
+          <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+            {t('liveStudio.ultraFastRecommendation')}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setUltraFastLive(prev => !prev)}
+          className="mobile-touch-target"
+          style={{
+            padding: '0.4rem 0.85rem',
+            borderRadius: '20px',
+            border: ultraFastLive ? '1px solid #10b981' : '1px solid var(--border-color)',
+            background: ultraFastLive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(0,0,0,0.3)',
+            color: ultraFastLive ? '#34d399' : 'var(--text-muted)',
+            fontSize: '0.78rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '0.35rem'
+          }}
+          aria-label={ultraFastLive ? t('liveStudio.ultraFastToggleOn') : t('liveStudio.ultraFastToggleOff')}
+        >
+          <Zap size={13} />
+          <span>{ultraFastLive ? t('liveStudio.ultraFastToggleOn') : t('liveStudio.ultraFastToggleOff')}</span>
+        </button>
+      </div>
+
       {/* 2. TRI-HARDWARE ROUTING CARDS */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
         {/* GPU: LLM Chat */}
@@ -737,7 +800,7 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             </span>
             <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>{t('liveStudio.gpuCardRole')}</span>
           </div>
-          <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>{llmSlot.model || 'gemma4'}</div>
+          <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>{llmSlot.model || 'gemma3'}</div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
             {t('liveStudio.gpuCardDesc', { load: status?.gpu_usage?.percent || 0, tps: status?.tok_per_sec || 35 })}
           </div>
