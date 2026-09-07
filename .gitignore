@@ -43,3 +43,8 @@ tests/bench/*.raw
 .claude
 .alveare_config.json
 scratch/
+
+# Local SSL certificates
+certs/
+*.pem
+

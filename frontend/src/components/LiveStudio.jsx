@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, Radio, Zap, Cpu, Activity, RotateCw, Play, Square, MessageSquare, AlertCircle } from 'lucide-react';
+import {
+  Mic, MicOff, Volume2, Radio, Zap, Cpu, Activity, RotateCw,
+  Play, Square, MessageSquare, AlertCircle, ShieldAlert,
+  ExternalLink, ChevronDown, ChevronUp, Copy, Check, X
+} from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
 
 export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
@@ -10,6 +14,35 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   const [assistantSpeaking, setAssistantSpeaking] = useState(false);
   const [userSpeaking, setUserSpeaking] = useState(false);
   const [interrupted, setInterrupted] = useState(false);
+
+  // Insecure context (mobile LAN HTTP) & mic error state
+  const checkIsInsecureContext = () => {
+    if (typeof window === 'undefined') return false;
+    const hostname = window.location.hostname;
+    const protocol = window.location.protocol;
+    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+    const isHttp = protocol === 'http:';
+    const hasGetUserMedia = Boolean(navigator?.mediaDevices?.getUserMedia);
+    const isSecure = window.isSecureContext ?? !isHttp;
+    return (!isSecure || !hasGetUserMedia) && isHttp && !isLocalhost;
+  };
+
+  const [isInsecureContext, setIsInsecureContext] = useState(checkIsInsecureContext);
+  const [showChromeGuide, setShowChromeGuide] = useState(false);
+  const [copiedField, setCopiedField] = useState(null);
+  const [micError, setMicError] = useState(null);
+
+  useEffect(() => {
+    setIsInsecureContext(checkIsInsecureContext());
+  }, []);
+
+  const handleCopy = (text, field) => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    }
+  };
 
   // Latency telemetry HUD
   const [sttLatency, setSttLatency] = useState(0);
@@ -151,6 +184,7 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   // Start Live Session
   const handleStartLive = async () => {
     try {
+      setMicError(null);
       setConnectionStatus('connecting');
       setInterrupted(false);
 
@@ -184,6 +218,14 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
 
         // 3. Request user microphone
         try {
+          if (!navigator?.mediaDevices?.getUserMedia) {
+            throw new Error(
+              window.isSecureContext === false
+                ? 'INSECURE_CONTEXT'
+                : 'MEDIA_DEVICES_NOT_SUPPORTED'
+            );
+          }
+
           const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
               channelCount: 1,
@@ -221,6 +263,15 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
           }
         } catch (micErr) {
           console.warn('Microphone access not available or denied:', micErr);
+          let errorMsg = t('liveStudio.micErrorGeneric', { error: micErr.message || String(micErr) });
+          if (micErr.name === 'NotAllowedError' || micErr.name === 'PermissionDeniedError') {
+            errorMsg = t('liveStudio.micErrorDenied');
+          } else if (micErr.name === 'NotFoundError' || micErr.name === 'DevicesNotFoundError') {
+            errorMsg = t('liveStudio.micErrorNotFound');
+          } else if (micErr.message === 'INSECURE_CONTEXT' || window.isSecureContext === false || !navigator?.mediaDevices?.getUserMedia) {
+            errorMsg = t('liveStudio.micErrorInsecure');
+          }
+          setMicError(errorMsg);
         }
       };
 
@@ -330,6 +381,186 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   return (
     <div className="responsive-page-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', maxWidth: '1200px', margin: '0 auto', width: '100%', gap: '1.25rem', overflowX: 'hidden' }}>
       
+      {/* INSECURE CONTEXT WARNING BANNER FOR MOBILE LAN ACCESS */}
+      {isInsecureContext && (
+        <div
+          className="glass-card"
+          role="alert"
+          style={{
+            padding: '1.25rem',
+            background: 'rgba(245, 158, 11, 0.1)',
+            border: '1px solid rgba(245, 158, 11, 0.4)',
+            borderLeft: '5px solid #f59e0b',
+            borderRadius: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.85rem'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.85rem' }}>
+            <ShieldAlert size={26} color="#f59e0b" style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ flex: 1 }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 800, color: '#f59e0b', margin: 0, marginBottom: '0.35rem' }}>
+                {t('liveStudio.insecureContextTitle')}
+              </h3>
+              <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.45' }}>
+                {t('liveStudio.insecureContextDesc')}
+              </p>
+            </div>
+          </div>
+
+          {/* Action buttons & note */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', paddingLeft: '2.5rem' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
+              <a
+                href={`https://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:8443`}
+                className="btn-primary mobile-touch-target"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  padding: '0.6rem 1.25rem',
+                  fontSize: '0.88rem',
+                  fontWeight: 700,
+                  textDecoration: 'none',
+                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                  color: 'white',
+                  borderRadius: '8px',
+                  minHeight: '44px'
+                }}
+              >
+                <ExternalLink size={16} />
+                {t('liveStudio.switchToHttps')}
+              </a>
+
+              <button
+                type="button"
+                onClick={() => setShowChromeGuide(prev => !prev)}
+                className="btn-secondary mobile-touch-target"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  padding: '0.55rem 1rem',
+                  fontSize: '0.82rem',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  minHeight: '44px'
+                }}
+              >
+                {showChromeGuide ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                {t('liveStudio.chromeFlagsToggle')}
+              </button>
+            </div>
+
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+              {t('liveStudio.httpsSelfSignedNotice')}
+            </div>
+
+            {/* Expandable Chrome Android Guide */}
+            {showChromeGuide && (
+              <div
+                style={{
+                  marginTop: '0.5rem',
+                  padding: '1rem',
+                  background: 'rgba(0, 0, 0, 0.4)',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  fontSize: '0.82rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.6rem'
+                }}
+              >
+                <div style={{ fontWeight: 700, color: '#f59e0b' }}>
+                  {t('liveStudio.chromeFlagsTitle')}
+                </div>
+
+                <div>
+                  <div>1. {t('liveStudio.chromeFlagsStep1')}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
+                    <code style={{ background: 'rgba(255,255,255,0.08)', padding: '0.25rem 0.5rem', borderRadius: '4px', color: '#67e8f9', wordBreak: 'break-all' }}>
+                      chrome://flags/#unsafely-treat-insecure-origin-as-secure
+                    </code>
+                    <button
+                      type="button"
+                      className="btn-secondary mobile-touch-target"
+                      onClick={() => handleCopy('chrome://flags/#unsafely-treat-insecure-origin-as-secure', 'flags')}
+                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', minHeight: '32px' }}
+                    >
+                      {copiedField === 'flags' ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                      <span>{copiedField === 'flags' ? t('liveStudio.copied') : t('liveStudio.copy')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div>2. {t('liveStudio.chromeFlagsStep2')}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
+                    <code style={{ background: 'rgba(255,255,255,0.08)', padding: '0.25rem 0.5rem', borderRadius: '4px', color: '#67e8f9', wordBreak: 'break-all' }}>
+                      {typeof window !== 'undefined' ? window.location.origin : 'http://192.168.132.197:8080'}
+                    </code>
+                    <button
+                      type="button"
+                      className="btn-secondary mobile-touch-target"
+                      onClick={() => handleCopy(typeof window !== 'undefined' ? window.location.origin : 'http://192.168.132.197:8080', 'origin')}
+                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', minHeight: '32px' }}
+                    >
+                      {copiedField === 'origin' ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                      <span>{copiedField === 'origin' ? t('liveStudio.copied') : t('liveStudio.copy')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  3. {t('liveStudio.chromeFlagsStep3')}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MICROPHONE ERROR ALERT BANNER */}
+      {micError && (
+        <div
+          className="glass-card"
+          role="alert"
+          style={{
+            padding: '1rem 1.25rem',
+            background: 'rgba(239, 68, 68, 0.1)',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            borderLeft: '5px solid #ef4444',
+            borderRadius: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <AlertCircle size={22} color="#ef4444" style={{ flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#ef4444' }}>
+                {t('liveStudio.micErrorTitle')}
+              </div>
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                {micError}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMicError(null)}
+            className="btn-secondary mobile-touch-target"
+            style={{ padding: '0.4rem', borderRadius: '50%', minHeight: '36px', minWidth: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            aria-label={t('liveStudio.dismiss')}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       {/* 1. TOP TRI-HARDWARE CONCURRENT ALLOCATION BANNER */}
       <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
         <div style={{ flex: '1 1 300px' }}>

@@ -104,7 +104,8 @@ COMMANDS:
     build-kernels <model> Compile the hardware NPU kernels (.xclbin) for a model.
     list  (or: models)    List installed models (quantized weight directories).
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
-    start [opts]          Start the Web UI & Control Center dashboard (port 8080).
+    start [opts]          Start the Web UI & Control Center dashboard (port 8080/8443).
+    certs                 Generate or verify self-signed SSL certs for HTTPS (certs/).
     live [opts]           Start the full-duplex Live voice-to-voice interactive session.
     chat [opts]           Minimal terminal chat against a running server.
     test                  Run the integration test suite (starts server and chat).
@@ -162,6 +163,31 @@ SERVE:
         alveare serve gemma3 --device gpu
         alveare serve gemma4 --device npu
         alveare serve g4-12b --port 9000
+
+START:
+    alveare start [--host H] [--port P] [--ssl] [--ssl-port P] [--no-browser] [--dev]
+
+    Starts the Web UI & Control Center dashboard. By default listens on HTTP
+    (port 8080). Use --ssl to enable HTTPS (port 8443) for mobile microphone access.
+
+    Options:
+        --host <addr>      Bind address (default 0.0.0.0, or $ALVEARE_CONTROL_HOST).
+        --port <port>      HTTP/HTTPS port (default 8080, or 8443 if --ssl).
+        --ssl              Enable HTTPS with SSL certificates (auto-generated if missing).
+        --ssl-port <port>  SSL port when --ssl is used (default 8443).
+        --no-browser       Do not automatically open browser.
+        --dev              Run frontend in Vite dev mode.
+
+    Examples:
+        alveare start
+        alveare start --ssl
+        alveare start --ssl --ssl-port 8443
+
+CERTS:
+    alveare certs
+
+    Generates or verifies local self-signed SSL/TLS certificates (certs/cert.pem, certs/key.pem)
+    valid for localhost, 127.0.0.1, and detected LAN IPs.
 
 LIVE:
     alveare live [--host H] [--port P]
@@ -557,21 +583,55 @@ cmd_bench() {
   exec "$PY" "$ROOT/tests/bench/run_bench.py" "$weights_dir"
 }
 
+cmd_certs() {
+  echo "Ensuring local SSL/TLS certificates for Alveare..."
+  "$PY" -c "
+from runtime.py.control_server import ensure_ssl_certs
+cert, key = ensure_ssl_certs()
+print('✓ SSL Certificates ready:')
+print(f'  Certificate: {cert}')
+print(f'  Private Key: {key}')
+"
+}
+
 cmd_start() {
-  local port="${ALVEARE_CONTROL_PORT:-8080}"
-  local host="${ALVEARE_CONTROL_HOST:-127.0.0.1}"
+  local port=""
+  local port_explicit=0
+  local host="${ALVEARE_CONTROL_HOST:-0.0.0.0}"
   local no_browser=0
   local dev=0
+  local ssl=0
+  local ssl_port="${ALVEARE_SSL_PORT:-8443}"
+  local ssl_cert="${ALVEARE_SSL_CERT:-}"
+  local ssl_key="${ALVEARE_SSL_KEY:-}"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --port) port="$2"; shift 2 ;;
+      --port) port="$2"; port_explicit=1; shift 2 ;;
       --host) host="$2"; shift 2 ;;
+      --ssl) ssl=1; shift 1 ;;
+      --ssl-port) ssl_port="$2"; ssl=1; shift 2 ;;
+      --ssl-cert) ssl_cert="$2"; ssl=1; shift 2 ;;
+      --ssl-key) ssl_key="$2"; ssl=1; shift 2 ;;
       --no-browser) no_browser=1; shift 1 ;;
       --dev) dev=1; shift 1 ;;
       *) echo "error: unknown start option '$1'" >&2; exit 2 ;;
     esac
   done
+
+  if [ "$ssl" -eq 1 ]; then
+    if [ "$port_explicit" -eq 0 ]; then
+      port="$ssl_port"
+    fi
+    local proto="https"
+    echo "[start] Ensuring SSL certificates for HTTPS mode..."
+    "$PY" -c "from runtime.py.control_server import ensure_ssl_certs; ensure_ssl_certs('${ssl_cert}', '${ssl_key}')"
+  else
+    if [ "$port_explicit" -eq 0 ]; then
+      port="${ALVEARE_CONTROL_PORT:-8080}"
+    fi
+    local proto="http"
+  fi
 
   if [ ! -d "$ROOT/frontend/dist" ] || [ "$dev" -eq 1 ]; then
     if [ ! -d "$ROOT/frontend/node_modules" ]; then
@@ -589,18 +649,45 @@ cmd_start() {
 
   echo "=========================================================="
   echo " Alveare NPU Control Center & Web UI"
-  echo " Web UI URL:  http://$host:$port"
+  local open_host="$host"
+  [ "$open_host" = "0.0.0.0" ] && open_host="localhost"
+  echo " Web UI URL:  ${proto}://$open_host:$port"
+  local lan_ip
+  lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  if [ -n "$lan_ip" ] && [ "$lan_ip" != "127.0.0.1" ]; then
+    echo " Network URL: ${proto}://$lan_ip:$port"
+  fi
+  if [ "$ssl" -eq 1 ]; then
+    echo " SSL Mode:    Enabled (Port $port)"
+    echo " Mobile Note: Open ${proto}://$lan_ip:$port on mobile"
+    echo "              and accept the self-signed certificate warning."
+  fi
   echo "=========================================================="
   echo
 
   export ALVEARE_CONTROL_HOST="$host"
   export ALVEARE_CONTROL_PORT="$port"
-
-  if [ "$no_browser" -eq 0 ] && command -v xdg-open >/dev/null 2>&1; then
-    (sleep 1 && xdg-open "http://$host:$port" >/dev/null 2>&1 &) || true
+  if [ "$ssl" -eq 1 ]; then
+    export ALVEARE_SSL="1"
+    [ -n "$ssl_cert" ] && export ALVEARE_SSL_CERT="$ssl_cert"
+    [ -n "$ssl_key" ] && export ALVEARE_SSL_KEY="$ssl_key"
+    export ALVEARE_SSL_PORT="$ssl_port"
   fi
 
-  exec "$PY" "$ROOT/runtime/py/control_server.py"
+  if [ "$no_browser" -eq 0 ] && command -v xdg-open >/dev/null 2>&1; then
+    (sleep 1 && xdg-open "${proto}://$open_host:$port" >/dev/null 2>&1 &) || true
+  fi
+
+  local server_args=("--host" "$host" "--port" "$port")
+  if [ "$ssl" -eq 1 ]; then
+    server_args+=("--ssl")
+    [ -n "$ssl_cert" ] && server_args+=("--ssl-cert" "$ssl_cert")
+    [ -n "$ssl_key" ] && server_args+=("--ssl-key" "$ssl_key")
+  else
+    server_args+=("--no-ssl")
+  fi
+
+  exec "$PY" "$ROOT/runtime/py/control_server.py" "${server_args[@]}"
 }
 
 cmd_live() {
@@ -631,7 +718,7 @@ main() {
   # alveare-aie env (see ensure_runtime_env). 'install'/'setup'/'help' must NOT —
   # install creates the env, setup diagnoses it, help needs nothing.
   case "$cmd" in
-    serve|check|build-kernels|quantize|bench|test|chat|list|models|start|setup|live)
+    serve|check|build-kernels|quantize|bench|test|chat|list|models|start|setup|live|certs)
       ensure_runtime_env "$@" ;;
   esac
   [ "$#" -gt 0 ] && shift || true
@@ -644,6 +731,7 @@ main() {
     list|models)  cmd_list "$@" ;;
     serve)        cmd_serve "$@" ;;
     start)        cmd_start "$@" ;;
+    certs)        cmd_certs "$@" ;;
     live)         cmd_live "$@" ;;
     chat)         cmd_chat "$@" ;;
     test)         cmd_test "$@" ;;

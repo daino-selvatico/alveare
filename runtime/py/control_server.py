@@ -24,11 +24,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+# Root directory of the repository
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from runtime.py.whisper_stt import WhisperSTT
 from runtime.py.live_orchestrator import LiveSession
 
-# Root directory of the repository
-ROOT_DIR = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT_DIR / ".alveare_config.json"
 
 app = FastAPI(title="Alveare Control & Web UI Backend")
@@ -2555,9 +2558,100 @@ if FRONTEND_DIST.exists():
 
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
 
+DEFAULT_CERTS_DIR = ROOT_DIR / "certs"
+DEFAULT_CERT_FILE = DEFAULT_CERTS_DIR / "cert.pem"
+DEFAULT_KEY_FILE = DEFAULT_CERTS_DIR / "key.pem"
+
+def ensure_ssl_certs(cert_path: Optional[Any] = None, key_path: Optional[Any] = None) -> tuple[Path, Path]:
+    cert_file = Path(cert_path).resolve() if cert_path else DEFAULT_CERT_FILE
+    key_file = Path(key_path).resolve() if key_path else DEFAULT_KEY_FILE
+
+    if cert_file.exists() and key_file.exists():
+        return cert_file, key_file
+
+    cert_file.parent.mkdir(parents=True, exist_ok=True)
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Collect Subject Alternative Names (SAN) for localhost, loopback, LAN IP and wildcard
+    sans = {"DNS:localhost", "IP:127.0.0.1", "IP:192.168.132.197", "IP:0.0.0.0"}
+    try:
+        import socket
+        hostname = socket.gethostname()
+        if hostname:
+            sans.add(f"DNS:{hostname}")
+        ip_cmd = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=5)
+        if ip_cmd.returncode == 0:
+            for ip in ip_cmd.stdout.strip().split():
+                if ":" not in ip and ip not in ("127.0.0.1", "0.0.0.0"):
+                    sans.add(f"IP:{ip}")
+    except Exception as e:
+        print(f"[SSL] Warning: Unable to query host IPs for SAN: {e}")
+
+    san_str = ",".join(sorted(sans))
+    print(f"[SSL] Generating self-signed SSL certificate with SAN: {san_str}")
+    cmd = [
+        "openssl", "req", "-x509", "-newkey", "rsa:2048",
+        "-keyout", str(key_file),
+        "-out", str(cert_file),
+        "-days", "365",
+        "-nodes",
+        "-subj", "/CN=Alveare NPU",
+        "-addext", f"subjectAltName={san_str}"
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"openssl failed (code {res.returncode}): {res.stderr}")
+
+    print(f"[SSL] Certificate generated successfully:\n  Cert: {cert_file}\n  Key:  {key_file}")
+    return cert_file, key_file
+
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    host = os.getenv("ALVEARE_CONTROL_HOST", "0.0.0.0")
-    port = int(os.getenv("ALVEARE_CONTROL_PORT", "8080"))
-    print(f"[Alveare Control Server] Listening on http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port)
+
+    parser = argparse.ArgumentParser(description="Alveare Control Server")
+    parser.add_argument("--host", default=os.getenv("ALVEARE_CONTROL_HOST", "0.0.0.0"), help="Host to bind")
+    parser.add_argument("--port", type=int, default=int(os.getenv("ALVEARE_CONTROL_PORT", "8080")), help="Port to bind")
+    parser.add_argument("--ssl", action="store_true", default=os.getenv("ALVEARE_SSL", "").lower() in ("1", "true", "yes"), help="Enable SSL/HTTPS")
+    parser.add_argument("--ssl-cert", default=os.getenv("ALVEARE_SSL_CERT", ""), help="Path to SSL certificate")
+    parser.add_argument("--ssl-key", default=os.getenv("ALVEARE_SSL_KEY", ""), help="Path to SSL private key")
+    parser.add_argument("--ssl-port", type=int, default=int(os.getenv("ALVEARE_SSL_PORT", "8443")), help="Default port for SSL")
+    parser.add_argument("--no-ssl", action="store_true", default=False, help="Explicitly disable SSL")
+
+    args = parser.parse_args()
+
+    use_ssl = False
+    cert_file = None
+    key_file = None
+
+    if not args.no_ssl:
+        if args.ssl or args.ssl_cert or args.ssl_key:
+            use_ssl = True
+            cert_file, key_file = ensure_ssl_certs(args.ssl_cert or None, args.ssl_key or None)
+        elif DEFAULT_CERT_FILE.exists() and DEFAULT_KEY_FILE.exists() and os.getenv("ALVEARE_SSL", "") != "0":
+            use_ssl = True
+            cert_file = DEFAULT_CERT_FILE
+            key_file = DEFAULT_KEY_FILE
+
+    host = args.host
+    port = args.port
+
+    # If SSL requested and port was left at default 8080 (without explicit env ALVEARE_CONTROL_PORT), use ssl_port
+    if use_ssl and port == 8080 and "ALVEARE_CONTROL_PORT" not in os.environ:
+        port = args.ssl_port
+
+    if use_ssl and cert_file and key_file:
+        print(f"[Alveare Control Server] Listening on https://{host}:{port} (SSL enabled)")
+        print(f"  Cert: {cert_file}")
+        print(f"  Key:  {key_file}")
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            ssl_keyfile=str(key_file),
+            ssl_certfile=str(cert_file)
+        )
+    else:
+        print(f"[Alveare Control Server] Listening on http://{host}:{port}")
+        uvicorn.run(app, host=host, port=port)
