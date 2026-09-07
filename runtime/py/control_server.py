@@ -597,6 +597,7 @@ MS_PER_TOK_RE = re.compile(r'\(([\d\.]+)\s*ms/tok\)', re.IGNORECASE)
 TPS_RE = re.compile(r'([\d\.]+)\s*tok/s', re.IGNORECASE)
 
 def parse_server_log_line(line_str: str):
+    llm_slot = state.slots.get("llm")
     # 1. Parse layer load progress
     m_layer = LAYER_LOAD_RE.search(line_str)
     if m_layer:
@@ -608,12 +609,21 @@ def parse_server_log_line(line_str: str):
         
         state.load_progress = min(99.0, round((current_layer / max(1, state.total_layers)) * 100.0, 1))
         state.load_step = line_str.strip()
+        if llm_slot:
+            llm_slot.total_layers = state.total_layers
+            llm_slot.load_progress = state.load_progress
+            llm_slot.load_step = state.load_step
 
     if "Model ready" in line_str or "Server ready" in line_str:
         state.load_progress = 100.0
         state.is_loaded = True
         state.load_step = "Modello pronto"
         state.status = "running"
+        if llm_slot:
+            llm_slot.load_progress = 100.0
+            llm_slot.is_loaded = True
+            llm_slot.load_step = "Modello pronto"
+            llm_slot.status = "running"
 
     # 2. Parse tok/s speed metrics
     m_ms_tok = MS_PER_TOK_RE.search(line_str)
@@ -963,13 +973,25 @@ def stop_slot(slot_name: str):
     if slot.process and slot.process.poll() is None:
         append_log(f"Arresto processo slot '{slot_name}'...")
         try:
-            pgid = os.getpgid(slot.process.pid)
-            os.killpg(pgid, signal.SIGTERM)
+            try:
+                pgid = os.getpgid(slot.process.pid)
+                if pgid != os.getpgrp() and pgid != os.getpid():
+                    os.killpg(pgid, signal.SIGTERM)
+                else:
+                    slot.process.terminate()
+            except Exception:
+                slot.process.terminate()
             slot.process.wait(timeout=1.5)
         except Exception:
             try:
-                pgid = os.getpgid(slot.process.pid)
-                os.killpg(pgid, signal.SIGKILL)
+                try:
+                    pgid = os.getpgid(slot.process.pid)
+                    if pgid != os.getpgrp() and pgid != os.getpid():
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        slot.process.kill()
+                except Exception:
+                    slot.process.kill()
             except Exception:
                 pass
     slot.process = None

@@ -197,7 +197,8 @@ class Audio8TTS:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                env=clean_env
+                env=clean_env,
+                start_new_session=True
             )
             # Wait for worker to load weights and output READY
             ready_line = proc.stdout.readline().strip()
