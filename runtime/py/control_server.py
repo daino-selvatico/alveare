@@ -2175,6 +2175,24 @@ async def openai_get_models():
         })
     return {"object": "list", "data": models_data}
 
+@app.get("/v1/tools")
+async def get_tools_list():
+    """Returns OpenAI-compatible schemas for all registered tools."""
+    from runtime.py.tool_engine import get_tool_engine
+    return {"tools": get_tool_engine().get_tool_schemas()}
+
+class ToolExecuteRequest(BaseModel):
+    name: str
+    arguments: Dict[str, Any] = {}
+
+@app.post("/v1/tools/execute")
+async def execute_tool_endpoint(req: ToolExecuteRequest):
+    """Executes a tool inside the sandbox or via registered handler."""
+    from runtime.py.tool_engine import get_tool_engine
+    res = get_tool_engine().execute_tool(req.name, req.arguments)
+    return res
+
+
 class SlotControlRequest(BaseModel):
     slot: str = "llm"  # "llm", "stt", "tts"
     model: Optional[str] = None
