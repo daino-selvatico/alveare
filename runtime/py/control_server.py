@@ -2387,6 +2387,9 @@ async def websocket_live_endpoint(websocket: WebSocket):
                         if session.current_processing_task and not session.current_processing_task.done():
                             session.current_processing_task.cancel()
                         await send_event({"event": "interrupted", "turn_id": session.turn_id})
+                    elif msg_type in ("end_of_speech", "flush"):
+                        if session.in_speech or len(session.speech_buffer) > 0:
+                            await session._trigger_turn_completion()
                     elif msg_type == "ping":
                         await send_event({"event": "pong", "timestamp": time.time()})
                     elif msg_type in ("config", "update_settings"):
