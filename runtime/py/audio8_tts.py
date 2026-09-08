@@ -172,24 +172,27 @@ class Audio8TTS:
         self.device = device or "npu"
         self._external_py = None
 
+    _instance_lock = threading.Lock()
+
     @classmethod
     def get_instance(cls, model_id: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = "npu"):
-        dev = device or "npu"
-        if model_id in ("audio8-0.1b", "audio8-100m", "0.1b"):
-            norm_model = "Audio8/Audio8-TTS-Preview-0.1b"
-        elif model_id in ("audio8-0.6b", "audio8-600m", "0.6b"):
-            norm_model = "Audio8/Audio8-TTS-Preview-0.6b"
-        else:
-            norm_model = model_id
+        with cls._instance_lock:
+            dev = (device or "npu").lower()
+            if model_id in ("audio8-0.1b", "audio8-100m", "0.1b"):
+                norm_model = "Audio8/Audio8-TTS-Preview-0.1b"
+            elif model_id in ("audio8-0.6b", "audio8-600m", "0.6b"):
+                norm_model = "Audio8/Audio8-TTS-Preview-0.6b"
+            else:
+                norm_model = model_id
 
-        if cls._instance is None or cls._instance.model_id != norm_model or cls._instance.device != dev:
-            if cls._instance and cls._instance._worker_proc:
-                try:
-                    cls._instance._worker_proc.terminate()
-                except Exception:
-                    pass
-            cls._instance = cls(model_id=norm_model, device=dev)
-        return cls._instance
+            if cls._instance is None or cls._instance.model_id != norm_model or cls._instance.device != dev:
+                if cls._instance and cls._instance._worker_proc:
+                    try:
+                        cls._instance._worker_proc.terminate()
+                    except Exception:
+                        pass
+                cls._instance = cls(model_id=norm_model, device=dev)
+            return cls._instance
 
     def _ensure_loaded(self):
         if self._worker_proc is not None and self._worker_proc.poll() is None:
@@ -483,3 +486,60 @@ class Audio8TTS:
                 wav_bytes = f.read()
             return wav_bytes, res
         raise RuntimeError(res.get("error", "TTS synthesis failed"))
+
+    # High-level standard API aliases
+    def synthesize(self, text: str, **kwargs) -> Dict[str, Any]:
+        """Alias to generate() for standard TTS synthesis API."""
+        return self.generate(text, **kwargs)
+
+    def synthesize_stream(self, text: str, **kwargs):
+        """Alias to generate_stream() for streaming synthesis API."""
+        return self.generate_stream(text, **kwargs)
+
+    def synthesize_chunk(self, text: str, **kwargs) -> tuple[bytes, Dict[str, Any]]:
+        """Alias to generate_chunk() for clause-based synthesis."""
+        return self.generate_chunk(text, **kwargs)
+
+    def synthesize_bytes(self, text: str, **kwargs) -> tuple[bytes, Dict[str, Any]]:
+        """Alias to generate_bytes() for raw WAV binary output."""
+        return self.generate_bytes(text, **kwargs)
+
+    @property
+    def is_loaded(self) -> bool:
+        """Checks if the persistent worker process is running and alive."""
+        return self._worker_proc is not None and self._worker_proc.poll() is None
+
+    def shutdown(self):
+        """Gracefully terminates the persistent Audio8 TTS worker process."""
+        with self._worker_lock:
+            if self._worker_proc is not None:
+                try:
+                    if self._worker_proc.poll() is None:
+                        self._worker_proc.terminate()
+                        self._worker_proc.wait(timeout=1.0)
+                except Exception:
+                    try:
+                        self._worker_proc.kill()
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        if self._worker_proc.stdin:
+                            self._worker_proc.stdin.close()
+                    except Exception:
+                        pass
+                    try:
+                        if self._worker_proc.stdout:
+                            self._worker_proc.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        if self._worker_proc.stderr:
+                            self._worker_proc.stderr.close()
+                    except Exception:
+                        pass
+                    self._worker_proc = None
+
+    def stop(self):
+        """Alias to shutdown()."""
+        self.shutdown()

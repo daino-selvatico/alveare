@@ -200,8 +200,14 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
 
   const isTtsModel = Boolean(
     activeModel?.includes('audio8') ||
+    activeModel?.includes('kokoro') ||
+    activeModel?.includes('cocore') ||
+    activeModel?.includes('82m') ||
     models.find(m => m.id === activeModel)?.task === 'text-to-speech' ||
-    status?.model?.includes('audio8')
+    status?.model?.includes('audio8') ||
+    status?.model?.includes('kokoro') ||
+    status?.model?.includes('cocore') ||
+    status?.model?.includes('82m')
   );
 
   // Mode: 'realtime' (Live mic stream) | 'file' (Audio upload) | 'tts' (Text to Speech)
@@ -263,6 +269,24 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
   const [ttsText, setTtsText] = useState('Ciao! Questo è un test del sintetizzatore vocale su Alveare con AMD Ryzen AI.');
   const [ttsModel, setTtsModel] = useState('audio8-0.1b');
   const [ttsDevice, setTtsDevice] = useState(() => status?.device || 'npu');
+  const isKokoroActive = Boolean(
+    ttsModel?.toLowerCase().includes('kokoro') ||
+    ttsModel?.toLowerCase().includes('cocore') ||
+    ttsModel?.includes('82m') ||
+    status?.model?.toLowerCase().includes('kokoro') ||
+    status?.model?.toLowerCase().includes('cocore') ||
+    status?.model?.includes('82m')
+  );
+  const [ttsVoice, setTtsVoice] = useState(() => isKokoroActive ? 'if_sara' : 'valeria');
+
+  useEffect(() => {
+    if (isKokoroActive && (ttsVoice === 'valeria' || ttsVoice === 'default')) {
+      setTtsVoice('if_sara');
+    } else if (!isKokoroActive && (ttsVoice === 'if_sara' || ttsVoice === 'im_nicola')) {
+      setTtsVoice('valeria');
+    }
+  }, [isKokoroActive]);
+
   const [ttsRefAudioFile, setTtsRefAudioFile] = useState(null);
   const [ttsRefText, setTtsRefText] = useState('');
   const [ttsVoiceCloningOpen, setTtsVoiceCloningOpen] = useState(false);
@@ -724,6 +748,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       formData.append('text', ttsText);
       formData.append('model', ttsModel);
       formData.append('device', ttsDevice);
+      formData.append('voice', ttsVoice);
       if (ttsVoiceCloningOpen && ttsRefAudioFile && ttsRefText.trim()) {
         formData.append('reference_audio', ttsRefAudioFile);
         formData.append('reference_text', ttsRefText.trim());
@@ -877,10 +902,10 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
       // Send start handshake
       ws.send(JSON.stringify({
         action: "start",
-        voice: "valeria",
+        voice: ttsVoice,
         model: ttsModel,
         device: ttsDevice,
-        sample_rate: 44100,
+        sample_rate: isKokoroActive ? 24000 : 44100,
         format: "pcm16",
         speed: 1.0,
         pitch: 0.0,
@@ -1546,6 +1571,41 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                     title="Il modello può essere configurato e modificato dal Pannello di Controllo"
                   >
                     <span style={{ color: 'var(--accent-cyan)' }}>●</span> {status?.model || activeModel || 'audio8-0.1b'}
+                  </div>
+
+                  {/* Voice Selector */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <select
+                      value={ttsVoice}
+                      onChange={(e) => setTtsVoice(e.target.value)}
+                      style={{
+                        background: 'rgba(0,0,0,0.35)',
+                        border: '1px solid var(--border-color)',
+                        color: 'var(--text-main)',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        padding: '0.35rem 0.65rem',
+                        borderRadius: '8px',
+                        outline: 'none',
+                        cursor: 'pointer',
+                        transition: 'border-color 0.2s ease'
+                      }}
+                      title="Seleziona la voce neurale"
+                    >
+                      {isKokoroActive ? (
+                        <>
+                          <option value="if_sara" style={{ background: '#131b2e' }}>🎙️ Sara (Femminile IT)</option>
+                          <option value="im_nicola" style={{ background: '#131b2e' }}>🎙️ Nicola (Maschile IT)</option>
+                          <option value="af_heart" style={{ background: '#131b2e' }}>🎙️ Heart (Femminile EN)</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="valeria" style={{ background: '#131b2e' }}>🎙️ Valeria (Espressiva IT)</option>
+                          <option value="daino" style={{ background: '#131b2e' }}>🎙️ Daino (Maschile IT)</option>
+                          <option value="narratore" style={{ background: '#131b2e' }}>🎙️ Narratore (Calmo IT)</option>
+                        </>
+                      )}
+                    </select>
                   </div>
 
                   <button

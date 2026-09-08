@@ -539,6 +539,15 @@ def discover_models() -> List[Dict[str, Any]]:
             if size_mb == 0:
                 size_mb = 1600.0 if "large" in alias else 145.0
 
+        elif "kokoro" in alias or arch == "kokoro":
+            task = "text-to-speech"
+            arch = "kokoro"
+            if not name or name == alias:
+                name = "Kokoro 82M TTS"
+                description = "Ultra-fast non-autoregressive neural text-to-speech (StyleTTS2 + ISTFTNet, 82M) with natural Italian prosody and RTF ~0.10x on CPU."
+            if size_mb == 0:
+                size_mb = 320.0
+
         elif "audio8" in alias or arch == "audio8" or task == "text-to-speech":
             task = "text-to-speech"
             arch = "audio8"
@@ -556,8 +565,12 @@ def discover_models() -> List[Dict[str, Any]]:
             supported_devices = ["cpu", "npu", "gpu"]
             default_dev = "cpu"
         elif task == "text-to-speech":
-            supported_devices = ["npu", "cpu", "gpu"]
-            default_dev = "npu"
+            if arch == "kokoro" or "kokoro" in alias:
+                supported_devices = ["cpu", "gpu"]
+                default_dev = "cpu"
+            else:
+                supported_devices = ["npu", "cpu", "gpu"]
+                default_dev = "npu"
         else:
             supported_devices = ["gpu", "npu", "cpu"]
             default_dev = "gpu"
@@ -586,7 +599,7 @@ def is_active_stt_model() -> bool:
     return False
 
 def is_active_tts_model() -> bool:
-    if state.active_model and "audio8" in state.active_model.lower():
+    if state.active_model and ("audio8" in state.active_model.lower() or "kokoro" in state.active_model.lower() or "cocore" in state.active_model.lower() or "82m" in state.active_model.lower()):
         return True
     for m in discover_models():
         if m["id"] == state.active_model and m.get("task") == "text-to-speech":
@@ -723,10 +736,18 @@ def start_stt_slot(model: str = "openai/whisper-base", device: str = "cpu") -> b
     threading.Thread(target=_load_stt_async, daemon=True).start()
     return True
 
-def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = "npu") -> bool:
-    device = (device or "npu").lower()
-    dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else ("GPU (AMD Radeon 890M)" if device in ("gpu", "vulkan") else "CPU (Multi-Threaded)")
-    append_log(f"[TTS Slot] Avvio del motore Audio8 TTS ({model}) su {dev_label}...")
+def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: Optional[str] = None) -> bool:
+    from runtime.py.tts_factory import is_kokoro_model, get_tts_engine
+    if is_kokoro_model(model):
+        device = (device or "cpu").lower()
+        dev_label = "GPU (CUDA)" if device in ("gpu", "cuda") else "CPU (Multi-Threaded Zen 5)"
+        engine_name = "Kokoro TTS"
+    else:
+        device = (device or "npu").lower()
+        dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else ("GPU (AMD Radeon 890M)" if device in ("gpu", "vulkan") else "CPU (Multi-Threaded)")
+        engine_name = "Audio8 TTS"
+
+    append_log(f"[TTS Slot] Avvio del motore {engine_name} ({model}) su {dev_label}...")
     tts_slot = state.slots["tts"]
 
     if tts_slot.status in ("starting", "running") and tts_slot.model == model and tts_slot.device == device and tts_slot.is_loaded:
@@ -748,7 +769,9 @@ def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = 
     def _load_tts_async():
         try:
             tts_id = model
-            if "0.6b" in model.lower() or "600m" in model.lower():
+            if is_kokoro_model(model):
+                tts_id = "hexgrad/Kokoro-82M"
+            elif "0.6b" in model.lower() or "600m" in model.lower():
                 tts_id = "Audio8/Audio8-TTS-Preview-0.6b"
             elif "0.1b" in model.lower() or "100m" in model.lower() or model in ("audio8-0.1b", "audio8"):
                 tts_id = "Audio8/Audio8-TTS-Preview-0.1b"
@@ -763,8 +786,7 @@ def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = 
                     except Exception:
                         pass
 
-            from runtime.py.audio8_tts import Audio8TTS
-            tts = Audio8TTS.get_instance(model_id=tts_id, device=device)
+            tts = get_tts_engine(model_id=tts_id, device=device)
             tts._ensure_loaded()
             tts_slot.process = tts._worker_proc
             tts_slot.load_progress = 100.0
@@ -914,7 +936,7 @@ def start_inference_server(model: str, host: str, port: int, device: str = "gpu"
         save_config({"default_model": model, "host": host, "port": port, "device": device})
         return start_stt_slot(model=model, device=device)
 
-    is_tts = model.startswith("audio8") or "tts" in model.lower() or "audio" in model.lower()
+    is_tts = model.startswith("audio8") or "tts" in model.lower() or "audio" in model.lower() or "kokoro" in model.lower() or "cocore" in model.lower() or "82m" in model.lower()
     if not is_tts:
         for m in discover_models():
             if m["id"] == model and m.get("task") == "text-to-speech":
@@ -958,18 +980,8 @@ def stop_slot(slot_name: str):
 
     elif slot_name == "tts":
         try:
-            from runtime.py.audio8_tts import Audio8TTS
-            if Audio8TTS._instance:
-                if Audio8TTS._instance._worker_proc:
-                    try:
-                        Audio8TTS._instance._worker_proc.terminate()
-                        Audio8TTS._instance._worker_proc.wait(timeout=1.0)
-                    except Exception:
-                        try:
-                            Audio8TTS._instance._worker_proc.kill()
-                        except Exception:
-                            pass
-                Audio8TTS._instance = None
+            from runtime.py.tts_factory import stop_all_tts
+            stop_all_tts()
         except Exception as e:
             append_log(f"[TTS Slot] Errore arresto worker: {e}")
 
@@ -1466,9 +1478,24 @@ async def audio_speech(req: OpenAISpeechRequest):
         if not text:
             raise HTTPException(status_code=400, detail="Empty input text provided")
 
-        from runtime.py.audio8_tts import Audio8TTS
-        target_model = req.model or state.active_model or "audio8-0.1b"
-        tts = Audio8TTS.get_instance(model_id=target_model, device=state.device or "npu")
+        from runtime.py.tts_factory import get_tts_engine, is_kokoro_model
+
+        tts_slot = state.slots.get("tts")
+        is_slot_loaded = tts_slot and tts_slot.is_loaded
+
+        # If TTS slot is active and model was not explicitly overridden
+        if is_slot_loaded and (not req.model or req.model in ("audio8-0.1b", "tts", "default")):
+            target_model = tts_slot.model
+            target_device = tts_slot.device
+        else:
+            target_model = req.model or (tts_slot.model if is_slot_loaded else None) or state.active_model or "audio8-0.1b"
+            target_device = (tts_slot.device if is_slot_loaded else None) or state.device or ("cpu" if is_kokoro_model(target_model) else "npu")
+
+        is_kokoro = is_kokoro_model(target_model)
+        native_sr = 24000 if is_kokoro else 44100
+        tts = get_tts_engine(model_id=target_model, device=target_device)
+        default_voice = "if_sara" if is_kokoro else "valeria"
+        chosen_voice = req.voice or default_voice
 
         if req.stream:
             async def pcm_streamer():
@@ -1481,12 +1508,12 @@ async def audio_speech(req: OpenAISpeechRequest):
                         try:
                             for chunk_bytes, meta in tts.generate_stream(
                                 text=text,
-                                voice=req.voice or "valeria",
+                                voice=chosen_voice,
                                 speed=req.speed or 1.0,
                                 pitch=req.pitch or 0.0,
                                 language=req.language or "it",
                                 temperature=req.temperature or 0.8,
-                                sample_rate=44100,
+                                sample_rate=native_sr,
                                 format="pcm16"
                             ):
                                 loop.call_soon_threadsafe(queue.put_nowait, (chunk_bytes, meta))
@@ -1512,7 +1539,7 @@ async def audio_speech(req: OpenAISpeechRequest):
 
             headers = {
                 "Content-Type": "audio/pcm",
-                "X-Alveare-Sample-Rate": "44100",
+                "X-Alveare-Sample-Rate": str(native_sr),
                 "X-Alveare-Channels": "1",
                 "X-Alveare-Bits-Per-Sample": "16",
                 "X-Alveare-Frame-Rate": "12.5"
@@ -1524,11 +1551,12 @@ async def audio_speech(req: OpenAISpeechRequest):
             wav_bytes, res = await asyncio.to_thread(
                 tts.generate_bytes,
                 text,
-                voice=req.voice or "valeria",
+                voice=chosen_voice,
                 speed=req.speed or 1.0,
                 pitch=req.pitch or 0.0,
                 language=req.language or "it",
-                temperature=req.temperature or 0.8
+                temperature=req.temperature or 0.8,
+                sample_rate=native_sr
             )
         finally:
             state.is_transcribing = False
@@ -1546,7 +1574,7 @@ async def api_tts_generate(
     text: str = Form(...),
     model: Optional[str] = Form(None),
     device: Optional[str] = Form(None),
-    voice: Optional[str] = Form("valeria"),
+    voice: Optional[str] = Form(None),
     language: Optional[str] = Form("it"),
     speed: Optional[float] = Form(1.0),
     pitch: Optional[float] = Form(0.0),
@@ -1572,18 +1600,25 @@ async def api_tts_generate(
                 tmp_ref.close()
                 ref_audio_path = tmp_ref.name
 
-        target_device = device or state.device or "npu"
-        target_model = model or state.active_model or "audio8-0.1b"
+        from runtime.py.tts_factory import get_tts_engine, is_kokoro_model
 
-        from runtime.py.audio8_tts import Audio8TTS
-        tts = Audio8TTS.get_instance(model_id=target_model, device=target_device)
+        tts_slot = state.slots.get("tts")
+        is_slot_loaded = tts_slot and tts_slot.is_loaded
+
+        target_model = model or (tts_slot.model if is_slot_loaded else None) or state.active_model or "audio8-0.1b"
+        target_device = device or (tts_slot.device if is_slot_loaded else None) or state.device or ("cpu" if is_kokoro_model(target_model) else "npu")
+
+        is_kokoro = is_kokoro_model(target_model)
+        tts = get_tts_engine(model_id=target_model, device=target_device)
+        chosen_voice = voice or ("if_sara" if is_kokoro else "valeria")
+        native_sr = 24000 if is_kokoro else 44100
 
         state.is_transcribing = True
         try:
             res = await asyncio.to_thread(
                 tts.generate,
                 text=text,
-                voice=voice or "valeria",
+                voice=chosen_voice,
                 language=language or "it",
                 speed=speed if speed is not None else 1.0,
                 pitch=pitch if pitch is not None else 0.0,
@@ -1593,6 +1628,7 @@ async def api_tts_generate(
                 temperature=temperature if temperature is not None else 0.8,
                 top_p=top_p or 0.95,
                 top_k=top_k or 50,
+                sample_rate=native_sr,
                 do_sample=True
             )
         finally:
@@ -1608,10 +1644,6 @@ async def api_tts_generate(
         res["audio_url"] = f"/api/tts/audio/{audio_filename}" if audio_filename else ""
 
         return res
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore generazione TTS: {e}")
     except HTTPException:
         raise
     except Exception as e:
@@ -1807,14 +1839,18 @@ async def websocket_stt_api(websocket: WebSocket):
 
 async def handle_tts_stream_connection(websocket: WebSocket):
     await websocket.accept()
-    from runtime.py.audio8_tts import Audio8TTS, split_into_chunks, extract_completed_chunks
+    from runtime.py.tts_factory import get_tts_engine, is_kokoro_model, split_into_chunks, extract_completed_chunks
     import uuid
 
     session_id = f"tts-{uuid.uuid4().hex[:8]}"
-    voice = "valeria"
-    model_name = state.active_model or "audio8-0.1b"
-    device_name = state.device or "npu"
-    sample_rate = 44100
+    tts_slot = state.slots.get("tts")
+    is_slot_loaded = tts_slot and tts_slot.is_loaded
+
+    model_name = (tts_slot.model if is_slot_loaded else None) or state.active_model or "audio8-0.1b"
+    is_kokoro = is_kokoro_model(model_name)
+    device_name = (tts_slot.device if is_slot_loaded else None) or state.device or ("cpu" if is_kokoro else "npu")
+    voice = "if_sara" if is_kokoro else "valeria"
+    sample_rate = 24000 if is_kokoro else 44100
     format_type = "pcm16"
     speed = 1.0
     pitch = 0.0
@@ -1834,7 +1870,7 @@ async def handle_tts_stream_connection(websocket: WebSocket):
     text_buffer = ""
     is_first_chunk = True
 
-    tts = Audio8TTS.get_instance(model_id=model_name, device=device_name)
+    tts = get_tts_engine(model_id=model_name, device=device_name)
 
     async def _synthesize_and_send_chunk(chunk_str: str) -> bool:
         nonlocal seq_id, total_samples, total_duration, ttfa_ms, is_first_chunk
@@ -1925,10 +1961,16 @@ async def handle_tts_stream_connection(websocket: WebSocket):
                         is_first_chunk = True
                         t_start = time.perf_counter()
 
-                        voice = payload.get("voice", "valeria")
-                        model_name = payload.get("model", state.active_model or "audio8-0.1b")
-                        device_name = payload.get("device", state.device or "npu")
-                        sample_rate = int(payload.get("sample_rate", 44100))
+                        tts_slot = state.slots.get("tts")
+                        is_slot_loaded = tts_slot and tts_slot.is_loaded
+
+                        model_name = payload.get("model", (tts_slot.model if is_slot_loaded else None) or state.active_model or "audio8-0.1b")
+                        is_kokoro = is_kokoro_model(model_name)
+                        default_dev = (tts_slot.device if is_slot_loaded else None) or state.device or ("cpu" if is_kokoro else "npu")
+                        device_name = payload.get("device", default_dev)
+                        voice = payload.get("voice", "if_sara" if is_kokoro else "valeria")
+                        default_sr = 24000 if is_kokoro else 44100
+                        sample_rate = int(payload.get("sample_rate", default_sr))
                         format_type = str(payload.get("format", "pcm16")).lower()
                         speed = float(payload.get("speed", 1.0))
                         pitch = float(payload.get("pitch", 0.0))
@@ -1939,7 +1981,7 @@ async def handle_tts_stream_connection(websocket: WebSocket):
                         reference_audio = payload.get("reference_audio")
                         reference_text = payload.get("reference_text")
 
-                        tts = Audio8TTS.get_instance(model_id=model_name, device=device_name)
+                        tts = get_tts_engine(model_id=model_name, device=device_name)
 
                         await websocket.send_json({
                             "event": "ready",

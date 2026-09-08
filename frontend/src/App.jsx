@@ -32,6 +32,8 @@ export default function App() {
     (
       status?.model?.includes('whisper') ||
       status?.model?.includes('audio8') ||
+      status?.model?.includes('kokoro') ||
+      status?.model?.includes('cocore') ||
       models.find(m => m.id === status?.model)?.task === 'speech-to-text' ||
       models.find(m => m.id === status?.model)?.task === 'text-to-speech'
     )

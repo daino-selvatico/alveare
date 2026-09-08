@@ -188,4 +188,11 @@ describe('ServerControl Component', () => {
     // Ensure duplicate 'audio8-0.1b' is not an option value
     expect(ttsValues.filter(v => v === 'audio8-0.1b')).toHaveLength(0);
   });
+
+  it('correctly maps and deduplicates Kokoro 82M TTS model options', () => {
+    const kokoroRaw = ['kokoro', 'kokoro-82m', 'hexgrad/Kokoro-82M', 'cocore'];
+    const kokoroDedup = deduplicateModelOptions(kokoroRaw);
+    expect(kokoroDedup).toHaveLength(1);
+    expect(kokoroDedup[0]).toEqual({ id: 'hexgrad/Kokoro-82M', label: 'Kokoro 82M' });
+  });
 });

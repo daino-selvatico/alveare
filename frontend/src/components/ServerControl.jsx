@@ -15,6 +15,11 @@ export const CANONICAL_MODEL_MAP = {
   'audio8-0.6b': 'Audio8/Audio8-TTS-Preview-0.6b',
   'audio8-600m': 'Audio8/Audio8-TTS-Preview-0.6b',
   '0.6b': 'Audio8/Audio8-TTS-Preview-0.6b',
+  'kokoro': 'hexgrad/Kokoro-82M',
+  'kokoro-82m': 'hexgrad/Kokoro-82M',
+  'cocore': 'hexgrad/Kokoro-82M',
+  'cocore-82m': 'hexgrad/Kokoro-82M',
+  '82m': 'hexgrad/Kokoro-82M',
 };
 
 export const DEFAULT_MODEL_LABELS = {
@@ -30,6 +35,7 @@ export const DEFAULT_MODEL_LABELS = {
   // TTS
   'Audio8/Audio8-TTS-Preview-0.1b': 'Audio8 0.1B',
   'Audio8/Audio8-TTS-Preview-0.6b': 'Audio8 0.6B',
+  'hexgrad/Kokoro-82M': 'Kokoro 82M',
 };
 
 export const normalizeModelOption = (m) => {
@@ -128,8 +134,20 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
   const ttsModelOptions = deduplicateModelOptions([
     ...models.filter(m => m.task === 'text-to-speech'),
-    'Audio8/Audio8-TTS-Preview-0.1b', 'Audio8/Audio8-TTS-Preview-0.6b'
+    'Audio8/Audio8-TTS-Preview-0.1b', 'Audio8/Audio8-TTS-Preview-0.6b', 'hexgrad/Kokoro-82M'
   ]);
+
+  const isKokoroTts = Boolean(
+    slotModels.tts?.toLowerCase().includes('kokoro') ||
+    slotModels.tts?.toLowerCase().includes('cocore') ||
+    slotModels.tts?.includes('82m')
+  );
+
+  useEffect(() => {
+    if (isKokoroTts && slotDevices.tts === 'npu') {
+      setSlotDevices(prev => ({ ...prev, tts: 'cpu' }));
+    }
+  }, [isKokoroTts, slotDevices.tts]);
 
   // Slot start & stop handlers
   const handleStartSlot = async (slotId) => {
@@ -185,7 +203,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           stt_model: slotModels.stt || 'openai/whisper-base',
           stt_device: slotDevices.stt || 'cpu',
           tts_model: slotModels.tts || 'Audio8/Audio8-TTS-Preview-0.1b',
-          tts_device: slotDevices.tts || 'npu'
+          tts_device: isKokoroTts && slotDevices.tts === 'npu' ? 'cpu' : (slotDevices.tts || (isKokoroTts ? 'cpu' : 'npu'))
         })
       });
       setTimeout(() => {
@@ -679,24 +697,27 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
             </label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
               {[
-                { id: 'npu', label: '⚡ NPU', name: 'XDNA2', color: '#34d399' },
-                { id: 'cpu', label: '🖥️ CPU', name: 'Multi-Core', color: '#60a5fa' },
-                { id: 'gpu', label: '🎮 GPU', name: 'Radeon 890M', color: '#c084fc' }
+                { id: 'npu', label: '⚡ NPU', name: 'XDNA2', color: '#34d399', disabled: isKokoroTts },
+                { id: 'cpu', label: '🖥️ CPU', name: isKokoroTts ? 'Zen 5 AVX-512' : 'Multi-Core', color: '#60a5fa' },
+                { id: 'gpu', label: '🎮 GPU', name: isKokoroTts ? 'CUDA / Direct' : 'Radeon 890M', color: '#c084fc' }
               ].map(dev => (
                 <button
                   key={dev.id}
                   type="button"
+                  disabled={dev.disabled}
                   className="mobile-touch-target"
-                  onClick={() => setSlotDevices(prev => ({ ...prev, tts: dev.id }))}
+                  onClick={() => !dev.disabled && setSlotDevices(prev => ({ ...prev, tts: dev.id }))}
+                  title={dev.disabled ? 'NPU non supportata per architettura StyleTTS2 (Richiede CPU Zen 5 o GPU CUDA)' : ''}
                   style={{
                     padding: '0.45rem 0.3rem',
                     borderRadius: '8px',
                     border: slotDevices.tts === dev.id ? `2px solid ${dev.color}` : '1px solid var(--border-color)',
-                    background: slotDevices.tts === dev.id ? `${dev.color}22` : 'rgba(0,0,0,0.25)',
-                    color: slotDevices.tts === dev.id ? dev.color : 'var(--text-muted)',
+                    background: dev.disabled ? 'rgba(0,0,0,0.4)' : (slotDevices.tts === dev.id ? `${dev.color}22` : 'rgba(0,0,0,0.25)'),
+                    color: dev.disabled ? '#475569' : (slotDevices.tts === dev.id ? dev.color : 'var(--text-muted)'),
                     fontSize: '0.78rem',
                     fontWeight: 700,
-                    cursor: 'pointer',
+                    cursor: dev.disabled ? 'not-allowed' : 'pointer',
+                    opacity: dev.disabled ? 0.4 : 1,
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
@@ -705,7 +726,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                   }}
                 >
                   <span>{dev.label}</span>
-                  <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>{dev.name}</span>
+                  <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>{dev.disabled ? 'Non supp.' : dev.name}</span>
                 </button>
               ))}
             </div>
@@ -715,12 +736,16 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0.75rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', fontSize: '0.8rem' }}>
             <span style={{ color: 'var(--text-muted)' }}>Dispositivo:</span>
             <span style={{ fontWeight: 700, color: slotDevices.tts === 'npu' ? '#34d399' : slotDevices.tts === 'cpu' ? '#60a5fa' : '#c084fc' }}>
-              {slotDevices.tts === 'npu' ? '⚡ NPU Ryzen AI (Hardware Native)' : slotDevices.tts === 'cpu' ? '🖥️ CPU Multi-Thread' : '🎮 GPU (Vulkan 1.4)'}
+              {isKokoroTts
+                ? (slotDevices.tts === 'gpu' ? '🎮 GPU (CUDA / Direct)' : '🖥️ CPU Multi-Thread Zen 5 (Consigliato RTF ~0.10x)')
+                : (slotDevices.tts === 'npu' ? '⚡ NPU Ryzen AI (Hardware Native)' : slotDevices.tts === 'cpu' ? '🖥️ CPU Multi-Thread' : '🎮 GPU (Vulkan 1.4)')}
             </span>
           </div>
 
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.35rem 0.5rem' }}>
-            Sintesi vocale Audio8 a bassissima latenza con voice cloning zero-shot ed espressività italiana.
+            {isKokoroTts
+              ? 'Sintesi vocale Kokoro-82M neurale non-autoregressiva ultraveloce (RTF ~0.10x su CPU Zen 5) con prosodia italiana naturale.'
+              : 'Sintesi vocale Audio8 a bassissima latenza con voice cloning zero-shot ed espressività italiana.'}
           </div>
 
           {/* Slot Action Button */}

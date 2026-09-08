@@ -25,7 +25,9 @@ import soundfile as sf
 import httpx
 
 from runtime.py.whisper_stt import WhisperSTT
-from runtime.py.audio8_tts import Audio8TTS, split_into_chunks
+from runtime.py.tts_factory import get_tts_engine, is_kokoro_model, split_into_chunks
+from runtime.py.kokoro_tts import KokoroTTS
+from runtime.py.audio8_tts import Audio8TTS
 
 class LiveTurnMetrics:
     def __init__(self):
@@ -134,6 +136,12 @@ class LiveSession:
         language: str = "it",
         system_prompt: Optional[str] = None
     ):
+        if tts_model and is_kokoro_model(tts_model):
+            if not tts_device or tts_device == "npu":
+                tts_device = "cpu"
+            if voice in ("valeria", "female_expressive", "default"):
+                voice = "if_sara"
+
         self.session_id = session_id
         self.send_event = send_event_fn
         self.llm_host = llm_host
@@ -177,12 +185,12 @@ class LiveSession:
 
         # Workers
         self.stt: Optional[WhisperSTT] = None
-        self.tts: Optional[Audio8TTS] = None
+        self.tts: Optional[Any] = None
 
     def initialize_workers(self):
         """Pre-warm or reference STT and TTS singletons."""
         self.stt = WhisperSTT.get_instance(model_id=self.stt_model, device=self.stt_device)
-        self.tts = Audio8TTS.get_instance(model_id=self.tts_model, device=self.tts_device)
+        self.tts = get_tts_engine(model_id=self.tts_model, device=self.tts_device)
 
     async def handle_audio_chunk(self, chunk: bytes):
         """
