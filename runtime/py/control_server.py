@@ -2321,9 +2321,17 @@ async def websocket_live_endpoint(websocket: WebSocket):
     tts_slot = state.slots["tts"]
 
     from runtime.py.tts_factory import is_kokoro_model
-    is_kokoro = is_kokoro_model(tts_slot.model)
+    is_kokoro = is_kokoro_model(tts_slot.model or "hexgrad/Kokoro-82M")
     tts_dev = tts_slot.device or ("cpu" if is_kokoro else "npu")
     default_voice = "if_sara" if is_kokoro else "valeria"
+
+    # Auto-activate neural runtime slots if not already running
+    if llm_slot.status not in ("starting", "running") or not (llm_slot.process and llm_slot.process.poll() is None):
+        start_llm_slot(model=llm_slot.model or "gemma4-e4b", device=llm_slot.device or "gpu")
+    if stt_slot.status not in ("starting", "running"):
+        start_stt_slot(model=stt_slot.model or "openai/whisper-large-v3-turbo", device=stt_slot.device or "cpu")
+    if tts_slot.status not in ("starting", "running"):
+        start_tts_slot(model=tts_slot.model or "hexgrad/Kokoro-82M", device=tts_dev)
 
     session = LiveSession(
         session_id=session_id,
