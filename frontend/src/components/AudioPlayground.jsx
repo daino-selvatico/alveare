@@ -539,7 +539,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
           action: "start",
           sample_rate: 16000,
           language: selectedLanguage,
-          model: activeModel || "whisper-base"
+          model: activeModel || "openai/whisper-large-v3-turbo"
         }));
       };
 
@@ -704,7 +704,7 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
     // Automatically trigger transcription
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('model', activeModel || 'whisper-base');
+    formData.append('model', activeModel || 'openai/whisper-large-v3-turbo');
     if (selectedLanguage !== 'auto') {
       formData.append('language', selectedLanguage);
     }
@@ -1852,6 +1852,12 @@ export default function AudioPlayground({ apiBase, status, activeModel, isServer
                       </button>
                     )}
                   </div>
+
+                  {isKokoroActive && (
+                    <div style={{ fontSize: '0.78rem', color: '#38bdf8', background: 'rgba(6, 182, 212, 0.12)', padding: '0.5rem 0.75rem', borderRadius: '8px', border: '1px solid rgba(6, 182, 212, 0.3)' }}>
+                      ℹ️ <strong>Nota Kokoro-82M:</strong> Questo modello utilizza voci pre-calcolate ad altissima velocità (Sara, Nicola, Heart). Il voice cloning zero-shot da file audio personalizzato (.wav) è disponibile selezionando il motore Audio8 TTS (NPU/CPU).
+                    </div>
+                  )}
 
                   <input
                     type="text"

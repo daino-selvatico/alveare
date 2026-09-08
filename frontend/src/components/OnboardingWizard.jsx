@@ -15,7 +15,7 @@ export default function OnboardingWizard({ onComplete, apiBase }) {
   const [loading, setLoading] = useState(true);
   
   // Selected settings
-  const [selectedModel, setSelectedModel] = useState('gemma4');
+  const [selectedModel, setSelectedModel] = useState('gemma4-e4b');
   const [host, setHost] = useState('127.0.0.1');
   const [port, setPort] = useState(8000);
   const [legacy, setLegacy] = useState(false);

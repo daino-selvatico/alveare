@@ -21,25 +21,27 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 - **💬 Rich Chat Experience**: Real-time token streaming with Markdown & code highlighting, persistent multi-turn conversation sessions (sidebar history manager), multimodal file upload (PDF/text/image/audio parsing), and dark/light theme toggle.
 - **🎛️ Advanced Sampling Controls**: Full control over `temperature` (0.0 to 2.0 with greedy decoding at 0.0), `top_p` (nucleus sampling), `top_k`, `max_tokens`, `max_context_length`, system prompt customization, and `enable_thinking` toggle for reasoning models.
 - **🎙️ Real-Time Speech-to-Text (`Whisper Base` & `Whisper Large v3`)**: Integrated speech recognition. Supports live microphone voice recording in Web UI, automatic audio file transcription (MP3/WAV/M4A/OGG/FLAC/WebM), and OpenAI-compatible `/v1/audio/transcriptions` API with accurate multilingual transcription (Italian, English, European & Asian languages) on AMD NPU and CPU.
-- **🗣️ Neural Text-to-Speech & Voice Cloning (`Audio8 TTS 0.1B & 0.6B`)**: High-fidelity neural voice synthesis with natural Italian prosody, zero-shot voice cloning, and OpenAI-compatible `/v1/audio/speech` API accelerated on AMD NPU and CPU.
+- **🗣️ Neural Text-to-Speech & Voice Cloning (`Kokoro-82M` & `Audio8 TTS`)**: 
+  - **Kokoro-82M**: Ultra-fast non-autoregressive neural TTS (StyleTTS2 + ISTFTNet, 82M) with natural Italian prosody, RTF ~0.10x on Zen 5 CPU, and sub-500ms TTFA.
+  - **Audio8 TTS (0.1B & 0.6B)**: High-fidelity autoregressive neural speech synthesis with zero-shot voice cloning, accelerated on AMD NPU and CPU.
 - **🔌 OpenAI-Compatible API**: Standard `/v1/chat/completions`, `/v1/audio/transcriptions`, `/v1/audio/speech`, and `/v1/models` REST endpoints for direct drop-in replacement with the OpenAI Python SDK, LangChain, LlamaIndex, Continue, etc.
 - **🧩 Custom Quantizer Plugin Architecture**: Bring any custom architecture to the NPU by implementing `BaseQuantizer` (`tools/convert/base_quantizer.py`).
 
 ---
 
-## 📦 Supported Models & NPU Performance
+## 📦 Supported Models & Performance
 
-| Model | Architecture Key | Features | Output Size | NPU Status & Performance (32 Cores) |
+| Model | Architecture Key | Features | Output Size | Acceleration Backend & Performance |
 |---|---|---|---|---|
-| **Gemma 4 E4B** | `gemma4-e4b` | 42 layers, Per-Layer Embedding (PLE) | ~2.4 GB | **290–305 ms/tok (3.3–3.45 tok/s native)**, bursts **4.5–17 tok/s** |
-| **Gemma 4 12B** | `gemma4` | 48 layers, 32-core unified GEMV | ~6.8 GB | **696–705 ms/tok (1.43–1.94 tok/s)**, full 12.8B model |
-| **Gemma 3 1B** | `gemma3` | SentencePiece SPM, 26 layers | ~0.8 GB | **7–12 tok/s**, lightweight edge model |
-| **Llama 3.2 1B** | `llama` | Llama architecture, GQA attention | ~0.8 GB | **10–15 tok/s**, fast conversational model |
-| **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **High-accuracy audio transcription**, AMD NPU (XDNA2) + CPU fallback |
-| **Whisper Large v3 Turbo** | `whisper-large-v3-turbo` | State-of-the-art accuracy & speed, 90+ langs | ~1.6 GB | **Maximum accuracy SOTA speech recognition**, AMD NPU (XDNA2) + CPU |
-| **Whisper Large v3** | `whisper-large-v3` | Full 32-layer deep multilingual STT | ~3.1 GB | **Ultra-deep audio transcription**, AMD NPU (XDNA2) + CPU |
-| **Audio8 TTS 0.1B Preview** | `audio8-0.1b` | Neural speech synthesis & voice cloning (IT/Multilingual) | ~340 MB | **Low-latency TTS**, AMD NPU (XDNA2) + CPU |
-| **Audio8 TTS 0.6B Preview** | `audio8-0.6b` | High-fidelity 600M TTS with zero-shot cloning | ~1.2 GB | **SOTA acoustic fidelity**, AMD NPU (XDNA2) + CPU |
+| **Kokoro 82M TTS** | `hexgrad/Kokoro-82M` | Non-autoregressive StyleTTS2, Italian (`if_sara`, `im_nicola`, `af_heart`) | ~320 MB | **CPU Zen 5 (RTF ~0.10x, 250–450ms TTFA)** / GPU (CUDA) |
+| **Gemma 4 E4B** | `gemma4-e4b` | 42 layers, Per-Layer Embedding (PLE) | ~2.4 GB | **NPU (3.3–3.45 tok/s native)**, bursts **4.5–17 tok/s** |
+| **Gemma 4 12B** | `gemma4` | 48 layers, 32-core unified GEMV | ~6.8 GB | **NPU (1.43–1.94 tok/s)**, full 12.8B model |
+| **Llama 3.2 1B** | `llama` | Llama architecture, GQA attention | ~0.8 GB | **GPU Vulkan (35–50 tok/s)** / NPU (10–15 tok/s) |
+| **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **AMD NPU (XDNA2)** + CPU fallback (<600ms latency) |
+| **Whisper Large v3 Turbo** | `whisper-large-v3-turbo` | State-of-the-art accuracy & speed, 90+ langs | ~1.6 GB | **AMD NPU (XDNA2)** + CPU |
+| **Whisper Large v3** | `whisper-large-v3` | Full 32-layer deep multilingual STT | ~3.1 GB | **AMD NPU (XDNA2)** + CPU |
+| **Audio8 TTS 0.1B Preview** | `audio8-0.1b` | Neural speech synthesis & voice cloning (IT/Multilingual) | ~340 MB | **AMD NPU (XDNA2)** + CPU (DualAR 10-codebook) |
+| **Audio8 TTS 0.6B Preview** | `audio8-0.6b` | High-fidelity 600M TTS with zero-shot cloning | ~1.2 GB | **AMD NPU (XDNA2)** + CPU |
 
 > **⚡ Performance Transparency**: All models execute natively across all 32 AIE2 cores with zero-bubble asynchronous pipelining, saturating the physical memory bandwidth of the AMD Ryzen AI 300 series processor.
 
@@ -67,7 +69,7 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 Open `http://127.0.0.1:8000` in your browser.
 
 ### 4. Pick or Add a Model
-Click **"Aggiungi Modello"** in the Web UI to download and quantize **Gemma 4 12B**, **Gemma 4 E4B**, or **Gemma 3 1B** directly from Hugging Face in one click.
+Click **"Aggiungi Modello"** in the Web UI to download and quantize **Gemma 4 12B**, **Gemma 4 E4B**, **Kokoro 82M**, or **Whisper Large** directly from Hugging Face in one click.
 
 Or from the command line:
 ```bash

@@ -70,9 +70,10 @@ http://127.0.0.1:8000
 ### Option A: In-Browser 1-Click Setup (Recommended)
 1. In the Web UI at `http://127.0.0.1:8000`, click **"Aggiungi Modello"**.
 2. Pick a model from the supported preset list:
+   - **Gemma 4 E4B Edge 4B** (`gemma4-e4b`, default LLM)
    - **Gemma 4 12B Instruct** (`gemma4`)
-   - **Gemma 4 E4B Edge 4B** (`gemma4-e4b`)
-   - **Gemma 3 1B Instruct** (`gemma3`)
+   - **Kokoro 82M Neural TTS** (`kokoro-82m`, default TTS)
+   - **Whisper Large v3 Turbo STT** (`whisper-large-v3-turbo`, default STT)
    - **Llama 3.2 1B Instruct** (`llama`)
 3. Click **"Installa"**. Alveare will automatically download the GGUF from Hugging Face, quantize the weights into NPU Q4_0 layout, build the NPU hardware kernels, and register the package.
 

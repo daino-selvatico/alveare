@@ -51,11 +51,11 @@ Benchmarks performed on **AMD Ryzen AI 9 HX 370 / HX 470 Mini PC** running Linux
 
 ### Serving on GPU
 ```bash
-# Serve Gemma-3 on AMD Radeon 890M
-./alveare serve gemma3 --device gpu
+# Serve Gemma-4 E4B on AMD Radeon 890M / NVIDIA RTX GPU
+./alveare serve gemma4-e4b --device gpu
 
 # Force port and host
-./alveare serve gemma3 --device gpu --port 8000
+./alveare serve gemma4-e4b --device gpu --port 8000
 ```
 
 ### Verifying GPU Kernel Tests

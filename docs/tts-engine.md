@@ -1,24 +1,33 @@
 # 🗣️ Alveare Text-to-Speech (TTS) Engine
 
-Alveare includes an enterprise-grade, high-fidelity neural Text-to-Speech engine based on the **Audio8 DualAR Architecture**, optimized for **AMD Ryzen AI (XDNA2) NPUs** and multi-threaded CPU execution.
+Alveare provides a unified high-performance neural Text-to-Speech system featuring two complementary engines:
+1. **Kokoro-82M**: Ultra-fast non-autoregressive neural synthesis (StyleTTS2 + ISTFTNet) delivering sub-500ms TTFA with natural Italian voices (`if_sara`, `im_nicola`, `af_heart`) on CPU Zen 5 and GPU CUDA. Recommended default for Live interactive conversation.
+2. **Audio8 DualAR Architecture**: Enterprise-grade high-fidelity autoregressive neural synthesis (Slow Semantic + Fast Acoustic 10-codebook) with zero-shot voice cloning from audio samples, optimized for AMD Ryzen AI (XDNA2) NPU and CPU.
 
 ---
 
 ## 🌟 Highlights & Supported Models
 
-| Model | Architecture | Size | Primary Acceleration | Features |
-|---|---|---|---|---|
-| **Audio8 TTS 0.1B Preview** | `audio8` | ~340 MB | AMD XDNA2 NPU (32 Cores) / CPU | Ultra-compact footprint, natural Italian prosody, low latency |
-| **Audio8 TTS 0.6B Preview** | `audio8` | ~1.2 GB | AMD XDNA2 NPU (32 Cores) / CPU | SOTA multilingual acoustic fidelity, zero-shot voice cloning |
+| Model | Architecture | Size | Primary Acceleration | Sample Rate | Best For |
+|---|---|---|---|---|---|
+| **Kokoro 82M TTS** | `StyleTTS2 + ISTFTNet` | ~320 MB | CPU Zen 5 (RTF ~0.10x) / GPU CUDA | 24 kHz | **Full-duplex Live streaming, lowest TTFA (250–450ms)** |
+| **Audio8 TTS 0.1B Preview** | `DualAR (Mamba+10 Codebooks)` | ~340 MB | AMD XDNA2 NPU (32 Cores) / CPU | 44.1 kHz | **Zero-shot cloning, rich emotional prosody** |
+| **Audio8 TTS 0.6B Preview** | `DualAR (Mamba+10 Codebooks)` | ~1.2 GB | AMD XDNA2 NPU (32 Cores) / CPU | 44.1 kHz | **Studio-grade acoustic fidelity & cloning** |
 
 ---
 
-## ⚡ NPU Hardware Offload Architecture
+## ⚡ Architecture Comparison
 
-The TTS engine executes with the DualAR hybrid framework:
+### Kokoro-82M (Non-Autoregressive StyleTTS2)
+- **Single-Pass Parallel Synthesis**: Generates the entire audio waveform in one parallel forward pass using ISTFTNet vocoder.
+- **Ultra-Fast RTF**: Generates 2–3 seconds of speech in ~250–400ms on AMD Ryzen AI 9 Zen 5 CPU without requiring GPU VRAM.
+- **Presets**: Pre-computed style embeddings for Italian (`if_sara`, `im_nicola`) and English/melodic (`af_heart`).
+
+### Audio8 (DualAR Hybrid Framework)
 - **Slow Branch (Semantic Transformer)**: Predicts discrete semantic tokens conditioned on phonetic text encodings. Linear projection layers are offloaded to AMD Ryzen AI NPU cores (`NPULinear` / `gemv`).
 - **Fast Branch (Acoustic Transformer)**: Rapidly predicts 10 acoustic codebook tokens per step conditioned on slow branch hidden states.
 - **Neural Codec Vocoder**: Converts discrete multi-codebook streams into high-resolution 44.1 kHz raw audio waveforms.
+- **Zero-Shot Voice Cloning**: Conditioned on reference WAV audio snippets.
 
 ---
 

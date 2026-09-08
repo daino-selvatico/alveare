@@ -181,9 +181,9 @@ class ModelSlot:
 class ServerState:
     def __init__(self):
         self.slots: Dict[str, ModelSlot] = {
-            "llm": ModelSlot("llm", "text-generation", "gemma4", "gpu", 8000),
-            "stt": ModelSlot("stt", "speech-to-text", "openai/whisper-base", "cpu", 8001),
-            "tts": ModelSlot("tts", "text-to-speech", "Audio8/Audio8-TTS-Preview-0.1b", "npu", 8002),
+            "llm": ModelSlot("llm", "text-generation", "gemma4-e4b", "gpu", 8000),
+            "stt": ModelSlot("stt", "speech-to-text", "openai/whisper-large-v3-turbo", "cpu", 8001),
+            "tts": ModelSlot("tts", "text-to-speech", "hexgrad/Kokoro-82M", "cpu", 8002),
         }
         self.legacy: bool = False
         self.offline: bool = False
@@ -430,10 +430,10 @@ telemetry_tracker = HardwareTelemetryTracker()
 def load_config() -> Dict[str, Any]:
     default_config = {
         "first_launch": True,
-        "default_model": "gemma4",
+        "default_model": "gemma4-e4b",
         "host": "0.0.0.0",
         "port": 8000,
-        "device": "npu",
+        "device": "gpu",
         "legacy": False,
         "offline": False
     }
@@ -442,6 +442,8 @@ def load_config() -> Dict[str, Any]:
             with open(CONFIG_FILE, "r") as f:
                 data = json.load(f)
                 default_config.update(data)
+                if default_config.get("default_model") in ("gemma3", "gemma-3", "gemma4"):
+                    default_config["default_model"] = "gemma4-e4b"
         except Exception as e:
             print(f"[ControlServer] Warning: failed to read config file: {e}")
     return default_config
@@ -457,10 +459,10 @@ def save_config(cfg: Dict[str, Any]):
 
 # Initialize state from saved config
 _saved_cfg = load_config()
-state.active_model = _saved_cfg.get("default_model", "gemma4")
+state.active_model = _saved_cfg.get("default_model", "gemma4-e4b")
 state.host = _saved_cfg.get("host", "127.0.0.1")
 state.port = _saved_cfg.get("port", 8000)
-state.device = _saved_cfg.get("device", "npu")
+state.device = _saved_cfg.get("device", "gpu")
 state.legacy = _saved_cfg.get("legacy", False)
 state.offline = _saved_cfg.get("offline", False)
 
@@ -491,7 +493,7 @@ def discover_models() -> List[Dict[str, Any]]:
         if not folder_name.startswith("quantized_weights_"):
             continue
         alias = folder_name[len("quantized_weights_"):]
-        if not alias:
+        if not alias or alias in ("gemma3", "gemma-3"):
             continue
 
         cfg_path = real_p / "config.json"
@@ -503,6 +505,8 @@ def discover_models() -> List[Dict[str, Any]]:
                 with open(cfg_path, "r") as f:
                     cdata = json.load(f)
                     arch = cdata.get("model_type", "unknown")
+                    if arch in ("gemma3", "gemma-3"):
+                        continue
                     task = cdata.get("task", "text-generation")
                     name = cdata.get("name", alias)
                     description = cdata.get("description", "")
@@ -675,7 +679,7 @@ def parse_server_log_line(line_str: str):
         state.last_error = line_str.strip()
 
 
-def start_stt_slot(model: str = "openai/whisper-base", device: str = "cpu") -> bool:
+def start_stt_slot(model: str = "openai/whisper-large-v3-turbo", device: str = "cpu") -> bool:
     device = (device or "cpu").lower()
     dev_label = "NPU (AMD Ryzen AI XDNA2)" if device == "npu" else ("GPU (AMD Radeon 890M)" if device in ("gpu", "vulkan") else "CPU (Multi-Threaded)")
     append_log(f"[STT Slot] Avvio del motore Speech-to-Text ({model}) su {dev_label}...")
@@ -736,7 +740,7 @@ def start_stt_slot(model: str = "openai/whisper-base", device: str = "cpu") -> b
     threading.Thread(target=_load_stt_async, daemon=True).start()
     return True
 
-def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: Optional[str] = None) -> bool:
+def start_tts_slot(model: str = "hexgrad/Kokoro-82M", device: Optional[str] = None) -> bool:
     from runtime.py.tts_factory import is_kokoro_model, get_tts_engine
     if is_kokoro_model(model):
         device = (device or "cpu").lower()
@@ -804,7 +808,7 @@ def start_tts_slot(model: str = "Audio8/Audio8-TTS-Preview-0.1b", device: Option
     threading.Thread(target=_load_tts_async, daemon=True).start()
     return True
 
-def start_llm_slot(model: str = "gemma4", host: str = "127.0.0.1", port: int = 8000, device: str = "gpu", legacy: bool = False, offline: bool = False) -> bool:
+def start_llm_slot(model: str = "gemma4-e4b", host: str = "127.0.0.1", port: int = 8000, device: str = "gpu", legacy: bool = False, offline: bool = False) -> bool:
     device = (device or "gpu").lower()
     llm_slot = state.slots["llm"]
 
@@ -841,9 +845,11 @@ def start_llm_slot(model: str = "gemma4", host: str = "127.0.0.1", port: int = 8
     llm_slot.last_error = ""
 
     # Estimate total layers based on model name/arch
-    if "12b" in model.lower() or "gemma4" in model.lower():
+    if "gemma4-e4b" in model.lower() or "e4b" in model.lower() or "4b" in model.lower():
+        llm_slot.total_layers = 42
+    elif "12b" in model.lower() or "gemma4" in model.lower():
         llm_slot.total_layers = 48
-    elif "gemma3" in model.lower() or "1b" in model.lower() or "llama" in model.lower():
+    elif "1b" in model.lower() or "llama" in model.lower():
         llm_slot.total_layers = 26
     else:
         llm_slot.total_layers = 32
@@ -1316,7 +1322,7 @@ async def start_model_setup(req: ModelSetupRequest):
     if not re.match(r'^[a-zA-Z0-9_\-]+$', alias):
         raise HTTPException(status_code=400, detail="L'alias può contenere solo lettere, numeri, trattini e underscore.")
 
-    valid_archs = {"gemma4", "gemma4-e4b", "gemma3", "llama", "custom"}
+    valid_archs = {"gemma4", "gemma4-e4b", "llama", "custom"}
     if req.arch not in valid_archs:
         raise HTTPException(status_code=400, detail=f"Architettura non supportata '{req.arch}'. Opzioni ammesse: {', '.join(valid_archs)}")
 
@@ -1419,7 +1425,7 @@ async def upload_files(req: FileUploadRequest):
 @app.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     file: UploadFile = File(...),
-    model: Optional[str] = Form("whisper-base"),
+    model: Optional[str] = Form("whisper-large-v3-turbo"),
     language: Optional[str] = Form(None),
     prompt: Optional[str] = Form(None),
     response_format: Optional[str] = Form("json"),
@@ -1430,7 +1436,10 @@ async def audio_transcriptions(
         if not content:
             raise HTTPException(status_code=400, detail="Empty audio file provided")
 
-        stt = WhisperSTT.get_instance()
+        stt_slot = state.slots.get("stt")
+        active_model = model or (stt_slot.model if stt_slot and stt_slot.model else "openai/whisper-large-v3-turbo")
+        active_device = (stt_slot.device if stt_slot and stt_slot.device else "cpu")
+        stt = WhisperSTT.get_instance(model_id=active_model, device=active_device)
         state.is_transcribing = True
         try:
             res = await asyncio.to_thread(stt.transcribe, content, language or "auto")
@@ -2174,49 +2183,55 @@ class SlotControlRequest(BaseModel):
     port: Optional[int] = None
 
 class LiveStartRequest(BaseModel):
-    llm_model: Optional[str] = "gemma3"
+    llm_model: Optional[str] = "gemma4-e4b"
     llm_device: Optional[str] = "gpu"
-    stt_model: Optional[str] = "openai/whisper-base"
+    stt_model: Optional[str] = "openai/whisper-large-v3-turbo"
     stt_device: Optional[str] = "cpu"
-    tts_model: Optional[str] = "Audio8/Audio8-TTS-Preview-0.1b"
-    tts_device: Optional[str] = "npu"
-    voice: Optional[str] = "valeria"
+    tts_model: Optional[str] = "hexgrad/Kokoro-82M"
+    tts_device: Optional[str] = "cpu"
+    voice: Optional[str] = "if_sara"
     system_prompt: Optional[str] = None
+    max_context_turns: Optional[int] = 4
+    max_tokens: Optional[int] = 120
+    temperature: Optional[float] = 0.5
+    speed: Optional[float] = 1.0
+    min_silence_duration_s: Optional[float] = 0.35
+    enable_thinking: Optional[bool] = False
 
 @app.post("/api/control/slot/start")
 async def control_slot_start(req: SlotControlRequest):
     slot_id = req.slot.lower()
     if slot_id == "all":
-        llm_m = req.model or state.slots["llm"].model or "gemma4"
+        llm_m = req.model or state.slots["llm"].model or "gemma4-e4b"
         llm_d = req.device or state.slots["llm"].device or "gpu"
         start_llm_slot(model=llm_m, host=req.host or "127.0.0.1", port=req.port or 8000, device=llm_d)
 
-        stt_m = state.slots["stt"].model or "openai/whisper-base"
+        stt_m = state.slots["stt"].model or "openai/whisper-large-v3-turbo"
         stt_d = state.slots["stt"].device or "cpu"
         start_stt_slot(model=stt_m, device=stt_d)
 
-        tts_m = state.slots["tts"].model or "Audio8/Audio8-TTS-Preview-0.1b"
-        tts_d = state.slots["tts"].device or "npu"
+        tts_m = state.slots["tts"].model or "hexgrad/Kokoro-82M"
+        tts_d = state.slots["tts"].device or "cpu"
         start_tts_slot(model=tts_m, device=tts_d)
-        return {"status": "ok", "message": "Tutti gli slot avviati con preset tri-hardware"}
+        return {"status": "ok", "message": "Tutti gli slot avviati con preset ottimale"}
 
     if slot_id not in state.slots:
-        raise HTTPException(status_code=400, detail=f"Slot '{slot_id}' sconosciuto. Opzioni: llm, stt, tts, all")
+        raise HTTPException(status_code=400, detail=f"Slot '{slot_id}' sconosciuto.")
 
-    if slot_id == "stt":
-        model = req.model or state.slots["stt"].model or "openai/whisper-base"
-        device = req.device or state.slots["stt"].device or "cpu"
-        start_stt_slot(model=model, device=device)
+    if slot_id == "llm":
+        m = req.model or state.slots["llm"].model or "gemma4-e4b"
+        d = req.device or state.slots["llm"].device or "gpu"
+        start_llm_slot(model=m, host=req.host or "127.0.0.1", port=req.port or 8000, device=d)
+    elif slot_id == "stt":
+        m = req.model or state.slots["stt"].model or "openai/whisper-large-v3-turbo"
+        d = req.device or state.slots["stt"].device or "cpu"
+        start_stt_slot(model=m, device=d)
     elif slot_id == "tts":
-        model = req.model or state.slots["tts"].model or "Audio8/Audio8-TTS-Preview-0.1b"
-        device = req.device or state.slots["tts"].device or "npu"
-        start_tts_slot(model=model, device=device)
-    else:
-        model = req.model or state.slots["llm"].model or "gemma4"
-        device = req.device or state.slots["llm"].device or "gpu"
-        start_llm_slot(model=model, host=req.host or "127.0.0.1", port=req.port or 8000, device=device)
+        m = req.model or state.slots["tts"].model or "hexgrad/Kokoro-82M"
+        d = req.device or state.slots["tts"].device or "cpu"
+        start_tts_slot(model=m, device=d)
 
-    return {"status": "ok", "message": f"Slot '{slot_id}' in avvio", "slot": slot_id, "model": model, "device": device}
+    return {"status": "ok", "message": f"Avvio slot '{slot_id}' richiesto", "slot": slot_id}
 
 @app.post("/api/control/slot/stop")
 async def control_slot_stop(req: SlotControlRequest):
@@ -2231,17 +2246,22 @@ async def control_slot_stop(req: SlotControlRequest):
 
 @app.post("/api/live/start")
 async def api_live_start(req: LiveStartRequest):
-    llm_model = req.llm_model or "gemma3"
+    llm_model = req.llm_model or "gemma4-e4b"
     llm_device = req.llm_device or "gpu"
     start_llm_slot(model=llm_model, host="127.0.0.1", port=8000, device=llm_device)
 
-    stt_model = req.stt_model or "openai/whisper-base"
+    stt_model = req.stt_model or "openai/whisper-large-v3-turbo"
     stt_device = req.stt_device or "cpu"
     start_stt_slot(model=stt_model, device=stt_device)
 
-    tts_model = req.tts_model or "Audio8/Audio8-TTS-Preview-0.1b"
-    tts_device = req.tts_device or "npu"
+    tts_model = req.tts_model or "hexgrad/Kokoro-82M"
+    from runtime.py.tts_factory import is_kokoro_model
+    is_kokoro = is_kokoro_model(tts_model)
+    tts_device = req.tts_device or ("cpu" if is_kokoro else "npu")
     start_tts_slot(model=tts_model, device=tts_device)
+
+    default_voice = "if_sara" if is_kokoro else "valeria"
+    chosen_voice = req.voice or default_voice
 
     return {
         "status": "ok",
@@ -2249,7 +2269,14 @@ async def api_live_start(req: LiveStartRequest):
         "profile": {
             "llm": {"model": llm_model, "device": llm_device, "port": 8000},
             "stt": {"model": stt_model, "device": stt_device},
-            "tts": {"model": tts_model, "device": tts_device, "voice": req.voice or "valeria"}
+            "tts": {"model": tts_model, "device": tts_device, "voice": chosen_voice},
+            "settings": {
+                "max_context_turns": req.max_context_turns or 4,
+                "max_tokens": req.max_tokens or 120,
+                "temperature": req.temperature or 0.5,
+                "speed": req.speed or 1.0,
+                "enable_thinking": req.enable_thinking or False
+            }
         }
     }
 
@@ -2275,17 +2302,22 @@ async def websocket_live_endpoint(websocket: WebSocket):
     stt_slot = state.slots["stt"]
     tts_slot = state.slots["tts"]
 
+    from runtime.py.tts_factory import is_kokoro_model
+    is_kokoro = is_kokoro_model(tts_slot.model)
+    tts_dev = tts_slot.device or ("cpu" if is_kokoro else "npu")
+    default_voice = "if_sara" if is_kokoro else "valeria"
+
     session = LiveSession(
         session_id=session_id,
         send_event_fn=send_event,
         llm_host=llm_slot.host,
         llm_port=llm_slot.port,
-        llm_model=llm_slot.model or "gemma3",
+        llm_model=llm_slot.model or "gemma4-e4b",
         stt_device=stt_slot.device or "cpu",
-        tts_device=tts_slot.device or "npu",
-        stt_model=stt_slot.model or "openai/whisper-base",
-        tts_model=tts_slot.model or "Audio8/Audio8-TTS-Preview-0.1b",
-        voice="valeria"
+        tts_device=tts_dev,
+        stt_model=stt_slot.model or "openai/whisper-large-v3-turbo",
+        tts_model=tts_slot.model or "hexgrad/Kokoro-82M",
+        voice=default_voice
     )
     session.initialize_workers()
 
@@ -2295,9 +2327,18 @@ async def websocket_live_endpoint(websocket: WebSocket):
         "hardware_profile": {
             "llm": {"model": session.llm_model, "device": llm_slot.device, "status": llm_slot.status},
             "stt": {"model": session.stt_model, "device": session.stt_device, "status": stt_slot.status},
-            "tts": {"model": session.tts_model, "device": session.tts_device, "status": tts_slot.status}
+            "tts": {"model": session.tts_model, "device": session.tts_device, "status": tts_slot.status, "voice": session.voice}
         },
-        "sample_rate": session.sample_rate
+        "sample_rate": session.sample_rate,
+        "settings": {
+            "max_context_turns": session.max_context_turns,
+            "max_tokens": session.max_tokens,
+            "temperature": session.temperature,
+            "voice": session.voice,
+            "speed": getattr(session, "speed", 1.0),
+            "min_silence_duration_s": session.min_silence_duration_s,
+            "enable_thinking": session.enable_thinking
+        }
     })
 
     try:
@@ -2322,6 +2363,21 @@ async def websocket_live_endpoint(websocket: WebSocket):
                         await send_event({"event": "interrupted", "turn_id": session.turn_id})
                     elif msg_type == "ping":
                         await send_event({"event": "pong", "timestamp": time.time()})
+                    elif msg_type in ("config", "update_settings"):
+                        settings = payload.get("settings", {})
+                        session.update_settings(settings)
+                        await send_event({
+                            "event": "settings_updated",
+                            "settings": {
+                                "max_context_turns": session.max_context_turns,
+                                "max_tokens": session.max_tokens,
+                                "temperature": session.temperature,
+                                "voice": session.voice,
+                                "speed": getattr(session, "speed", 1.0),
+                                "min_silence_duration_s": session.min_silence_duration_s,
+                                "enable_thinking": session.enable_thinking
+                            }
+                        })
                 except Exception:
                     pass
     except WebSocketDisconnect:
@@ -2340,6 +2396,10 @@ class BuildKernelsRequest(BaseModel):
 async def get_kernels_status():
     result = {}
     models = discover_models()
+    gpu_spv_gemv = ROOT_DIR / "kernels" / "gpu" / "gemv_q4_0.spv"
+    gpu_spv_gemm = ROOT_DIR / "kernels" / "gpu" / "gemm_q4_0.spv"
+    gpu_ready = gpu_spv_gemv.exists() and gpu_spv_gemm.exists()
+
     for m in models:
         alias = m["alias"]
         possible_paths = [
@@ -2365,18 +2425,42 @@ async def get_kernels_status():
                 except Exception:
                     pass
 
-        if manifest_found and manifest_data:
-            result[m["id"]] = {
-                "manifest_exists": True,
-                "manifest_model_type": manifest_data.get("model_type"),
-                "kernels_count": len(manifest_data.get("kernels", [])),
-                "manifest_path": str(manifest_found)
+        is_tts = (m.get("task") == "text-to-speech")
+        is_stt = (m.get("task") == "speech-to-text")
+        is_kokoro = ("kokoro" in alias.lower() or m.get("arch") == "kokoro")
+        npu_manifest_exists = bool(manifest_found and manifest_data)
+        npu_count = len(manifest_data.get("kernels", [])) if npu_manifest_exists else 0
+
+        backends = {
+            "npu": {
+                "supported": "npu" in m.get("supported_devices", []),
+                "compiled": npu_manifest_exists,
+                "info": f"{npu_count} micro-kernel .xclbin AIE2" if npu_manifest_exists else ("Non applicabile (Architettura StyleTTS2)" if is_kokoro else "Non compilato")
+            },
+            "gpu": {
+                "supported": "gpu" in m.get("supported_devices", []),
+                "compiled": True if is_tts else gpu_ready,
+                "info": "PyTorch CUDA / ROCm" if is_tts else ("SPIR-V Compute Shaders Vulkan 1.3/1.4" if gpu_ready else "Shader da compilare")
+            },
+            "cpu": {
+                "supported": "cpu" in m.get("supported_devices", []),
+                "compiled": True,
+                "info": "PyTorch AVX-512 Zen 5 (Nativo RTF ~0.10x)" if is_kokoro else "AVX-512 / OpenMP Vector Engine (Nativo)"
             }
-        else:
-            result[m["id"]] = {
-                "manifest_exists": False,
-                "kernels_count": 0
-            }
+        }
+
+        result[m["id"]] = {
+            "manifest_exists": npu_manifest_exists,
+            "manifest_model_type": manifest_data.get("model_type") if npu_manifest_exists else None,
+            "kernels_count": npu_count,
+            "manifest_path": str(manifest_found) if manifest_found else None,
+            "gpu_shaders_ready": gpu_ready,
+            "cpu_kernels_ready": True,
+            "is_kokoro": is_kokoro,
+            "is_tts": is_tts,
+            "is_stt": is_stt,
+            "backends": backends
+        }
     return result
 
 @app.post("/api/control/build-kernels")
@@ -2637,7 +2721,7 @@ def ensure_ssl_certs(cert_path: Optional[Any] = None, key_path: Optional[Any] = 
         "-out", str(cert_file),
         "-days", "365",
         "-nodes",
-        "-subj", "/CN=Alveare NPU",
+        "-subj", "/CN=Alveare",
         "-addext", f"subjectAltName={san_str}"
     ]
 

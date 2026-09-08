@@ -88,7 +88,7 @@ ensure_runtime_env() {
 
 usage() {
   cat <<'EOF'
-alveare — open NPU LLM runtime for the AMD Ryzen AI (XDNA2) NPU on Linux
+alveare — Heterogeneous Neural Runtime (NPU • GPU • CPU) for AMD Ryzen AI & Linux
 
 USAGE:
     alveare <command> [options]
@@ -130,26 +130,32 @@ QUANTIZE:
         alveare serve g4-12b
 
 BUILD-KERNELS:
-    alveare build-kernels <model> [--no-gemm] [--max-batch N]
+    alveare build-kernels <model> [--device npu|gpu|cpu] [--no-gemm] [--max-batch N]
 
-    Builds the XDNA2 hardware kernels (.xclbin) tailored to the exact matrix 
-    shapes of your model on the AMD Ryzen AI NPU.
+    Builds the accelerated hardware kernels:
+    - npu: XDNA2 hardware kernels (.xclbin) tailored to matrix shapes
+    - gpu: Vulkan 1.3/1.4 SPIR-V compute shaders (gemv/gemm)
+    - cpu: Native AVX-512 / OpenMP vector engine
 
     Options:
+        --device <dev>         Target hardware (npu, gpu, cpu) (default: npu)
         --no-gemm              Skip prefill GEMM compilation (GEMV only)
         --max-batch <N>        Max prefill batch size (default: 16)
 
     Examples:
-        alveare build-kernels gemma4
+        alveare build-kernels gemma4-e4b --device npu
+        alveare build-kernels gemma4-e4b --device gpu
+        alveare build-kernels gemma4-e4b --device cpu
 
 SERVE:
     <model> resolves in this order: built-in shorthand, then an existing
     directory path, then a generated name (quantized_weights_<model>):
 
-        llama    ->  ./quantized_weights_llama     (Llama-3.2-1B-Instruct)
-        gemma3   ->  ./quantized_weights_gemma3    (Gemma-3-1B-it)
+        gemma4-e4b -> ./quantized_weights_gemma4-e4b (Gemma-4-4B-it / E4B Edge, default)
         gemma4   ->  ./quantized_weights_gemma4    (Gemma-4-12B-it)
-        g4-12b   ->  ./quantized_weights_g4-12b     (from `quantize g4-12b ...`)
+        llama    ->  ./quantized_weights_llama     (Llama-3.2-1B-Instruct)
+        kokoro   ->  ./quantized_weights_kokoro-82m (Kokoro-82M TTS)
+        whisper  ->  ./quantized_weights_whisper-large-v3-turbo (Whisper Large Turbo STT)
         <dir>    ->  any directory with a config.json
 
     Options:
@@ -160,7 +166,7 @@ SERVE:
         --legacy        Run the legacy Python server instead of the Native C++ server.
 
     Examples:
-        alveare serve gemma3 --device gpu
+        alveare serve gemma4-e4b --device gpu
         alveare serve gemma4 --device npu
         alveare serve g4-12b --port 9000
 
@@ -222,13 +228,16 @@ EOF
 resolve_weights_dir() {
   local model="$1"
   case "$model" in
+    gemma4-e4b|e4b|gemma4-4b|4b)   echo "$ROOT/quantized_weights_gemma4-e4b" ;;
+    gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
     llama|llama-3.2-1b|llama3.2)   echo "$ROOT/quantized_weights_llama" ;;
     gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/quantized_weights_gemma3" ;;
-    gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
-    gemma4-e4b|e4b)                echo "$ROOT/quantized_weights_gemma4-e4b" ;;
-    whisper|whisper-base)          echo "$ROOT/quantized_weights_whisper-base" ;;
-    whisper-large-v3-turbo|whisper-turbo) echo "$ROOT/quantized_weights_whisper-large-v3-turbo" ;;
-    whisper-large|whisper-large-v3)       echo "$ROOT/quantized_weights_whisper-large-v3" ;;
+    whisper|whisper-large-v3-turbo|whisper-turbo|whisper-large) echo "$ROOT/quantized_weights_whisper-large-v3-turbo" ;;
+    whisper-base)                  echo "$ROOT/quantized_weights_whisper-base" ;;
+    whisper-large-v3)              echo "$ROOT/quantized_weights_whisper-large-v3" ;;
+    kokoro|kokoro-82m|tts)         echo "$ROOT/quantized_weights_kokoro-82m" ;;
+    audio8|audio8-0.1b)            echo "$ROOT/quantized_weights_audio8-0.1b" ;;
+    audio8-0.6b)                   echo "$ROOT/quantized_weights_audio8-0.6b" ;;
     *)
       if [ -d "$model" ]; then
         echo "$model"
@@ -407,11 +416,11 @@ uvicorn.run(app, host='$host', port=$port, log_level='info')
 "
   fi
 
-  if [ "$model" = "audio8" ] || [[ "$model" == *"audio8"* ]] || [[ "$model" == *"tts"* ]]; then
-    local dev_label="NPU (XDNA2 Native)"
-    [ "$device" = "cpu" ] && dev_label="CPU (Multi-Threaded)"
-    [ "$device" = "gpu" ] && dev_label="GPU (AMD Radeon 890M)"
-    echo "Starting Audio8 Text-to-Speech Server on $dev_label..."
+  if [ "$model" = "audio8" ] || [[ "$model" == *"audio8"* ]] || [[ "$model" == *"tts"* ]] || [[ "$model" == *"kokoro"* ]]; then
+    local dev_label="CPU (Multi-Threaded Zen 5)"
+    [ "$device" = "gpu" ] && dev_label="GPU (CUDA / Compute)"
+    [ "$device" = "npu" ] && dev_label="NPU (XDNA2 Native)"
+    echo "Starting Text-to-Speech Server ($model) on $dev_label..."
     echo "  OpenAI TTS Endpoint:   http://$host:$port/v1/audio/speech"
     echo "  Web UI Studio:         http://$host:$port"
     echo
@@ -430,7 +439,7 @@ uvicorn.run(app, host='$host', port=$port, log_level='info')
     echo "Starting Native C++ Server..."
     local alias
     alias="$(basename "$weights_dir")"; alias="${alias#quantized_weights_}"; alias="${alias#quantized_weights}"
-    [ -z "$alias" ] && alias="gemma3"
+    [ -z "$alias" ] && alias="gemma4"
 
     local manifest=""
     if [ -f "$ROOT/kernels/build/$alias/manifest.json" ]; then
@@ -469,6 +478,32 @@ cmd_build_kernels() {
     exit 2
   fi
   local model="$1"; shift
+  local device="npu"
+  local remaining=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --device) device="$2"; shift 2 ;;
+      --device=*) device="${1#--device=}"; shift ;;
+      *) remaining+=("$1"); shift ;;
+    esac
+  done
+  device="$(echo "$device" | tr '[:upper:]' '[:lower:]')"
+
+  if [ "$device" = "gpu" ]; then
+    echo "Compiling GPU compute shaders (SPIR-V) for Vulkan 1.3/1.4..."
+    echo "Compiler: glslc / glslangValidator -> kernels/gpu/*.spv"
+    echo "----------------------------------------------------------------------"
+    exec "$PY" "$ROOT/tools/build_gpu_shaders.py"
+  elif [ "$device" = "cpu" ]; then
+    echo "Verifying and building native AVX-512 CPU runtime kernels..."
+    local build_dir="$ROOT/runtime/cpp/build"
+    if [ -d "$build_dir" ] && command -v cmake >/dev/null 2>&1; then
+      cmake --build "$build_dir" -j
+    fi
+    echo "✓ CPU AVX-512 vector engine verified and ready."
+    exit 0
+  fi
+
   local weights_dir
   weights_dir="$(resolve_weights_dir "$model")"
 
@@ -479,14 +514,14 @@ cmd_build_kernels() {
 
   local alias
   alias="$(basename "$weights_dir")"; alias="${alias#quantized_weights_}"; alias="${alias#quantized_weights}"
-  [ -z "$alias" ] && alias="gemma3"
+  [ -z "$alias" ] && alias="gemma4"
 
   local out_dir="$ROOT/kernels/build/$alias"
   mkdir -p "$out_dir"
-  echo "Building hardware kernels for $weights_dir -> $out_dir"
+  echo "Building hardware NPU kernels for $weights_dir -> $out_dir"
   echo "NOTE: This interrogates the XDNA2 compiler and can take a long time."
   echo "----------------------------------------------------------------------"
-  exec "$PY" "$ROOT/tools/build_kernels.py" --weights-dir "$weights_dir" --out "$out_dir" "$@"
+  exec "$PY" "$ROOT/tools/build_kernels.py" --weights-dir "$weights_dir" --out "$out_dir" "${remaining[@]}"
 }
 
 cmd_quantize() {
@@ -648,7 +683,7 @@ cmd_start() {
   fi
 
   echo "=========================================================="
-  echo " Alveare NPU Control Center & Web UI"
+  echo " Alveare Control Center & Web UI"
   local open_host="$host"
   [ "$open_host" = "0.0.0.0" ] && open_host="localhost"
   echo " Web UI URL:  ${proto}://$open_host:$port"

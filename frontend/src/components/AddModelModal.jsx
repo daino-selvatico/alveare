@@ -13,15 +13,15 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
   const [supportedModels, setSupportedModels] = useState([]);
   
   // Auto Mode State
-  const [selectedSupported, setSelectedSupported] = useState('gemma4');
-  const [autoAlias, setAutoAlias] = useState('gemma4');
+  const [selectedSupported, setSelectedSupported] = useState('gemma4-e4b');
+  const [autoAlias, setAutoAlias] = useState('gemma4-e4b');
   const [autoUrl, setAutoUrl] = useState('');
   const [autoFilename, setAutoFilename] = useState('');
 
   // Manual Mode State
   const [manualAlias, setManualAlias] = useState('custom-model');
   const [localGgufPath, setLocalGgufPath] = useState('');
-  const [manualArch, setManualArch] = useState('gemma4');
+  const [manualArch, setManualArch] = useState('gemma4-e4b');
   const [customScriptPath, setCustomScriptPath] = useState('');
 
   // Progress / Setup Task State
@@ -504,9 +504,8 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                       fontSize: '0.85rem'
                     }}
                   >
+                    <option value="gemma4-e4b">Gemma 4 E4B 4B (gemma4-e4b)</option>
                     <option value="gemma4">Gemma 4 12B (gemma4)</option>
-                    <option value="gemma4-e4b">Gemma 4 E4B (gemma4-e4b)</option>
-                    <option value="gemma3">Gemma 3 1B (gemma3)</option>
                     <option value="llama">Llama 3.2 (llama)</option>
                     <option value="custom">{t('addModel.customAlgorithmOption')}</option>
                   </select>

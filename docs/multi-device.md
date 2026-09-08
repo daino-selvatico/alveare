@@ -8,11 +8,11 @@ graph TD
     Mic -->|Raw PCM 16kHz| STT[Whisper STT Slot]
     
     subgraph "Tri-Hardware Routing"
-        STT -->|Transcribed Text| NPU["⚡ AMD Ryzen AI NPU (XDNA2)<br/>Whisper STT (2.0s RTF)"]
+        STT -->|Transcribed Text| NPU["⚡ AMD Ryzen AI NPU (XDNA2)<br/>Whisper STT (<600ms latency)"]
         NPU --> LLM[LLM Reasoning Slot]
         LLM -->|Prompt Tokens| GPU["🎮 AMD Radeon 890M GPU (Vulkan 1.4)<br/>Gemma-3-1B (35-45 tok/s)"]
         GPU -->|Streaming Sentences| TTS[Neural TTS Slot]
-        TTS -->|Speech Synthesis| CPU["💻 AMD Ryzen 24-Thread CPU (AVX2/512)<br/>Audio8 TTS (~10s Chunked)"]
+        TTS -->|Speech Synthesis| CPU["💻 AMD Ryzen Zen 5 CPU (AVX-512)<br/>Kokoro-82M (RTF ~0.10x, ~300ms)"]
     end
     
     CPU --> Speaker[Speaker / Web Audio Output]
@@ -24,11 +24,12 @@ graph TD
 
 Running multiple models concurrently on a compact unified-memory PC requires careful hardware partitioning to avoid resource contention and thermal throttling:
 
-| Engine Slot | Target Hardware | Why This Hardware? | Memory Footprint |
-|---|---|---|---|
-| **LLM Chat** | **AMD Radeon 890M GPU** | Maximum memory bandwidth and subgroup parallelism allow 35–45+ tok/s token streaming without CPU overhead. | ~1.5–3.5 GB VRAM |
-| **Whisper STT** | **AMD Ryzen AI NPU** | Continuous audio feature extraction and listening runs in background without touching GPU cores or stealing VRAM. | Dedicated SRAM + ~200 MB DRAM |
-| **Audio8 TTS** | **AMD Ryzen CPU** | 24 threads with AVX-512 vectorization synthesize speech chunks in parallel with zero GPU contention. | ~400 MB Host RAM |
+| Engine Slot | Target Hardware | Why This Hardware? | Typical Latency / Throughput | Memory Footprint |
+|---|---|---|---|---|
+| **LLM Chat** | **AMD Radeon 890M GPU** | Maximum memory bandwidth and subgroup parallelism allow 35–45+ tok/s token streaming without CPU overhead. | 35–45+ tok/s | ~1.5–3.5 GB VRAM |
+| **Whisper STT** | **AMD Ryzen AI NPU** | Continuous audio feature extraction and listening runs in background without touching GPU cores or stealing VRAM. | <600 ms STT | Dedicated SRAM + ~200 MB DRAM |
+| **Kokoro TTS (Default)** | **AMD Ryzen CPU** | Non-autoregressive StyleTTS2 on 24 Zen 5 threads generates speech in single pass with RTF ~0.10x and zero GPU VRAM. | 250–450 ms TTFA | ~320 MB Host RAM |
+| **Audio8 TTS (Optional)** | **AMD Ryzen NPU/CPU** | DualAR 10-codebook neural synthesis for zero-shot voice cloning from custom audio reference clips. | ~6–8s / chunk | ~340 MB–1.2 GB |
 
 ---
 
@@ -53,7 +54,7 @@ Each slot has its own independent lifecycle:
 ```json
 {
   "slot_type": "llm",
-  "model": "gemma3",
+  "model": "gemma4-e4b",
   "device": "gpu"
 }
 ```
@@ -70,11 +71,11 @@ Each slot has its own independent lifecycle:
 `POST /api/live/start`
 ```json
 {
-  "llm_model": "gemma3",
+  "llm_model": "gemma4-e4b",
   "llm_device": "gpu",
-  "stt_model": "whisper-base",
-  "stt_device": "npu",
-  "tts_model": "audio8-0.1b",
+  "stt_model": "whisper-large-v3-turbo",
+  "stt_device": "cpu",
+  "tts_model": "hexgrad/Kokoro-82M",
   "tts_device": "cpu"
 }
 ```
@@ -89,13 +90,13 @@ Returns status for each slot (`llm`, `stt`, `tts`), GPU usage (`percent`, `vram_
 
 ```bash
 # Serve LLM on GPU
-./alveare serve gemma3 --device gpu
+./alveare serve gemma4-e4b --device gpu
 
 # Serve LLM on NPU
-./alveare serve gemma4 --device npu
+./alveare serve gemma4-e4b --device npu
 
 # Serve LLM on CPU
-./alveare serve gemma3 --device cpu
+./alveare serve gemma4-e4b --device cpu
 
 # Launch the interactive full-duplex live session using all three engines
 ./alveare live

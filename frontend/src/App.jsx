@@ -463,7 +463,7 @@ export default function App() {
             <AudioPlayground
               apiBase={apiBase}
               status={status}
-              activeModel={status?.slots?.stt?.model || status?.slots?.tts?.model || status?.model || 'whisper-base'}
+              activeModel={status?.slots?.stt?.model || status?.slots?.tts?.model || status?.model || 'whisper-large-v3-turbo'}
               isServerRunning={status?.slots?.stt?.status === 'running' || status?.slots?.tts?.status === 'running' || status?.is_running || false}
               models={models}
               onNavigateToControl={() => setActiveTab('control')}

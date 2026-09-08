@@ -22,9 +22,9 @@ Alveare 3.0 features a low-latency, full-duplex conversational engine enabling n
                  │ (Token Stream + Sentence Boundaries)
                  ▼
         ┌─────────────────┐
-        │   Audio8 TTS    │ ◄── Multi-threaded neural synthesis on CPU
+        │ Kokoro / Audio8 │ ◄── Sub-second neural synthesis on CPU (Kokoro) or NPU (Audio8)
         └────────┬────────┘
-                 │ (Chunked WAV Audio)
+                 │ (Chunked Audio)
                  ▼
         Speaker Output & WebSocket Streaming
 ```
@@ -34,10 +34,10 @@ Alveare 3.0 features a low-latency, full-duplex conversational engine enabling n
 ## ⚡ Key Capabilities
 
 ### 1. Voice Activity Detection (VAD) & Smart Turn-Taking
-- Analyzes incoming 16-bit 16kHz linear PCM audio chunks (default: 40ms frames).
-- Calculates root-mean-square (RMS) energy against an adaptive noise floor (default threshold: `0.012`).
+- Analyzes incoming 16-bit 16kHz linear PCM audio chunks.
+- Calculates root-mean-square (RMS) energy against an adaptive noise floor (default threshold: `0.015`).
 - Requires consecutive frames exceeding the threshold (250ms) to trigger a speech onset.
-- Detects utterance completion after 450ms of trailing silence, triggering immediate transcription.
+- Detects utterance completion after trailing silence (configurable from `0.20s` to `1.0s`, default: `0.35s`), triggering immediate transcription.
 
 ### 2. Full-Duplex User Barge-In (Interruption Handling)
 When the assistant is speaking, if the user starts speaking:
@@ -47,11 +47,26 @@ When the assistant is speaking, if the user starts speaking:
 4. Any running LLM text generation or TTS synthesis tasks are aborted immediately.
 5. The system transitions seamlessly into listening mode for the user's new question.
 
-### 3. Pipelined Sentence-Level Streaming
+### 3. Pipelined Sentence-Level Streaming with Kokoro-82M
 Instead of waiting for the LLM to complete its full response:
-- Tokens are accumulated until a clause or sentence boundary is reached (`.`, `!`, `?`, `\n`, `:`, `;`).
-- The sentence chunk is dispatched asynchronously to the Audio8 TTS worker while the LLM continues generating the subsequent sentence.
-- Time-to-First-Audio (TTFA) drops to **under 800ms**.
+- Tokens are accumulated until a clause boundary is reached (min 3 words or punctuation `,`, `.`, `!`, `?`, `\n`, `:`, `;`).
+- The clause chunk is dispatched asynchronously to the Kokoro TTS worker (~200–300ms on Zen 5 CPU) while the LLM continues generating the subsequent sentence.
+- Time-to-First-Audio (TTFA) drops to **250–450ms**, ensuring conversational real-time responsiveness.
+
+---
+
+## 🎛️ Live Settings & Dynamic Tuning
+
+The Live Studio includes a slide-out **Live Settings** drawer in the UI and supports real-time parameter tuning without restarting the session:
+
+- **Context Window (Max History Turns)**: Regulates the number of conversational turns kept in memory (1 to 16 turns). Prevents context saturation and reduces prompt evaluation latency.
+- **Max Tokens per Response**: Constrains output length (e.g., 40 to 300 tokens, default: 120) to guarantee crisp, concise verbal answers.
+- **LLM Temperature**: Controls response variability (0.0 to 1.5, default: 0.5).
+- **Live Voice Selection**: Switch instantly between Kokoro Italian voices (`if_sara`, `im_nicola`, `af_heart`) or Audio8 voices (`valeria`, `daino`, `bolt`).
+- **Speech Rate / Speed**: Adjustable synthesis playback rate (0.75x to 1.5x).
+- **VAD Silence Duration**: Fine-tunes how quickly turn-taking triggers (0.2s for snappy interruptions, 0.5s for thoughtful pauses).
+- **Thinking Toggle**: Disables or enables internal reasoning tokens (e.g. `<thought>` tags in Gemma 4) to eliminate latency overhead during live speech.
+- **System Prompt Presets**: Choose between Ultra-Fast Concise, Conversational, Technical Assistant, or custom instructions.
 
 ---
 
@@ -64,22 +79,24 @@ The live session communicates over bidirectional WebSocket at `/ws/live`.
 #### 1. Binary Audio Chunk
 Send raw 16-bit mono 16000Hz PCM audio directly as binary frames.
 
-#### 2. Start Session
+#### 2. Dynamic Settings Update (`type: "config"`)
 ```json
 {
-  "type": "start_session",
-  "voice": "valeria"
+  "type": "config",
+  "settings": {
+    "max_context_turns": 6,
+    "max_tokens": 100,
+    "temperature": 0.4,
+    "voice": "if_sara",
+    "speed": 1.05,
+    "min_silence_duration_s": 0.30,
+    "enable_thinking": false,
+    "system_prompt": "Rispondi in modo conciso e naturale."
+  }
 }
 ```
 
-#### 3. Stop Session
-```json
-{
-  "type": "stop_session"
-}
-```
-
-#### 4. Interrupt
+#### 3. Interrupt
 ```json
 {
   "type": "interrupt"

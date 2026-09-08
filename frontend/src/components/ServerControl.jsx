@@ -20,22 +20,26 @@ export const CANONICAL_MODEL_MAP = {
   'cocore': 'hexgrad/Kokoro-82M',
   'cocore-82m': 'hexgrad/Kokoro-82M',
   '82m': 'hexgrad/Kokoro-82M',
+  'gemma4-e4b': 'gemma4-e4b',
+  'gemma4-4b': 'gemma4-e4b',
+  'e4b': 'gemma4-e4b',
+  'gemma4-12b': 'gemma4',
+  'g4-12b': 'gemma4',
 };
 
 export const DEFAULT_MODEL_LABELS = {
   // LLM
   'gemma4': 'Gemma 4 12B',
-  'gemma4-e4b': 'Gemma 4 E4B',
-  'gemma3': 'Gemma 3 1B',
+  'gemma4-e4b': 'Gemma 4 E4B (4B)',
   'llama': 'Llama 3.2 3B',
   // STT
-  'openai/whisper-base': 'Whisper Base',
   'openai/whisper-large-v3-turbo': 'Whisper Large v3 Turbo',
   'openai/whisper-large-v3': 'Whisper Large v3',
+  'openai/whisper-base': 'Whisper Base',
   // TTS
+  'hexgrad/Kokoro-82M': 'Kokoro 82M',
   'Audio8/Audio8-TTS-Preview-0.1b': 'Audio8 0.1B',
   'Audio8/Audio8-TTS-Preview-0.6b': 'Audio8 0.6B',
-  'hexgrad/Kokoro-82M': 'Kokoro 82M',
 };
 
 export const normalizeModelOption = (m) => {
@@ -69,15 +73,15 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
   // Slot Model & Device selections
   const [slotModels, setSlotModels] = useState({
-    llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model || 'gemma3',
-    stt: CANONICAL_MODEL_MAP[sttSlot.model] || sttSlot.model || 'openai/whisper-base',
-    tts: CANONICAL_MODEL_MAP[ttsSlot.model] || ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b'
+    llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model || 'gemma4-e4b',
+    stt: CANONICAL_MODEL_MAP[sttSlot.model] || sttSlot.model || 'openai/whisper-large-v3-turbo',
+    tts: CANONICAL_MODEL_MAP[ttsSlot.model] || ttsSlot.model || 'hexgrad/Kokoro-82M'
   });
 
   const [slotDevices, setSlotDevices] = useState({
     llm: llmSlot.device || 'gpu',
     stt: sttSlot.device || 'cpu',
-    tts: ttsSlot.device || 'npu'
+    tts: ttsSlot.device || 'cpu'
   });
 
   // Keep state in sync with status when it arrives
@@ -103,6 +107,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   const [noGemm, setNoGemm] = useState(false);
   const [maxBatch, setMaxBatch] = useState(16);
   const [buildingModel, setBuildingModel] = useState(null);
+  const [buildTargetModal, setBuildTargetModal] = useState(null);
+  const [buildTargetDevice, setBuildTargetDevice] = useState('npu');
+  const [ttsVoice, setTtsVoice] = useState('if_sara');
   const [isAddModelOpen, setIsAddModelOpen] = useState(false);
 
   const fetchKernelStatus = useCallback(async () => {
@@ -124,17 +131,17 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   // Available model options for each slot
   const llmModelOptions = deduplicateModelOptions([
     ...models.filter(m => m.task === 'text-generation'),
-    'gemma3', 'gemma4-e4b', 'gemma4', 'llama'
+    'gemma4', 'gemma4-e4b', 'llama'
   ]);
 
   const sttModelOptions = deduplicateModelOptions([
     ...models.filter(m => m.task === 'speech-to-text'),
-    'openai/whisper-base', 'openai/whisper-large-v3-turbo'
+    'openai/whisper-large-v3-turbo', 'openai/whisper-base'
   ]);
 
   const ttsModelOptions = deduplicateModelOptions([
     ...models.filter(m => m.task === 'text-to-speech'),
-    'Audio8/Audio8-TTS-Preview-0.1b', 'Audio8/Audio8-TTS-Preview-0.6b', 'hexgrad/Kokoro-82M'
+    'hexgrad/Kokoro-82M', 'Audio8/Audio8-TTS-Preview-0.1b', 'Audio8/Audio8-TTS-Preview-0.6b'
   ]);
 
   const isKokoroTts = Boolean(
@@ -198,11 +205,11 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          llm_model: slotModels.llm || 'gemma3',
+          llm_model: slotModels.llm || 'gemma4-e4b',
           llm_device: slotDevices.llm || 'gpu',
-          stt_model: slotModels.stt || 'openai/whisper-base',
+          stt_model: slotModels.stt || 'openai/whisper-large-v3-turbo',
           stt_device: slotDevices.stt || 'cpu',
-          tts_model: slotModels.tts || 'Audio8/Audio8-TTS-Preview-0.1b',
+          tts_model: slotModels.tts || 'hexgrad/Kokoro-82M',
           tts_device: isKokoroTts && slotDevices.tts === 'npu' ? 'cpu' : (slotDevices.tts || (isKokoroTts ? 'cpu' : 'npu'))
         })
       });
@@ -258,11 +265,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   };
 
   const handleBuildKernels = async (modelId, deviceOverride) => {
-    const device = deviceOverride || slotDevices.llm || 'npu';
-    if (!confirm(t('serverControl.buildKernelConfirm', { modelId }))) {
+    const device = deviceOverride || buildTargetDevice || slotDevices.llm || 'npu';
+    if (!confirm(t('serverControl.buildKernelConfirm', { modelId, device: device.toUpperCase() }))) {
       return;
     }
     setBuildingModel(modelId);
+    setBuildTargetModal(null);
     try {
       await fetch(`${apiBase}/api/control/build-kernels`, {
         method: 'POST',
@@ -274,7 +282,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           max_batch: maxBatch
         })
       });
-      alert(t('serverControl.buildKernelStarted', { modelId }));
+      alert(t('serverControl.buildKernelStarted', { modelId, device: device.toUpperCase() }));
       setTimeout(fetchKernelStatus, 3000);
     } catch (e) {
       alert(t('serverControl.buildKernelError', { error: e }));
@@ -748,6 +756,41 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
               : 'Sintesi vocale Audio8 a bassissima latenza con voice cloning zero-shot ed espressività italiana.'}
           </div>
 
+          {/* TTS Parameters Config Box */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', padding: '0.6rem 0.75rem', background: 'rgba(0,0,0,0.25)', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
+            <span style={{ fontWeight: 700, color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+              {isKokoroTts ? 'PARAMETRI KOKORO TTS' : 'PARAMETRI AUDIO8 TTS'}
+            </span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Voce Default:</span>
+              <select
+                value={ttsVoice}
+                onChange={e => setTtsVoice(e.target.value)}
+                style={{ padding: '0.25rem 0.5rem', borderRadius: '6px', background: 'rgba(0,0,0,0.4)', color: 'var(--text-main)', border: '1px solid var(--border-color)', fontSize: '0.78rem' }}
+              >
+                {isKokoroTts ? (
+                  <>
+                    <option value="if_sara">if_sara (Italiana Femminile)</option>
+                    <option value="im_nicola">im_nicola (Italiano Maschile)</option>
+                    <option value="af_heart">af_heart (Melodica HeartMuLa)</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="valeria">valeria (Ufficiale Alveare)</option>
+                    <option value="daino">daino (Italiano Maschile)</option>
+                    <option value="bolt">bolt (Conciso)</option>
+                  </>
+                )}
+              </select>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <span>Campionamento:</span>
+              <span style={{ fontWeight: 600, color: '#34d399' }}>
+                {isKokoroTts ? '24000 Hz (StyleTTS2)' : '44100 Hz (DualAR Mamba)'}
+              </span>
+            </div>
+          </div>
+
           {/* Slot Action Button */}
           <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
             {ttsSlot.status === 'running' || ttsSlot.status === 'starting' ? (
@@ -898,18 +941,43 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                     </div>
                   </div>
 
-                  {/* Hardware Kernels status */}
-                  <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{t('serverControl.hardwareKernels')}</span>
-                    {isKernelMatching ? (
-                      <span style={{ color: '#34d399', fontWeight: 600 }}>
-                        {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
+                  {/* Multi-Hardware Acceleration Status */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', padding: '0.65rem 0.8rem', borderRadius: '8px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text-muted)', fontSize: '0.72rem', letterSpacing: '0.04em' }}>
+                        {t('serverControl.hardwareKernels')}
                       </span>
-                    ) : (
-                      <span style={{ color: '#fbbf24', fontWeight: 600 }}>
-                        {t('serverControl.notCompiled')}
+                    </div>
+
+                    {/* NPU Backend */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        ⚡ NPU:
                       </span>
-                    )}
+                      <span style={{ fontWeight: 600, color: (mKernel?.manifest_exists || isKernelMatching) ? '#34d399' : (mKernel?.is_kokoro ? 'var(--text-muted)' : '#fbbf24'), fontSize: '0.78rem' }}>
+                        {mKernel?.backends?.npu?.info || ((mKernel?.manifest_exists || isKernelMatching) ? t('serverControl.compiledCount', { count: mKernel?.kernels_count || 0 }) : (mKernel?.is_kokoro ? 'Non applicabile (StyleTTS2)' : t('serverControl.notCompiled')))}
+                      </span>
+                    </div>
+
+                    {/* GPU Backend */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: '#c084fc', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        🎮 GPU:
+                      </span>
+                      <span style={{ fontWeight: 600, color: '#c084fc', fontSize: '0.78rem' }}>
+                        {mKernel?.backends?.gpu?.info || (mKernel?.is_tts ? 'PyTorch CUDA / Direct' : 'SPIR-V Shaders Vulkan 1.4')}
+                      </span>
+                    </div>
+
+                    {/* CPU Backend */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: '#60a5fa', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        🖥️ CPU:
+                      </span>
+                      <span style={{ fontWeight: 600, color: '#60a5fa', fontSize: '0.78rem' }}>
+                        {mKernel?.backends?.cpu?.info || 'AVX-512 / OpenMP (Nativo)'}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Actions */}
@@ -917,7 +985,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                     <button
                       className="btn-secondary mobile-touch-target"
                       style={{ flex: 1, padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)', justifyContent: 'center' }}
-                      onClick={() => handleBuildKernels(m.id)}
+                      onClick={() => setBuildTargetModal({ modelId: m.id })}
                       disabled={buildingModel === m.id}
                       title={t('serverControl.compileKernelTitle')}
                       aria-label={`Compila kernel per ${m.id}`}
@@ -1046,6 +1114,178 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           setSlotModels(prev => ({ ...prev, llm: alias }));
         }}
       />
+
+      {/* Build Target Hardware Modal */}
+      {buildTargetModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="build-modal-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.75)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1rem'
+          }}
+        >
+          <div
+            className="glass-card"
+            style={{
+              maxWidth: '540px',
+              width: '100%',
+              padding: '1.75rem',
+              borderRadius: '16px',
+              border: '1px solid rgba(139,92,246,0.4)',
+              background: '#0f172a',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.25rem',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.6)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Hammer size={22} color="var(--accent-purple)" />
+                <h3 id="build-modal-title" style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>
+                  {t('serverControl.compileKernel')}
+                </h3>
+              </div>
+              <button
+                className="btn-secondary"
+                onClick={() => setBuildTargetModal(null)}
+                style={{ padding: '0.35rem 0.6rem' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+              Modello: <strong style={{ color: 'var(--text-main)' }}>{buildTargetModal.modelId}</strong>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                {t('serverControl.targetHardware')}
+              </span>
+
+              {/* Target 1: NPU */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.75rem',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: buildTargetDevice === 'npu' ? '2px solid #34d399' : '1px solid var(--border-color)',
+                  background: buildTargetDevice === 'npu' ? 'rgba(52, 211, 153, 0.1)' : 'rgba(0,0,0,0.25)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <input
+                  type="radio"
+                  name="buildTarget"
+                  checked={buildTargetDevice === 'npu'}
+                  onChange={() => setBuildTargetDevice('npu')}
+                  style={{ marginTop: '0.2rem', accentColor: '#34d399' }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontWeight: 700, color: '#34d399' }}>
+                    {t('serverControl.targetNpuDesc')}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                    Compila micro-kernel AIE2 (.xclbin) per GEMV Q4 / prefill GEMM. Richiede compilazione XDNA2.
+                  </span>
+                </div>
+              </label>
+
+              {/* Target 2: GPU */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.75rem',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: buildTargetDevice === 'gpu' ? '2px solid #c084fc' : '1px solid var(--border-color)',
+                  background: buildTargetDevice === 'gpu' ? 'rgba(192, 132, 252, 0.1)' : 'rgba(0,0,0,0.25)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <input
+                  type="radio"
+                  name="buildTarget"
+                  checked={buildTargetDevice === 'gpu'}
+                  onChange={() => setBuildTargetDevice('gpu')}
+                  style={{ marginTop: '0.2rem', accentColor: '#c084fc' }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontWeight: 700, color: '#c084fc' }}>
+                    {t('serverControl.targetGpuDesc')}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                    Compila compute shaders SPIR-V (Vulkan 1.3/1.4) con glslc / glslangValidator.
+                  </span>
+                </div>
+              </label>
+
+              {/* Target 3: CPU */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.75rem',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: buildTargetDevice === 'cpu' ? '2px solid #60a5fa' : '1px solid var(--border-color)',
+                  background: buildTargetDevice === 'cpu' ? 'rgba(96, 165, 250, 0.1)' : 'rgba(0,0,0,0.25)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <input
+                  type="radio"
+                  name="buildTarget"
+                  checked={buildTargetDevice === 'cpu'}
+                  onChange={() => setBuildTargetDevice('cpu')}
+                  style={{ marginTop: '0.2rem', accentColor: '#60a5fa' }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontWeight: 700, color: '#60a5fa' }}>
+                    {t('serverControl.targetCpuDesc')}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                    Verifica e compila il motore C++ nativo AVX-512 / OpenMP per CPU Zen 5.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            {/* Modal Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+              <button
+                className="btn-secondary"
+                onClick={() => setBuildTargetModal(null)}
+              >
+                Annulla
+              </button>
+              <button
+                className="btn-primary"
+                onClick={() => handleBuildKernels(buildTargetModal.modelId, buildTargetDevice)}
+                style={{ background: 'linear-gradient(135deg, #a855f7 0%, #06b6d4 100%)' }}
+              >
+                Avvia Compilazione
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -48,20 +48,20 @@ async def main():
     stt_slot = slots.get("stt", {})
     tts_slot = slots.get("tts", {})
 
-    print(f"  • LLM Chat:   \033[1;35m{llm_slot.get('model', 'gemma3')} on {llm_slot.get('device', 'gpu').upper()}\033[0m (status: {llm_slot.get('status', 'unknown')})")
-    print(f"  • STT Voice:  \033[1;35m{stt_slot.get('model', 'whisper-base')} on {stt_slot.get('device', 'npu').upper()}\033[0m (status: {stt_slot.get('status', 'unknown')})")
-    print(f"  • TTS Voice:  \033[1;35m{tts_slot.get('model', 'audio8-0.1b')} on {tts_slot.get('device', 'cpu').upper()}\033[0m (status: {tts_slot.get('status', 'unknown')})")
+    print(f"  • LLM Chat:   \033[1;35m{llm_slot.get('model', 'gemma4-e4b')} on {llm_slot.get('device', 'gpu').upper()}\033[0m (status: {llm_slot.get('status', 'unknown')})")
+    print(f"  • STT Voice:  \033[1;35m{stt_slot.get('model', 'whisper-large-v3-turbo')} on {stt_slot.get('device', 'npu').upper()}\033[0m (status: {stt_slot.get('status', 'unknown')})")
+    print(f"  • TTS Voice:  \033[1;35m{tts_slot.get('model', 'kokoro-82m')} on {tts_slot.get('device', 'cpu').upper()}\033[0m (status: {tts_slot.get('status', 'unknown')})")
 
     # If any slot is stopped, start live profile automatically
     if llm_slot.get("status") != "running" or stt_slot.get("status") != "running" or tts_slot.get("status") != "running":
         print(f"\033[0;34m>>> Activating Tri-Hardware Live Session via /api/live/start...\033[0m")
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(f"{base_url}/api/live/start", json={
-                "llm_model": "gemma3",
+                "llm_model": "gemma4-e4b",
                 "llm_device": "gpu",
-                "stt_model": "openai/whisper-base",
-                "stt_device": "npu",
-                "tts_model": "Audio8/Audio8-TTS-Preview-0.1b",
+                "stt_model": "openai/whisper-large-v3-turbo",
+                "stt_device": "cpu",
+                "tts_model": "hexgrad/Kokoro-82M",
                 "tts_device": "cpu"
             })
 

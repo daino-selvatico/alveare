@@ -732,7 +732,7 @@ export default function ChatPlayground({
           try {
             const formData = new FormData();
             formData.append('file', wavBlob, fileName);
-            formData.append('model', 'whisper-base');
+            formData.append('model', 'whisper-large-v3-turbo');
             const sttRes = await fetch(`${apiBase}/v1/audio/transcriptions`, {
               method: 'POST',
               body: formData

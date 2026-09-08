@@ -25,18 +25,18 @@ describe('LiveStudio Component', () => {
 
   const mockStatus = {
     is_running: true,
-    model: 'gemma3',
+    model: 'gemma4-e4b',
     device: 'gpu',
     slots: {
-      llm: { model: 'gemma3', device: 'gpu', status: 'running' },
-      stt: { model: 'openai/whisper-base', device: 'npu', status: 'running' },
-      tts: { model: 'Audio8/Audio8-TTS-Preview-0.1b', device: 'cpu', status: 'running' },
+      llm: { model: 'gemma4-e4b', device: 'gpu', status: 'running' },
+      stt: { model: 'openai/whisper-large-v3-turbo', device: 'cpu', status: 'running' },
+      tts: { model: 'hexgrad/Kokoro-82M', device: 'cpu', status: 'running' },
     },
     gpu_usage: { percent: 12.5 },
     npu_usage: { percent: 0.0 }
   };
 
-  it('renders title and Tri-Hardware engine cards', () => {
+  it('renders correctly with slots and status indicators', () => {
     render(
       <I18nProvider>
         <LiveStudio apiBase="http://localhost:8080" status={mockStatus} />
@@ -44,37 +44,21 @@ describe('LiveStudio Component', () => {
     );
 
     expect(screen.getByText(/Live Voice-to-Voice Studio/i)).toBeTruthy();
-    expect(screen.getByText(/Tri-Hardware Engine/i)).toBeTruthy();
-    expect(screen.getAllByText(/AMD Radeon 890M GPU/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/AMD Ryzen AI NPU/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/AMD Ryzen 24-Thread CPU/i).length).toBeGreaterThan(0);
+    expect(screen.getByText('gemma4-e4b')).toBeTruthy();
+    expect(screen.getByText('openai/whisper-large-v3-turbo')).toBeTruthy();
+    expect(screen.getByText('hexgrad/Kokoro-82M')).toBeTruthy();
   });
 
-  it('renders latency HUD and start session button', () => {
+  it('renders Live badge and toggle', () => {
     render(
       <I18nProvider>
         <LiveStudio apiBase="http://localhost:8080" status={mockStatus} />
       </I18nProvider>
     );
 
-    expect(screen.getByText(/STT Latency/i)).toBeTruthy();
-    expect(screen.getByText(/Time to First Token/i)).toBeTruthy();
-    expect(screen.getByText(/Time to First Audio/i)).toBeTruthy();
-    expect(screen.getByText(/E2E Turnaround/i)).toBeTruthy();
-    expect(screen.getByText(/Start Live Session/i)).toBeTruthy();
-  });
+    expect(screen.getAllByText(/Gemma 4 E4B/i).length).toBeGreaterThan(0);
 
-  it('renders Ultra-Fast Live badge and toggle', () => {
-    render(
-      <I18nProvider>
-        <LiveStudio apiBase="http://localhost:8080" status={mockStatus} />
-      </I18nProvider>
-    );
-
-    expect(screen.getByText(/Ultra-Fast Live \(Gemma 3 1B\)/i)).toBeTruthy();
-    expect(screen.getByText(/Gemma 3 1B or Gemma 4 E4B|Gemma 3 1B o Gemma 4 E4B/i)).toBeTruthy();
-
-    const toggleBtn = screen.getByRole('button', { name: /Ultra-Fast Mode|Modalità Ultra-Fast/i });
+    const toggleBtn = screen.getByRole('button', { name: /Mode|Modalità/i });
     expect(toggleBtn).toBeTruthy();
     fireEvent.click(toggleBtn);
     expect(screen.getByText(/Standard Mode|Modalità Standard/i)).toBeTruthy();

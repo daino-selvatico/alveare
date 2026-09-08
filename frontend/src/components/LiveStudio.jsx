@@ -2,9 +2,17 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Mic, MicOff, Volume2, Radio, Zap, Cpu, Activity, RotateCw,
   Play, Square, MessageSquare, AlertCircle, ShieldAlert,
-  ExternalLink, ChevronDown, ChevronUp, Copy, Check, X
+  ExternalLink, ChevronDown, ChevronUp, Copy, Check, X,
+  Sliders, Settings, Sparkles, MessageCircle
 } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
+
+const PROMPT_PRESETS = {
+  concise: "Sei Alveare Live, assistente vocale ultra-rapido. Rispondi SEMPRE in modo brevissimo, diretto e conciso (massimo 1-2 frasi brevi, senza preamboli, senza elenchi). Parla in italiano naturale.",
+  conversational: "Sei Alveare Live, assistente amichevole e colloquiale. Rispondi in italiano in modo chiaro e naturale in 2-3 frasi, adatto a una conversazione vocale fluida.",
+  technical: "Sei Alveare, assistente AI esperto in tecnologia e programmazione. Rispondi in italiano in modo accurato, tecnico e sintetico.",
+  custom: ""
+};
 
 // Convert Base64 string to ArrayBuffer for Web Audio decoding
 export function base64ToArrayBuffer(base64) {
@@ -123,13 +131,77 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   const [streamingAssistantText, setStreamingAssistantText] = useState('');
 
   // Voice preset selection
-  const [selectedVoice, setSelectedVoice] = useState('valeria');
+  const [selectedVoice, setSelectedVoice] = useState('if_sara');
 
-  // Ultra-Fast Live preset toggle (Gemma 3 1B on GPU)
+  // Recommended Live preset toggle (Gemma 4 E4B on GPU)
   const [ultraFastLive, setUltraFastLive] = useState(true);
 
   // Mobile collapsible telemetry HUD
   const [showLatencyHud, setShowLatencyHud] = useState(true);
+
+  // Tunable Live Settings & History Panel
+  const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
+  const [settingsNotice, setSettingsNotice] = useState(false);
+  const [liveSettings, setLiveSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('alveare_live_settings');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      maxContextTurns: 4,
+      maxTokens: 120,
+      temperature: 0.5,
+      speed: 1.0,
+      voice: 'if_sara',
+      minSilenceDuration: 0.35,
+      enableThinking: false,
+      systemPromptPreset: 'concise',
+      customSystemPrompt: ''
+    };
+  });
+
+  const slots = status?.slots || {};
+  const llmSlot = slots.llm || {};
+  const sttSlot = slots.stt || {};
+  const ttsSlot = slots.tts || {};
+
+  const isKokoroActive = Boolean(
+    ttsSlot?.model?.toLowerCase().includes('kokoro') ||
+    ttsSlot?.model?.toLowerCase().includes('cocore') ||
+    ttsSlot?.model?.includes('82m')
+  );
+
+  const handleUpdateSetting = (key, value) => {
+    setLiveSettings(prev => {
+      const updated = { ...prev, [key]: value };
+      try {
+        localStorage.setItem('alveare_live_settings', JSON.stringify(updated));
+      } catch {}
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        const sysPrompt = updated.systemPromptPreset === 'custom'
+          ? updated.customSystemPrompt
+          : PROMPT_PRESETS[updated.systemPromptPreset] || PROMPT_PRESETS.concise;
+
+        wsRef.current.send(JSON.stringify({
+          type: 'config',
+          settings: {
+            max_context_turns: updated.maxContextTurns,
+            max_tokens: updated.maxTokens,
+            temperature: updated.temperature,
+            voice: updated.voice,
+            speed: updated.speed,
+            min_silence_duration_s: updated.minSilenceDuration,
+            enable_thinking: updated.enableThinking,
+            system_prompt: sysPrompt
+          }
+        }));
+        setSettingsNotice(true);
+        setTimeout(() => setSettingsNotice(false), 2500);
+      }
+      return updated;
+    });
+  };
 
   // Audio & WebSocket refs
   const wsRef = useRef(null);
@@ -142,12 +214,6 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
   const animFrameRef = useRef(null);
   const visualizerDataRef = useRef(new Uint8Array(32));
 
-  const slots = status?.slots || {};
-  const llmSlot = slots.llm || {};
-  const sttSlot = slots.stt || {};
-  const ttsSlot = slots.tts || {};
-
-  // Initialize Canvas Visualizer Loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -320,13 +386,18 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            llm_model: ultraFastLive ? (llmSlot.model === 'gemma4' ? 'gemma3' : (llmSlot.model || 'gemma3')) : (llmSlot.model || 'gemma3'),
+            llm_model: llmSlot.model || 'gemma4-e4b',
             llm_device: llmSlot.device || 'gpu',
-            stt_model: sttSlot.model || 'openai/whisper-base',
+            stt_model: sttSlot.model || 'openai/whisper-large-v3-turbo',
             stt_device: sttSlot.device || 'cpu',
-            tts_model: ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b',
-            tts_device: ttsSlot.device || 'npu',
-            voice: selectedVoice
+            tts_model: ttsSlot.model || 'hexgrad/Kokoro-82M',
+            tts_device: ttsSlot.device || (isKokoroActive ? 'cpu' : 'cpu'),
+            voice: liveSettings.voice || 'if_sara',
+            max_context_turns: liveSettings.maxContextTurns,
+            max_tokens: liveSettings.maxTokens,
+            temperature: liveSettings.temperature,
+            speed: liveSettings.speed,
+            enable_thinking: liveSettings.enableThinking
           })
         });
       } catch (e) {
@@ -452,6 +523,9 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
                 playNextAudioChunk();
               }
             }
+          } else if (ev === 'settings_updated') {
+            setSettingsNotice(true);
+            setTimeout(() => setSettingsNotice(false), 2000);
           } else if (ev === 'turn_complete') {
             const metrics = data.metrics || {};
             setE2eLatency(metrics.e2e_latency_ms || 0);
@@ -718,6 +792,34 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
               {t('liveStudio.bargeIn')}
             </span>
           )}
+
+          <button
+            type="button"
+            className="btn-secondary mobile-touch-target"
+            onClick={() => setShowSettingsDrawer(prev => !prev)}
+            aria-label={t('liveStudio.liveSettings')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.75rem 1.1rem',
+              minHeight: '48px',
+              fontSize: '0.88rem',
+              fontWeight: 600,
+              borderColor: showSettingsDrawer ? 'var(--accent-cyan)' : 'var(--border-color)',
+              background: showSettingsDrawer ? 'rgba(6, 182, 212, 0.15)' : 'rgba(0,0,0,0.25)',
+              color: showSettingsDrawer ? 'var(--accent-cyan)' : 'var(--text-main)'
+            }}
+          >
+            <Sliders size={17} />
+            <span>{t('liveStudio.liveSettings')}</span>
+            {settingsNotice && (
+              <span className="badge badge-success" style={{ padding: '0.15rem 0.4rem', fontSize: '0.65rem' }}>
+                ✓
+              </span>
+            )}
+          </button>
+
           {isLiveActive ? (
             <button className="btn-danger mobile-touch-target" onClick={handleStopLive} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.4rem', minHeight: '48px', minWidth: '48px', fontSize: '0.9rem', fontWeight: 700 }}>
               <Square size={18} /> {t('liveStudio.stopSession')}
@@ -729,6 +831,282 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
           )}
         </div>
       </div>
+
+      {/* LIVE SETTINGS DRAWER / PANEL */}
+      {showSettingsDrawer && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            borderRadius: '12px',
+            border: '1px solid rgba(6, 182, 212, 0.4)',
+            background: 'rgba(15, 23, 42, 0.85)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.25rem'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Sliders size={20} color="var(--accent-cyan)" />
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, margin: 0 }}>
+                {t('liveStudio.liveSettings')}
+              </h3>
+              {isLiveActive && (
+                <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>
+                  🟢 {t('liveStudio.liveSettingsUpdated')}
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setShowSettingsDrawer(false)}
+              style={{ padding: '0.35rem 0.65rem', fontSize: '0.8rem' }}
+            >
+              <X size={15} /> {t('liveStudio.closeSettings')}
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '1.25rem' }}>
+            
+            {/* 1. Context Window History Turns */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  🧠 {t('liveStudio.contextWindow')}
+                </label>
+                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#38bdf8' }}>
+                  {liveSettings.maxContextTurns} turni (~{liveSettings.maxContextTurns * 2} messaggi)
+                </span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="20"
+                step="1"
+                value={liveSettings.maxContextTurns}
+                onChange={e => handleUpdateSetting('maxContextTurns', Number(e.target.value))}
+                style={{ width: '100%', accentColor: '#38bdf8' }}
+              />
+              <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                {t('liveStudio.contextWindowDesc')}
+              </span>
+            </div>
+
+            {/* 2. Max Tokens per Response */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  📝 {t('liveStudio.maxTokens')}
+                </label>
+                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#a78bfa' }}>
+                  {liveSettings.maxTokens} token
+                </span>
+              </div>
+              <input
+                type="range"
+                min="40"
+                max="512"
+                step="10"
+                value={liveSettings.maxTokens}
+                onChange={e => handleUpdateSetting('maxTokens', Number(e.target.value))}
+                style={{ width: '100%', accentColor: '#a78bfa' }}
+              />
+              <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                Lunghezza massima di ciascuna risposta vocale generata dall'LLM.
+              </span>
+            </div>
+
+            {/* 3. LLM Temperature */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  🌡️ {t('liveStudio.temperature')}
+                </label>
+                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#f59e0b' }}>
+                  {liveSettings.temperature.toFixed(2)}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.0"
+                max="1.5"
+                step="0.05"
+                value={liveSettings.temperature}
+                onChange={e => handleUpdateSetting('temperature', parseFloat(e.target.value))}
+                style={{ width: '100%', accentColor: '#f59e0b' }}
+              />
+              <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                Bassa (0.2-0.5) per risposte precise e concise; alta (0.8+) per risposte più creative.
+              </span>
+            </div>
+
+            {/* 4. Live Voice Selection */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                🎙️ {t('liveStudio.liveVoice')}
+              </label>
+              <select
+                value={liveSettings.voice}
+                onChange={e => handleUpdateSetting('voice', e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem',
+                  borderRadius: '8px',
+                  background: 'rgba(0,0,0,0.4)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-main)',
+                  fontSize: '0.85rem'
+                }}
+              >
+                {isKokoroActive ? (
+                  <>
+                    <option value="if_sara">if_sara (Italiana Femminile Espressiva)</option>
+                    <option value="im_nicola">im_nicola (Italiano Maschile Naturale)</option>
+                    <option value="af_heart">af_heart (HeartMuLa Melodica)</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="valeria">valeria (Ufficiale Alveare Live)</option>
+                    <option value="daino">daino (Italiano Maschile)</option>
+                    <option value="bolt">bolt (Assistente Conciso)</option>
+                  </>
+                )}
+              </select>
+              <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)' }}>
+                {isKokoroActive ? 'Motore Kokoro-82M attivo (RTF ~0.10x su CPU Zen 5).' : 'Motore Audio8 attivo.'}
+              </span>
+            </div>
+
+            {/* 5. Speech Speed */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  ⏩ {t('liveStudio.speechSpeed')}
+                </label>
+                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#34d399' }}>
+                  {liveSettings.speed.toFixed(2)}x
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.75"
+                max="1.5"
+                step="0.05"
+                value={liveSettings.speed}
+                onChange={e => handleUpdateSetting('speed', parseFloat(e.target.value))}
+                style={{ width: '100%', accentColor: '#34d399' }}
+              />
+              <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)' }}>
+                Velocità di riproduzione della sintesi vocale.
+              </span>
+            </div>
+
+            {/* 6. VAD Silence Duration */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  ⏱️ {t('liveStudio.vadSilence')}
+                </label>
+                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#60a5fa' }}>
+                  {liveSettings.minSilenceDuration.toFixed(2)}s
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.2"
+                max="1.0"
+                step="0.05"
+                value={liveSettings.minSilenceDuration}
+                onChange={e => handleUpdateSetting('minSilenceDuration', parseFloat(e.target.value))}
+                style={{ width: '100%', accentColor: '#60a5fa' }}
+              />
+              <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)' }}>
+                {t('liveStudio.vadSilenceDesc')}
+              </span>
+            </div>
+
+          </div>
+
+          {/* 7. Thinking Toggle & System Prompt */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', borderTop: '1px solid var(--border-color)', paddingTop: '0.9rem' }}>
+            
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}>
+                <input
+                  type="checkbox"
+                  checked={liveSettings.enableThinking}
+                  onChange={e => handleUpdateSetting('enableThinking', e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
+                />
+                <span>🧠 {t('liveStudio.enableThinking')}</span>
+              </label>
+              <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)' }}>
+                {t('liveStudio.enableThinkingDesc')}
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  💬 {t('liveStudio.systemPrompt')}
+                </label>
+                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                  {[
+                    { id: 'concise', label: t('liveStudio.presetConcise') },
+                    { id: 'conversational', label: t('liveStudio.presetConversational') },
+                    { id: 'technical', label: t('liveStudio.presetTechnical') },
+                    { id: 'custom', label: t('liveStudio.presetCustom') }
+                  ].map(p => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => handleUpdateSetting('systemPromptPreset', p.id)}
+                      style={{
+                        padding: '0.2rem 0.5rem',
+                        fontSize: '0.72rem',
+                        borderRadius: '6px',
+                        border: liveSettings.systemPromptPreset === p.id ? '1px solid var(--accent-cyan)' : '1px solid var(--border-color)',
+                        background: liveSettings.systemPromptPreset === p.id ? 'rgba(6, 182, 212, 0.2)' : 'rgba(0,0,0,0.3)',
+                        color: liveSettings.systemPromptPreset === p.id ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {liveSettings.systemPromptPreset === 'custom' ? (
+                <textarea
+                  rows="3"
+                  value={liveSettings.customSystemPrompt}
+                  onChange={e => handleUpdateSetting('customSystemPrompt', e.target.value)}
+                  placeholder="Inserisci istruzioni di sistema personalizzate per l'assistente live..."
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.75rem',
+                    borderRadius: '8px',
+                    background: 'rgba(0,0,0,0.4)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-main)',
+                    fontSize: '0.82rem',
+                    fontFamily: 'var(--font-sans)',
+                    resize: 'vertical'
+                  }}
+                />
+              ) : (
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.25)', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', fontStyle: 'italic' }}>
+                  "{PROMPT_PRESETS[liveSettings.systemPromptPreset] || PROMPT_PRESETS.concise}"
+                </div>
+              )}
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* ULTRA-FAST LIVE BANNER / BADGE */}
       <div
@@ -800,13 +1178,13 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             </span>
             <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>{t('liveStudio.gpuCardRole')}</span>
           </div>
-          <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>{llmSlot.model || 'gemma3'}</div>
+          <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>{llmSlot.model || 'gemma4-e4b'}</div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
             {t('liveStudio.gpuCardDesc', { load: status?.gpu_usage?.percent || 0, tps: status?.tok_per_sec || 35 })}
           </div>
         </div>
 
-        {/* NPU: Audio8 TTS */}
+        {/* NPU / CPU: Kokoro / Audio8 TTS */}
         <div className="glass-card" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #34d399', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', gap: '0.5rem' }}>
             <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#34d399', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
@@ -817,7 +1195,7 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             </span>
           </div>
           <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>
-            {ttsSlot.model || 'Audio8/Audio8-TTS-Preview-0.1b'}
+            {ttsSlot.model || 'hexgrad/Kokoro-82M'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
             {t('liveStudio.npuCardDesc')}
@@ -835,7 +1213,7 @@ export default function LiveStudio({ apiBase, status, onNavigateToControl }) {
             </span>
           </div>
           <div style={{ fontSize: '1rem', fontWeight: 800, wordBreak: 'break-all' }}>
-            {sttSlot.model || 'openai/whisper-base'}
+            {sttSlot.model || 'openai/whisper-large-v3-turbo'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
             {t('liveStudio.cpuCardDesc')}

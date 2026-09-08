@@ -127,14 +127,19 @@ class LiveSession:
         send_event_fn: Callable[[Dict[str, Any]], Awaitable[None]],
         llm_host: str = "127.0.0.1",
         llm_port: int = 8000,
-        llm_model: str = "gemma3",
+        llm_model: str = "gemma4-e4b",
         stt_device: str = "cpu",
-        tts_device: str = "npu",
-        stt_model: str = "openai/whisper-base",
-        tts_model: str = "Audio8/Audio8-TTS-Preview-0.1b",
-        voice: str = "valeria",
+        tts_device: str = "cpu",
+        stt_model: str = "openai/whisper-large-v3-turbo",
+        tts_model: str = "hexgrad/Kokoro-82M",
+        voice: str = "if_sara",
         language: str = "it",
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        max_context_turns: int = 4,
+        max_tokens: int = 120,
+        temperature: float = 0.5,
+        speed: float = 1.0,
+        enable_thinking: bool = False
     ):
         if tts_model and is_kokoro_model(tts_model):
             if not tts_device or tts_device == "npu":
@@ -153,6 +158,13 @@ class LiveSession:
         self.tts_model = tts_model
         self.voice = voice
         self.language = language or "it"
+
+        # Tunable Generation & History Parameters
+        self.max_context_turns = int(max_context_turns) if max_context_turns is not None else 4
+        self.max_tokens = int(max_tokens) if max_tokens is not None else 120
+        self.temperature = float(temperature) if temperature is not None else 0.5
+        self.speed = float(speed) if speed is not None else 1.0
+        self.enable_thinking = bool(enable_thinking)
 
         # VAD Parameters
         self.sample_rate = 16000
@@ -182,6 +194,59 @@ class LiveSession:
 
         # Active background processing task for current turn
         self.current_processing_task: Optional[asyncio.Task] = None
+
+    def update_settings(self, settings: Dict[str, Any]):
+        """Dynamically updates live session settings without restarting the connection."""
+        if not settings or not isinstance(settings, dict):
+            return
+
+        if "max_context_turns" in settings:
+            try:
+                self.max_context_turns = max(1, min(100, int(settings["max_context_turns"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "max_tokens" in settings:
+            try:
+                self.max_tokens = max(20, min(1024, int(settings["max_tokens"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "temperature" in settings:
+            try:
+                self.temperature = max(0.0, min(2.0, float(settings["temperature"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "voice" in settings and settings["voice"]:
+            v = str(settings["voice"]).strip()
+            if self.tts_model and is_kokoro_model(self.tts_model):
+                if v in ("valeria", "female_expressive", "default"):
+                    v = "if_sara"
+            self.voice = v
+
+        if "speed" in settings:
+            try:
+                self.speed = max(0.5, min(2.0, float(settings["speed"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "system_prompt" in settings and settings["system_prompt"] is not None:
+            prompt_text = str(settings["system_prompt"]).strip()
+            if prompt_text:
+                if self.history and self.history[0].get("role") == "system":
+                    self.history[0]["content"] = prompt_text
+                else:
+                    self.history.insert(0, {"role": "system", "content": prompt_text})
+
+        if "min_silence_duration_s" in settings:
+            try:
+                self.min_silence_duration_s = max(0.15, min(2.0, float(settings["min_silence_duration_s"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "enable_thinking" in settings:
+            self.enable_thinking = bool(settings["enable_thinking"])
 
         # Workers
         self.stt: Optional[WhisperSTT] = None
@@ -362,16 +427,23 @@ class LiveSession:
         self.history.append({"role": "user", "content": user_text})
         self.is_ai_speaking = True
 
+        # Truncate / window history based on max_context_turns
+        system_msg = self.history[0] if self.history and self.history[0].get("role") == "system" else None
+        conversation_msgs = self.history[1:] if system_msg else self.history
+        max_msgs = max(2, self.max_context_turns * 2)
+        pruned_msgs = conversation_msgs[-max_msgs:] if len(conversation_msgs) > max_msgs else conversation_msgs
+        messages_to_send = ([system_msg] if system_msg else []) + pruned_msgs
+
         # 2. LLM Streaming
         metrics.llm_start = time.perf_counter()
         target_url = f"http://{self.llm_host}:{self.llm_port}/v1/chat/completions"
         payload = {
             "model": self.llm_model,
-            "messages": self.history,
+            "messages": messages_to_send,
             "stream": True,
-            "max_tokens": 120,
-            "temperature": 0.5,
-            "enable_thinking": False,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "enable_thinking": self.enable_thinking,
         }
 
         full_assistant_text = ""
@@ -526,6 +598,7 @@ class LiveSession:
             self.tts.generate,
             text=text_chunk,
             voice=self.voice,
+            speed=getattr(self, "speed", 1.0),
             max_new_tokens=250,
             temperature=0.8
         )
