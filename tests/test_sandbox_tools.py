@@ -63,6 +63,16 @@ class TestToolEngine(unittest.TestCase):
         self.assertEqual(res["exit_code"], 0)
         self.assertIn("42", res["stdout"])
 
+    def test_web_search_tool_registered(self):
+        schemas = self.engine.get_tool_schemas()
+        tool_names = [s["function"]["name"] for s in schemas]
+        self.assertIn("web_search", tool_names)
+
+    def test_execute_web_search_tool(self):
+        res = self.engine.execute_tool("web_search", {"query": "test query"})
+        self.assertEqual(res["status"], "ok")
+        self.assertIn("summary", res)
+
     def test_execute_unknown_tool(self):
         res = self.engine.execute_tool("unknown_tool", {})
         self.assertIn("error", res)

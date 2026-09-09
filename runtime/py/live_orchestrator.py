@@ -185,15 +185,99 @@ class LiveSession:
         self.speech_samples_count: int = 0
         self.speech_start_time: float = 0.0
 
+        from runtime.py.tool_engine import get_tool_engine
+        self.tool_engine = get_tool_engine()
+        tools_prompt = self.tool_engine.get_tools_system_prompt()
+
         default_prompt = (
-            "Sei Alveare Live, assistente vocale ultra-rapido. Rispondi SEMPRE in modo brevissimo, diretto e conciso (massimo 1-2 frasi brevi, senza preamboli, senza elenchi). Parla in italiano naturale."
+            "Sei Alveare Live, assistente vocale e smart home ultra-rapido. Rispondi SEMPRE in modo brevissimo, diretto e conciso (massimo 1-2 frasi brevi, senza preamboli, senza elenchi). Parla in italiano naturale."
         )
+        base_prompt = system_prompt or default_prompt
+        self.system_prompt = f"{base_prompt}\n{tools_prompt}"
         self.history: List[Dict[str, str]] = [
-            {"role": "system", "content": system_prompt or default_prompt}
+            {"role": "system", "content": self.system_prompt}
         ]
 
         # Active background processing task for current turn
         self.current_processing_task: Optional[asyncio.Task] = None
+
+    def clear_memory(self) -> Dict[str, Any]:
+        """Wipes all conversation memory and resets session history to system prompt."""
+        self.history = [
+            {"role": "system", "content": self.system_prompt}
+        ]
+        self.turn_id = 0
+        self.is_ai_speaking = False
+        self.audio_buffer.clear()
+        self.speech_buffer.clear()
+        self.in_speech = False
+        return {
+            "status": "ok",
+            "message": "Memoria conversazione azzerata.",
+            "turns_remaining": 0
+        }
+
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """Returns stats about current session memory."""
+        user_turns = sum(1 for m in self.history if m.get("role") == "user")
+        assistant_turns = sum(1 for m in self.history if m.get("role") == "assistant")
+        return {
+            "total_messages": len(self.history),
+            "user_turns": user_turns,
+            "assistant_turns": assistant_turns,
+            "max_context_turns": self.max_context_turns,
+            "session_id": self.session_id
+        }
+
+    async def _execute_tool_and_notify(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        turn_id: int
+    ) -> str:
+        """Executes tool, sends start/end events to WebSocket, appends to history, returns summary."""
+        await self.send_event({
+            "event": "tool_call",
+            "tool_name": tool_name,
+            "tool_args": args,
+            "turn_id": turn_id,
+            "status": "running",
+            "timestamp": time.time()
+        })
+        await self.send_event({
+            "event": "tool_call_start",
+            "tool_name": tool_name,
+            "tool_args": args,
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+
+        tool_res = await asyncio.to_thread(
+            self.tool_engine.execute_tool,
+            tool_name,
+            args
+        )
+        summary = tool_res.get("summary") or tool_res.get("stdout") or json.dumps(tool_res, ensure_ascii=False)
+
+        await self.send_event({
+            "event": "tool_call_end",
+            "tool_name": tool_name,
+            "tool_args": args,
+            "status": "success" if "error" not in tool_res else "error",
+            "result_summary": summary,
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+
+        self.history.append({
+            "role": "assistant",
+            "content": f"[TOOL_CALL: {tool_name}({json.dumps(args, ensure_ascii=False)})]"
+        })
+        self.history.append({
+            "role": "user",
+            "content": f"Risultato strumento {tool_name}:\n{summary}\n\nRispondi ora all'utente in modo brevissimo, sintetico e naturale (1-2 frasi brevi al massimo) riportando il dato saliente per la voce."
+        })
+        return summary
 
     def update_settings(self, settings: Dict[str, Any]):
         """Dynamically updates live session settings without restarting the connection."""
@@ -234,10 +318,13 @@ class LiveSession:
         if "system_prompt" in settings and settings["system_prompt"] is not None:
             prompt_text = str(settings["system_prompt"]).strip()
             if prompt_text:
+                tools_prompt = self.tool_engine.get_tools_system_prompt()
+                full_p = f"{prompt_text}\n{tools_prompt}"
+                self.system_prompt = full_p
                 if self.history and self.history[0].get("role") == "system":
-                    self.history[0]["content"] = prompt_text
+                    self.history[0]["content"] = full_p
                 else:
-                    self.history.insert(0, {"role": "system", "content": prompt_text})
+                    self.history.insert(0, {"role": "system", "content": full_p})
 
         if "min_silence_duration_s" in settings:
             try:
@@ -427,6 +514,15 @@ class LiveSession:
         self.history.append({"role": "user", "content": user_text})
         self.is_ai_speaking = True
 
+        # Proactive search intent detection (for robust zero-latency web info)
+        lower_u = user_text.strip().lower()
+        search_triggers = ("cerca ", "cercami ", "trova ", "ricerca ", "cerca su internet", "cerca sul web", "meteo ", "che tempo fa")
+        if any(lower_u.startswith(t) for t in search_triggers) or ("meteo" in lower_u and any(w in lower_u for w in ("domani", "oggi", "previsioni", "a "))):
+            clean_q = re.sub(r'^(cerca|cercami|trova|ricerca)\s+(su internet\s+|sul web\s+)?', '', user_text, flags=re.IGNORECASE).strip()
+            if not clean_q:
+                clean_q = user_text
+            await self._execute_tool_and_notify("web_search", {"query": clean_q}, turn_id)
+
         # Truncate / window history based on max_context_turns
         system_msg = self.history[0] if self.history and self.history[0].get("role") == "system" else None
         conversation_msgs = self.history[1:] if system_msg else self.history
@@ -529,10 +625,12 @@ class LiveSession:
                                     sentence_buffer = sentence_buffer[match_6th.end():].lstrip()
 
                             if ready_sentence:
-                                sentence_index += 1
-                                await self._synthesize_and_stream_chunk(
-                                    ready_sentence, sentence_index, turn_id, metrics, turn_start
-                                )
+                                # Suppress speaking if it's raw tool call tag
+                                if "[tool_call" not in ready_sentence.lower():
+                                    sentence_index += 1
+                                    await self._synthesize_and_stream_chunk(
+                                        ready_sentence, sentence_index, turn_id, metrics, turn_start
+                                    )
                             else:
                                 break
 
@@ -544,10 +642,66 @@ class LiveSession:
 
                     # End of LLM stream: flush remaining buffer
                     if turn_id == self.turn_id and sentence_buffer.strip():
-                        sentence_index += 1
-                        await self._synthesize_and_stream_chunk(
-                            sentence_buffer.strip(), sentence_index, turn_id, metrics, turn_start
-                        )
+                        if "[tool_call" not in sentence_buffer.lower():
+                            sentence_index += 1
+                            await self._synthesize_and_stream_chunk(
+                                sentence_buffer.strip(), sentence_index, turn_id, metrics, turn_start
+                            )
+
+            # Check if LLM emitted an autonomous tool call
+            tool_call_match = re.search(r'\[TOOL_CALL:\s*([a-zA-Z0-9_-]+)\s*\((.*?)\)\s*\]', full_assistant_text, re.DOTALL)
+            if tool_call_match and turn_id == self.turn_id:
+                t_name = tool_call_match.group(1).strip()
+                t_args_str = tool_call_match.group(2).strip()
+                try:
+                    t_args = json.loads(t_args_str)
+                except Exception:
+                    t_args = {"query": t_args_str.strip('"\'')}
+                
+                await self._execute_tool_and_notify(t_name, t_args, turn_id)
+
+                # Follow-up LLM stream to generate spoken response from tool output
+                sys_m = self.history[0] if self.history and self.history[0].get("role") == "system" else None
+                conv_m = self.history[1:] if sys_m else self.history
+                msgs_followup = ([sys_m] if sys_m else []) + conv_m[-max_msgs:]
+                payload_followup = {
+                    "model": self.llm_model,
+                    "messages": msgs_followup,
+                    "stream": True,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "enable_thinking": False
+                }
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    async with client.stream("POST", target_url, json=payload_followup) as resp2:
+                        if resp2.status_code == 200:
+                            full_assistant_text = ""
+                            sentence_buffer = ""
+                            async for l2 in resp2.aiter_lines():
+                                if turn_id != self.turn_id or not l2 or not l2.startswith("data: "):
+                                    continue
+                                d_str = l2[6:].strip()
+                                if d_str == "[DONE]":
+                                    break
+                                try:
+                                    d_json = json.loads(d_str)
+                                    cp = d_json["choices"][0]["delta"].get("content", "")
+                                except Exception:
+                                    continue
+                                if not cp:
+                                    continue
+                                full_assistant_text += cp
+                                sentence_buffer += cp
+                                for m in delimiter_pattern.finditer(sentence_buffer):
+                                    cand = sentence_buffer[:m.end()].strip()
+                                    if len(cand.split()) >= 3 or len(cand) > 15:
+                                        sentence_index += 1
+                                        await self._synthesize_and_stream_chunk(cand, sentence_index, turn_id, metrics, turn_start)
+                                        sentence_buffer = sentence_buffer[m.end():].lstrip()
+                                        break
+                            if sentence_buffer.strip() and turn_id == self.turn_id:
+                                sentence_index += 1
+                                await self._synthesize_and_stream_chunk(sentence_buffer.strip(), sentence_index, turn_id, metrics, turn_start)
 
         except asyncio.CancelledError:
             self.is_ai_speaking = False

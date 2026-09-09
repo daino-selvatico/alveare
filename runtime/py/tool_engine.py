@@ -27,6 +27,24 @@ BASH_TOOL_SCHEMA = {
     }
 }
 
+WEB_SEARCH_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Cerca informazioni aggiornate sul web (notizie, meteo, eventi, curiosità, definizioni) tramite DuckDuckGo e Wikipedia senza necessità di chiavi API.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "La query di ricerca da inviare al motore di ricerca (es. 'meteo Firenze oggi', 'chi ha vinto la Formula 1', 'ultime notizie')."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
 
 class ToolEngine:
     """Manages tool registration, schema exportation, and execution."""
@@ -37,11 +55,16 @@ class ToolEngine:
         self._register_default_tools()
 
     def _register_default_tools(self):
-        """Registers built-in tools like safe terminal bash."""
+        """Registers built-in tools like safe terminal bash and web search."""
         self.register_tool(
             name="bash",
             schema=BASH_TOOL_SCHEMA,
             handler=self._handle_bash
+        )
+        self.register_tool(
+            name="web_search",
+            schema=WEB_SEARCH_TOOL_SCHEMA,
+            handler=self._handle_web_search
         )
 
     def register_tool(
@@ -59,6 +82,19 @@ class ToolEngine:
         """Returns OpenAPI/OpenAI-compatible tool definitions."""
         return list(self._schemas)
 
+    def get_tools_system_prompt(self) -> str:
+        """Returns concise instructions explaining available tools to the LLM."""
+        lines = [
+            "\nStrumenti disponibili che puoi invocare:",
+            "- web_search(query=\"...\"): Cerca su Internet per meteo, notizie recenti, informazioni aggiornate o fatti.",
+            "- bash(command=\"...\"): Esegue un comando da terminale Linux in sandbox sicura.",
+            "\nPer invocare uno strumento quando necessario (es. meteo, ricerche sul web, comandi), scrivi ESATTAMENTE:",
+            "[TOOL_CALL: nome_tool({\"arg\": \"valore\"})]",
+            "Esempio: [TOOL_CALL: web_search({\"query\": \"meteo Firenze\"})]",
+            "Quando invochi uno strumento non aggiungere altro testo; riceverai il risultato per formulare la risposta finale."
+        ]
+        return "\n".join(lines)
+
     def _handle_bash(self, args: Dict[str, Any]) -> Dict[str, Any]:
         cmd = args.get("command", "")
         if not cmd:
@@ -66,6 +102,14 @@ class ToolEngine:
         sandbox = get_sandbox()
         result = sandbox.execute(cmd)
         return result
+
+    def _handle_web_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        query = args.get("query", "")
+        if not query:
+            return {"error": "Nessuna query di ricerca specificata."}
+        from runtime.py.web_search import get_web_search_engine
+        engine = get_web_search_engine()
+        return engine.search(query, max_results=3)
 
     def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Executes a registered tool by name with provided arguments."""
