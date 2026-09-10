@@ -2407,12 +2407,12 @@ async def websocket_live_endpoint(websocket: WebSocket):
                                 "enable_thinking": session.enable_thinking
                             }
                         })
-                    elif msg_type in ("clear_memory", "reset_history"):
+                    elif msg_type in ("clear_memory", "reset_context", "reset_history"):
                         clear_res = session.clear_memory()
                         await send_event({
                             "event": "memory_cleared",
                             "turn_id": 0,
-                            "message": clear_res.get("message", "Memoria azzerata."),
+                            "message": clear_res.get("message", "Memoria conversazione azzerata."),
                             "timestamp": time.time()
                         })
                 except Exception:

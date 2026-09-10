@@ -201,6 +201,23 @@ class LiveSession:
         # Active background processing task for current turn
         self.current_processing_task: Optional[asyncio.Task] = None
 
+    def _prune_history(self):
+        """Strictly bounds conversation history to max_context_turns, preserving system prompt."""
+        if not self.history:
+            self.history = [{"role": "system", "content": self.system_prompt}]
+            return
+
+        system_msgs = [m for m in self.history if m.get("role") == "system"]
+        sys_msg = system_msgs[0] if system_msgs else {"role": "system", "content": self.system_prompt}
+
+        conversation_msgs = [m for m in self.history if m.get("role") != "system"]
+        max_msgs = max(2, self.max_context_turns * 2)
+
+        if len(conversation_msgs) > max_msgs:
+            conversation_msgs = conversation_msgs[-max_msgs:]
+
+        self.history = [sys_msg] + conversation_msgs
+
     def clear_memory(self) -> Dict[str, Any]:
         """Wipes all conversation memory and resets session history to system prompt."""
         self.history = [
@@ -235,7 +252,22 @@ class LiveSession:
         args: Dict[str, Any],
         turn_id: int
     ) -> str:
-        """Executes tool, sends start/end events to WebSocket, appends to history, returns summary."""
+        """Executes tool in background, sends tool_call_start and tool_call_done WebSocket events, appends to history, returns summary."""
+        query = args.get("query", "")
+        cmd = args.get("command", "")
+
+        # 1. tool_call_start event
+        await self.send_event({
+            "event": "tool_call_start",
+            "tool": tool_name,
+            "query": query,
+            "command": cmd,
+            "tool_name": tool_name,
+            "tool_args": args,
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+        # Legacy event
         await self.send_event({
             "event": "tool_call",
             "tool_name": tool_name,
@@ -244,26 +276,37 @@ class LiveSession:
             "status": "running",
             "timestamp": time.time()
         })
-        await self.send_event({
-            "event": "tool_call_start",
-            "tool_name": tool_name,
-            "tool_args": args,
-            "turn_id": turn_id,
-            "timestamp": time.time()
-        })
 
+        # 2. Tool execution in background thread
         tool_res = await asyncio.to_thread(
             self.tool_engine.execute_tool,
             tool_name,
             args
         )
-        summary = tool_res.get("summary") or tool_res.get("stdout") or json.dumps(tool_res, ensure_ascii=False)
 
+        is_error = ("error" in tool_res and tool_res["error"]) or (tool_res.get("status") == "error")
+        status = "error" if is_error else "ok"
+        summary = tool_res.get("summary") or tool_res.get("stdout") or json.dumps(tool_res, ensure_ascii=False)
+        if is_error and not summary:
+            summary = tool_res.get("error", "Errore durante l'esecuzione del tool.")
+
+        # 3. tool_call_done event
+        await self.send_event({
+            "event": "tool_call_done",
+            "tool": tool_name,
+            "status": status,
+            "summary": summary,
+            "tool_name": tool_name,
+            "result_summary": summary,
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+        # Legacy event
         await self.send_event({
             "event": "tool_call_end",
             "tool_name": tool_name,
             "tool_args": args,
-            "status": "success" if "error" not in tool_res else "error",
+            "status": "success" if not is_error else "error",
             "result_summary": summary,
             "turn_id": turn_id,
             "timestamp": time.time()
@@ -277,6 +320,7 @@ class LiveSession:
             "role": "user",
             "content": f"Risultato strumento {tool_name}:\n{summary}\n\nRispondi ora all'utente in modo brevissimo, sintetico e naturale (1-2 frasi brevi al massimo) riportando il dato saliente per la voce."
         })
+        self._prune_history()
         return summary
 
     def update_settings(self, settings: Dict[str, Any]):
@@ -523,185 +567,174 @@ class LiveSession:
                 clean_q = user_text
             await self._execute_tool_and_notify("web_search", {"query": clean_q}, turn_id)
 
-        # Truncate / window history based on max_context_turns
-        system_msg = self.history[0] if self.history and self.history[0].get("role") == "system" else None
-        conversation_msgs = self.history[1:] if system_msg else self.history
-        max_msgs = max(2, self.max_context_turns * 2)
-        pruned_msgs = conversation_msgs[-max_msgs:] if len(conversation_msgs) > max_msgs else conversation_msgs
-        messages_to_send = ([system_msg] if system_msg else []) + pruned_msgs
+        # Truncate / prune history strictly based on max_context_turns
+        self._prune_history()
 
-        # 2. LLM Streaming
+        # 2. LLM Streaming & Real-time Tool Calling
         metrics.llm_start = time.perf_counter()
         target_url = f"http://{self.llm_host}:{self.llm_port}/v1/chat/completions"
-        payload = {
-            "model": self.llm_model,
-            "messages": messages_to_send,
-            "stream": True,
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "enable_thinking": self.enable_thinking,
-        }
+        delimiter_pattern = re.compile(r'[,;:.?!\n…]+')
+        tool_call_regex = re.compile(r'\[TOOL_CALL:\s*([a-zA-Z0-9_-]+)\s*\((.*?)\)\s*\]', re.DOTALL)
 
-        full_assistant_text = ""
-        sentence_buffer = ""
         sentence_index = 0
         first_token_received = False
-        thought_filter = StreamingThoughtFilter()
-
-        delimiter_pattern = re.compile(r'[,;:.?!\n…]+')
+        final_assistant_text = ""
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream("POST", target_url, json=payload) as resp:
-                    if resp.status_code != 200:
-                        err_body = await resp.aread()
-                        await self.send_event({
-                            "event": "error",
-                            "error": f"LLM error {resp.status_code}: {err_body.decode('utf-8', 'replace')}"
-                        })
-                        self.is_ai_speaking = False
-                        return
+            current_iteration = 0
+            max_iterations = 2
 
-                    async for line in resp.aiter_lines():
-                        if turn_id != self.turn_id:
-                            # User interrupted! Abort LLM stream
-                            break
+            while current_iteration < max_iterations:
+                current_iteration += 1
+                self._prune_history()
+                messages_to_send = list(self.history)
 
-                        if not line or not line.startswith("data: "):
-                            continue
+                payload = {
+                    "model": self.llm_model,
+                    "messages": messages_to_send,
+                    "stream": True,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "enable_thinking": self.enable_thinking if current_iteration == 1 else False,
+                }
 
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
+                current_text = ""
+                sentence_buffer = ""
+                thought_filter = StreamingThoughtFilter()
+                detected_tool: Optional[re.Match] = None
 
-                        try:
-                            delta_json = json.loads(data_str)
-                            choices = delta_json.get("choices", [])
-                            if not choices:
-                                continue
-                            delta = choices[0].get("delta", {})
-                            content_piece = delta.get("content", "")
-                        except Exception:
-                            continue
-
-                        if not content_piece:
-                            continue
-
-                        # Filter out thought/reasoning blocks in real-time
-                        filtered_piece = thought_filter.filter(content_piece)
-                        if not filtered_piece:
-                            continue
-
-                        if not first_token_received:
-                            first_token_received = True
-                            metrics.ttft_ms = (time.perf_counter() - metrics.llm_start) * 1000.0
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with client.stream("POST", target_url, json=payload) as resp:
+                        if resp.status_code != 200:
+                            err_body = await resp.aread()
                             await self.send_event({
-                                "event": "ttft",
-                                "ttft_ms": round(metrics.ttft_ms, 1),
-                                "turn_id": turn_id
+                                "event": "error",
+                                "error": f"LLM error {resp.status_code}: {err_body.decode('utf-8', 'replace')}"
                             })
+                            self.is_ai_speaking = False
+                            return
 
-                        full_assistant_text += filtered_piece
-                        sentence_buffer += filtered_piece
-
-                        # Ultra-fast aggressive clause streaming pipelining:
-                        # 1. Split on any punctuation (, ; : . ? ! \n …) as soon as >= 3 words or > 15 characters
-                        # 2. Or split if buffer exceeds 6 words even without punctuation
-                        while True:
-                            ready_sentence = ""
-                            for m in delimiter_pattern.finditer(sentence_buffer):
-                                cand = sentence_buffer[:m.end()].strip()
-                                words = cand.split()
-                                if len(words) >= 3 or len(cand) > 15:
-                                    ready_sentence = cand
-                                    sentence_buffer = sentence_buffer[m.end():].lstrip()
-                                    break
-
-                            if not ready_sentence:
-                                word_matches = list(re.finditer(r'\S+', sentence_buffer))
-                                if len(word_matches) > 6:
-                                    match_6th = word_matches[5]
-                                    ready_sentence = sentence_buffer[:match_6th.end()].strip()
-                                    sentence_buffer = sentence_buffer[match_6th.end():].lstrip()
-
-                            if ready_sentence:
-                                # Suppress speaking if it's raw tool call tag
-                                if "[tool_call" not in ready_sentence.lower():
-                                    sentence_index += 1
-                                    await self._synthesize_and_stream_chunk(
-                                        ready_sentence, sentence_index, turn_id, metrics, turn_start
-                                    )
-                            else:
+                        async for line in resp.aiter_lines():
+                            if turn_id != self.turn_id:
+                                # User interrupted! Abort LLM stream
                                 break
 
-                    # Flush any pending tag buffer from thought filter
-                    thought_tail = thought_filter.flush()
-                    if thought_tail:
-                        full_assistant_text += thought_tail
-                        sentence_buffer += thought_tail
+                            if not line or not line.startswith("data: "):
+                                continue
 
-                    # End of LLM stream: flush remaining buffer
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                break
+
+                            try:
+                                delta_json = json.loads(data_str)
+                                choices = delta_json.get("choices", [])
+                                if not choices:
+                                    continue
+                                delta = choices[0].get("delta", {})
+                                content_piece = delta.get("content", "")
+                            except Exception:
+                                continue
+
+                            if not content_piece:
+                                continue
+
+                            # Filter out thought/reasoning blocks in real-time
+                            filtered_piece = thought_filter.filter(content_piece)
+                            if not filtered_piece:
+                                continue
+
+                            if not first_token_received:
+                                first_token_received = True
+                                metrics.ttft_ms = (time.perf_counter() - metrics.llm_start) * 1000.0
+                                await self.send_event({
+                                    "event": "ttft",
+                                    "ttft_ms": round(metrics.ttft_ms, 1),
+                                    "turn_id": turn_id
+                                })
+
+                            current_text += filtered_piece
+                            sentence_buffer += filtered_piece
+
+                            # Check for real-time tool call interception
+                            if "[tool_call" in current_text.lower():
+                                m = tool_call_regex.search(current_text)
+                                if m:
+                                    detected_tool = m
+                                    # Break immediately out of stream to execute tool!
+                                    break
+                                else:
+                                    # Tool call pattern is being formed; suppress TTS chunking
+                                    continue
+
+                            # Ultra-fast aggressive clause streaming pipelining:
+                            while True:
+                                ready_sentence = ""
+                                for m_delim in delimiter_pattern.finditer(sentence_buffer):
+                                    cand = sentence_buffer[:m_delim.end()].strip()
+                                    words = cand.split()
+                                    if len(words) >= 3 or len(cand) > 15:
+                                        ready_sentence = cand
+                                        sentence_buffer = sentence_buffer[m_delim.end():].lstrip()
+                                        break
+
+                                if not ready_sentence:
+                                    word_matches = list(re.finditer(r'\S+', sentence_buffer))
+                                    if len(word_matches) > 6:
+                                        match_6th = word_matches[5]
+                                        ready_sentence = sentence_buffer[:match_6th.end()].strip()
+                                        sentence_buffer = sentence_buffer[match_6th.end():].lstrip()
+
+                                if ready_sentence:
+                                    if "[tool_call" not in ready_sentence.lower():
+                                        sentence_index += 1
+                                        await self._synthesize_and_stream_chunk(
+                                            ready_sentence, sentence_index, turn_id, metrics, turn_start
+                                        )
+                                else:
+                                    break
+
+                        # Flush thought filter buffer
+                        thought_tail = thought_filter.flush()
+                        if thought_tail:
+                            current_text += thought_tail
+                            sentence_buffer += thought_tail
+
+                if turn_id != self.turn_id:
+                    self.is_ai_speaking = False
+                    return
+
+                # If not intercepted mid-stream, check if finished text has a tool call
+                if not detected_tool:
+                    m_end = tool_call_regex.search(current_text)
+                    if m_end:
+                        detected_tool = m_end
+
+                if detected_tool and turn_id == self.turn_id:
+                    t_name = detected_tool.group(1).strip()
+                    t_args_str = detected_tool.group(2).strip()
+                    try:
+                        t_args = json.loads(t_args_str)
+                    except Exception:
+                        if t_name == "bash":
+                            t_args = {"command": t_args_str.strip('"\'')}
+                        else:
+                            t_args = {"query": t_args_str.strip('"\'')}
+
+                    # Execute tool in background, send tool_call_start and tool_call_done, inject into self.history
+                    await self._execute_tool_and_notify(t_name, t_args, turn_id)
+                    # Proceed to iteration 2 to formulate the response with Kokoro TTS!
+                    continue
+                else:
+                    # Flush remaining buffer to TTS
                     if turn_id == self.turn_id and sentence_buffer.strip():
                         if "[tool_call" not in sentence_buffer.lower():
                             sentence_index += 1
                             await self._synthesize_and_stream_chunk(
                                 sentence_buffer.strip(), sentence_index, turn_id, metrics, turn_start
                             )
-
-            # Check if LLM emitted an autonomous tool call
-            tool_call_match = re.search(r'\[TOOL_CALL:\s*([a-zA-Z0-9_-]+)\s*\((.*?)\)\s*\]', full_assistant_text, re.DOTALL)
-            if tool_call_match and turn_id == self.turn_id:
-                t_name = tool_call_match.group(1).strip()
-                t_args_str = tool_call_match.group(2).strip()
-                try:
-                    t_args = json.loads(t_args_str)
-                except Exception:
-                    t_args = {"query": t_args_str.strip('"\'')}
-                
-                await self._execute_tool_and_notify(t_name, t_args, turn_id)
-
-                # Follow-up LLM stream to generate spoken response from tool output
-                sys_m = self.history[0] if self.history and self.history[0].get("role") == "system" else None
-                conv_m = self.history[1:] if sys_m else self.history
-                msgs_followup = ([sys_m] if sys_m else []) + conv_m[-max_msgs:]
-                payload_followup = {
-                    "model": self.llm_model,
-                    "messages": msgs_followup,
-                    "stream": True,
-                    "max_tokens": self.max_tokens,
-                    "temperature": self.temperature,
-                    "enable_thinking": False
-                }
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    async with client.stream("POST", target_url, json=payload_followup) as resp2:
-                        if resp2.status_code == 200:
-                            full_assistant_text = ""
-                            sentence_buffer = ""
-                            async for l2 in resp2.aiter_lines():
-                                if turn_id != self.turn_id or not l2 or not l2.startswith("data: "):
-                                    continue
-                                d_str = l2[6:].strip()
-                                if d_str == "[DONE]":
-                                    break
-                                try:
-                                    d_json = json.loads(d_str)
-                                    cp = d_json["choices"][0]["delta"].get("content", "")
-                                except Exception:
-                                    continue
-                                if not cp:
-                                    continue
-                                full_assistant_text += cp
-                                sentence_buffer += cp
-                                for m in delimiter_pattern.finditer(sentence_buffer):
-                                    cand = sentence_buffer[:m.end()].strip()
-                                    if len(cand.split()) >= 3 or len(cand) > 15:
-                                        sentence_index += 1
-                                        await self._synthesize_and_stream_chunk(cand, sentence_index, turn_id, metrics, turn_start)
-                                        sentence_buffer = sentence_buffer[m.end():].lstrip()
-                                        break
-                            if sentence_buffer.strip() and turn_id == self.turn_id:
-                                sentence_index += 1
-                                await self._synthesize_and_stream_chunk(sentence_buffer.strip(), sentence_index, turn_id, metrics, turn_start)
+                    final_assistant_text = current_text
+                    break
 
         except asyncio.CancelledError:
             self.is_ai_speaking = False
@@ -713,7 +746,8 @@ class LiveSession:
             return
 
         if turn_id == self.turn_id:
-            self.history.append({"role": "assistant", "content": full_assistant_text.strip()})
+            self.history.append({"role": "assistant", "content": final_assistant_text.strip()})
+            self._prune_history()
             metrics.e2e_latency_ms = (time.perf_counter() - turn_start) * 1000.0
 
             await self.send_event({
