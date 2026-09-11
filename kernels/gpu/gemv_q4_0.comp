@@ -1,4 +1,5 @@
 #version 450
+#extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 
@@ -20,6 +21,9 @@ layout(std430, binding = 1) readonly buffer InputBuffer {
 layout(std430, binding = 2) writeonly buffer OutputBuffer {
     uint16_t output_data[];
 };
+
+// Shared memory for cross-subgroup reduction (supports any subgroup size >= 1)
+shared float s_subgroup_sums[64];
 
 float bf16_to_f32(uint16_t v) {
     return uintBitsToFloat(uint(v) << 16);
@@ -83,9 +87,21 @@ void main() {
         thread_sum += block_dot * scale;
     }
 
-    float row_sum = subgroupAdd(thread_sum);
+    // Intra-subgroup reduction
+    float sg_sum = subgroupAdd(thread_sum);
 
+    // Leader of each subgroup writes partial sum to shared memory
+    if (subgroupElect()) {
+        s_subgroup_sums[gl_SubgroupID] = sg_sum;
+    }
+    barrier();
+
+    // Workgroup leader combines all subgroup partial sums
     if (lane == 0u) {
+        float row_sum = 0.0;
+        for (uint i = 0u; i < gl_NumSubgroups; ++i) {
+            row_sum += s_subgroup_sums[i];
+        }
         output_data[row] = f32_to_bf16(row_sum);
     }
 }

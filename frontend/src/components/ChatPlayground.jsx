@@ -26,7 +26,7 @@ import {
   Mic,
   MicOff,
   Play,
-  Volume2
+  PanelLeft
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -197,7 +197,7 @@ export default function ChatPlayground({
   const [isGenerating, setIsGenerating] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [expandedThinking, setExpandedThinking] = useState({});
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
   const [generationError, setGenerationError] = useState(null);
   const [lastUserPrompt, setLastUserPrompt] = useState(null);
 
@@ -1275,6 +1275,23 @@ export default function ChatPlayground({
           gap: '0.5rem'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+            <button
+              type="button"
+              className="btn-secondary mobile-touch-target"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              title={t('sidebar.chatHistory')}
+              aria-label={t('sidebar.chatHistory')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '0.4rem 0.6rem',
+                minHeight: '36px',
+                borderRadius: '8px'
+              }}
+            >
+              <PanelLeft size={16} />
+            </button>
             <span style={{
               fontWeight: 700,
               fontSize: '1rem',

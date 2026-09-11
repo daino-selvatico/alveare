@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Terminal, Cpu, RefreshCw } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
 
-export default function LogsViewer({ apiBase }) {
+export default function LogsViewer({ apiBase, isActive = true }) {
   const { t } = useTranslation();
   const [logs, setLogs] = useState([]);
   const [npu, setNpu] = useState(null);
@@ -36,13 +36,29 @@ export default function LogsViewer({ apiBase }) {
   }, [apiBase]);
 
   useEffect(() => {
+    if (!isActive) return;
+
     fetchLogs();
     fetchNpu();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && isActive) {
+        fetchLogs();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     const interval = setInterval(() => {
-      fetchLogs();
+      if (document.visibilityState !== 'hidden') {
+        fetchLogs();
+      }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [fetchLogs, fetchNpu]);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchLogs, fetchNpu, isActive]);
 
   useEffect(() => {
     if (!autoScroll) {
@@ -54,7 +70,9 @@ export default function LogsViewer({ apiBase }) {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (typeof logEndRef.current?.scrollIntoView === 'function') {
+      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [logs, autoScroll]);
 
   return (

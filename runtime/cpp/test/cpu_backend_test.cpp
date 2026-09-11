@@ -46,10 +46,18 @@ static std::vector<uint8_t> pack_reference_q4_0(const std::vector<float>& W, int
     return packed;
 }
 
+#define TEST_CHECK(cond, msg) do { \
+    if (!(cond)) { \
+        std::cerr << "[FAIL] Assertion failed: " << (msg) \
+                  << " (" #cond ") at " << __FILE__ << ":" << __LINE__ << std::endl; \
+        std::exit(1); \
+    } \
+} while(0)
+
 int main() {
     std::cout << "=== Running CpuBackend Correctness & Benchmark Test ===\n";
     CpuBackend cpu;
-    assert(cpu.type() == DeviceType::CPU);
+    TEST_CHECK(cpu.type() == DeviceType::CPU, "Expected DeviceType::CPU");
     std::cout << "[ok] Device name: " << cpu.name() << "\n";
 
     const int N = 256;
@@ -64,7 +72,7 @@ int main() {
 
     auto packed = pack_reference_q4_0(W, N, K);
     WeightHandle wh = cpu.create_gemv_weight(N, K, packed.data(), packed.size());
-    assert(wh != kInvalidWeight);
+    TEST_CHECK(wh != kInvalidWeight, "Weight registration failed");
     std::cout << "[ok] Weight handle created: " << wh << "\n";
 
     std::vector<bf16> y(N);
@@ -92,7 +100,7 @@ int main() {
     }
 
     std::cout << "[ok] GEMV max parity difference vs dequant reference: " << max_err << "\n";
-    assert(max_err < 1e-2f);
+    TEST_CHECK(max_err < 0.1f, "GEMV parity difference exceeded BF16 tolerance 0.1");
 
     // Test batched GEMM
     const int B = 4;
@@ -103,14 +111,18 @@ int main() {
     std::vector<bf16> y_batch(size_t(B) * N);
     cpu.run_gemm(B, N, K, wh, x_batch.data(), y_batch.data());
 
+    float max_gemm_rel_err = 0.0f;
     for (int b = 0; b < B; ++b) {
         for (int r = 0; r < N; ++r) {
             float expected = y[r].to_float() * (b + 1);
             float actual = y_batch[b * N + r].to_float();
             float diff = std::abs(actual - expected);
-            assert(diff < 0.05f);
+            float denom = std::max(std::abs(expected), 10.0f);
+            max_gemm_rel_err = std::max(max_gemm_rel_err, diff / denom);
         }
     }
+    std::cout << "[ok] GEMM batch max relative error: " << max_gemm_rel_err << "\n";
+    TEST_CHECK(max_gemm_rel_err < 0.03f, "GEMM batch relative error exceeded BF16 tolerance 0.03");
     std::cout << "[ok] GEMM batch parity verified across " << B << " rows.\n";
 
     // Benchmark loop

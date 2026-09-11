@@ -19,7 +19,26 @@ export default function App() {
     ? 'http://127.0.0.1:8080'
     : window.location.origin;
 
-  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'audio' | 'live' | 'control' | 'logs' | 'benchmarks'
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const hash = window.location.hash.replace('#', '').toLowerCase();
+      if (['live', 'chat', 'audio', 'control', 'logs', 'benchmarks'].includes(hash)) {
+        return hash;
+      }
+    }
+    return 'chat';
+  });
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace('#', '').toLowerCase();
+      if (['live', 'chat', 'audio', 'control', 'logs', 'benchmarks'].includes(hash)) {
+        setActiveTab(hash);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
   const [status, setStatus] = useState(null);
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -27,7 +46,7 @@ export default function App() {
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
 
-  const isSttActive = Boolean(
+  const _isSttActive = Boolean(
     status?.is_running &&
     (
       status?.model?.includes('whisper') ||
@@ -104,11 +123,23 @@ export default function App() {
     fetchStatus();
     fetchModels();
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchStatus();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     const interval = setInterval(() => {
-      fetchStatus();
+      if (document.visibilityState !== 'hidden') {
+        fetchStatus();
+      }
     }, 3000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [fetchStatus, fetchModels]);
 
   if (showWizard) {
@@ -481,7 +512,7 @@ export default function App() {
           </div>
 
           <div id="panel-logs" role="tabpanel" aria-labelledby="tab-logs" style={{ flex: 1, display: activeTab === 'logs' ? 'block' : 'none' }}>
-            <LogsViewer apiBase={apiBase} />
+            <LogsViewer apiBase={apiBase} isActive={activeTab === 'logs'} />
           </div>
 
           <div id="panel-benchmarks" role="tabpanel" aria-labelledby="tab-benchmarks" style={{ flex: 1, display: activeTab === 'benchmarks' ? 'block' : 'none' }}>
@@ -490,6 +521,7 @@ export default function App() {
               status={status}
               models={models}
               modelsLoading={modelsLoading}
+              isActive={activeTab === 'benchmarks'}
               onRefresh={() => { fetchStatus(); fetchModels(); }}
             />
           </div>

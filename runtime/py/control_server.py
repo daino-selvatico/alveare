@@ -2215,6 +2215,7 @@ class LiveStartRequest(BaseModel):
     speed: Optional[float] = 1.0
     min_silence_duration_s: Optional[float] = 0.35
     enable_thinking: Optional[bool] = False
+    tts_mode: Optional[str] = "server"
 
 @app.post("/api/control/slot/start")
 async def control_slot_start(req: SlotControlRequest):
@@ -2272,11 +2273,13 @@ async def api_live_start(req: LiveStartRequest):
     stt_device = req.stt_device or "cpu"
     start_stt_slot(model=stt_model, device=stt_device)
 
+    tts_mode = (req.tts_mode or "server").lower()
     tts_model = req.tts_model or "hexgrad/Kokoro-82M"
     from runtime.py.tts_factory import is_kokoro_model
     is_kokoro = is_kokoro_model(tts_model)
     tts_device = req.tts_device or ("cpu" if is_kokoro else "npu")
-    start_tts_slot(model=tts_model, device=tts_device)
+    if tts_mode == "server":
+        start_tts_slot(model=tts_model, device=tts_device)
 
     default_voice = "if_sara" if is_kokoro else "valeria"
     chosen_voice = req.voice or default_voice
@@ -2293,7 +2296,8 @@ async def api_live_start(req: LiveStartRequest):
                 "max_tokens": req.max_tokens or 120,
                 "temperature": req.temperature or 0.5,
                 "speed": req.speed or 1.0,
-                "enable_thinking": req.enable_thinking or False
+                "enable_thinking": req.enable_thinking or False,
+                "tts_mode": tts_mode
             }
         }
     }
@@ -2325,49 +2329,65 @@ async def websocket_live_endpoint(websocket: WebSocket):
     tts_dev = tts_slot.device or ("cpu" if is_kokoro else "npu")
     default_voice = "if_sara" if is_kokoro else "valeria"
 
+    # Query param override for tts_mode
+    tts_mode_param = "server"
+    try:
+        if hasattr(websocket, "query_params") and "tts_mode" in websocket.query_params:
+            candidate_mode = str(websocket.query_params.get("tts_mode", "")).strip().lower()
+            if candidate_mode in ("server", "client"):
+                tts_mode_param = candidate_mode
+    except Exception:
+        pass
+
     # Auto-activate neural runtime slots if not already running
     if llm_slot.status not in ("starting", "running") or not (llm_slot.process and llm_slot.process.poll() is None):
         start_llm_slot(model=llm_slot.model or "gemma4-e4b", device=llm_slot.device or "gpu")
     if stt_slot.status not in ("starting", "running"):
         start_stt_slot(model=stt_slot.model or "openai/whisper-large-v3-turbo", device=stt_slot.device or "cpu")
-    if tts_slot.status not in ("starting", "running"):
+    if tts_mode_param == "server" and tts_slot.status not in ("starting", "running"):
         start_tts_slot(model=tts_slot.model or "hexgrad/Kokoro-82M", device=tts_dev)
 
-    session = LiveSession(
-        session_id=session_id,
-        send_event_fn=send_event,
-        llm_host=llm_slot.host,
-        llm_port=llm_slot.port,
-        llm_model=llm_slot.model or "gemma4-e4b",
-        stt_device=stt_slot.device or "cpu",
-        tts_device=tts_dev,
-        stt_model=stt_slot.model or "openai/whisper-large-v3-turbo",
-        tts_model=tts_slot.model or "hexgrad/Kokoro-82M",
-        voice=default_voice
-    )
-    session.initialize_workers()
-
-    await send_event({
-        "event": "live_connected",
-        "session_id": session_id,
-        "hardware_profile": {
-            "llm": {"model": session.llm_model, "device": llm_slot.device, "status": llm_slot.status},
-            "stt": {"model": session.stt_model, "device": session.stt_device, "status": stt_slot.status},
-            "tts": {"model": session.tts_model, "device": session.tts_device, "status": tts_slot.status, "voice": session.voice}
-        },
-        "sample_rate": session.sample_rate,
-        "settings": {
-            "max_context_turns": session.max_context_turns,
-            "max_tokens": session.max_tokens,
-            "temperature": session.temperature,
-            "voice": session.voice,
-            "speed": getattr(session, "speed", 1.0),
-            "min_silence_duration_s": session.min_silence_duration_s,
-            "enable_thinking": session.enable_thinking
-        }
-    })
-
+    session = None
     try:
+        session = LiveSession(
+            session_id=session_id,
+            send_event_fn=send_event,
+            llm_host=llm_slot.host,
+            llm_port=llm_slot.port,
+            llm_model=llm_slot.model or "gemma4-e4b",
+            stt_device=stt_slot.device or "cpu",
+            tts_device=tts_dev,
+            stt_model=stt_slot.model or "openai/whisper-large-v3-turbo",
+            tts_model=tts_slot.model or "hexgrad/Kokoro-82M",
+            voice=default_voice,
+            tts_mode=tts_mode_param
+        )
+        session.initialize_workers()
+
+        await send_event({
+            "event": "live_connected",
+            "session_id": session_id,
+            "hardware_profile": {
+                "llm": {"model": session.llm_model, "device": llm_slot.device, "status": llm_slot.status},
+                "stt": {"model": session.stt_model, "device": session.stt_device, "status": stt_slot.status},
+                "tts": {"model": session.tts_model, "device": session.tts_device, "status": tts_slot.status, "voice": session.voice}
+            },
+            "sample_rate": session.sample_rate,  # 16000 INPUT for legacy clients
+            "input_sample_rate": session.input_sample_rate,  # 16000
+            "output_sample_rate": session.output_sample_rate,  # 24000 or 44100
+            "audio_format": session.audio_format,  # 'wav'
+            "settings": {
+                "max_context_turns": session.max_context_turns,
+                "max_tokens": session.max_tokens,
+                "temperature": session.temperature,
+                "voice": session.voice,
+                "speed": getattr(session, "speed", 1.0),
+                "min_silence_duration_s": session.min_silence_duration_s,
+                "enable_thinking": session.enable_thinking,
+                "tts_mode": session.tts_mode
+            }
+        })
+
         while True:
             message = await websocket.receive()
             if "bytes" in message and message["bytes"]:
@@ -2375,52 +2395,110 @@ async def websocket_live_endpoint(websocket: WebSocket):
             elif "text" in message and message["text"]:
                 try:
                     payload = json.loads(message["text"])
-                    msg_type = payload.get("type", "")
-                    if msg_type == "audio":
-                        audio_b64 = payload.get("data", "")
-                        if audio_b64:
+                except Exception:
+                    await send_event({"event": "error", "error": "Invalid JSON format in text message"})
+                    continue
+
+                if not isinstance(payload, dict):
+                    await send_event({"event": "error", "error": "Message payload must be a JSON object"})
+                    continue
+
+                msg_type = payload.get("type", "")
+                if msg_type == "audio":
+                    audio_b64 = payload.get("data", "")
+                    if audio_b64:
+                        try:
                             raw_pcm = base64.b64decode(audio_b64)
                             await session.handle_audio_chunk(raw_pcm)
-                    elif msg_type == "interrupt":
-                        session.is_ai_speaking = False
-                        session.turn_id += 1
-                        if session.current_processing_task and not session.current_processing_task.done():
-                            session.current_processing_task.cancel()
-                        await send_event({"event": "interrupted", "turn_id": session.turn_id})
-                    elif msg_type in ("end_of_speech", "flush"):
-                        if session.in_speech or len(session.speech_buffer) > 0:
-                            await session._trigger_turn_completion()
-                    elif msg_type == "ping":
-                        await send_event({"event": "pong", "timestamp": time.time()})
-                    elif msg_type in ("config", "update_settings"):
-                        settings = payload.get("settings", {})
-                        session.update_settings(settings)
-                        await send_event({
-                            "event": "settings_updated",
-                            "settings": {
-                                "max_context_turns": session.max_context_turns,
-                                "max_tokens": session.max_tokens,
-                                "temperature": session.temperature,
-                                "voice": session.voice,
-                                "speed": getattr(session, "speed", 1.0),
-                                "min_silence_duration_s": session.min_silence_duration_s,
-                                "enable_thinking": session.enable_thinking
-                            }
-                        })
-                    elif msg_type in ("clear_memory", "reset_context", "reset_history"):
-                        clear_res = session.clear_memory()
-                        await send_event({
-                            "event": "memory_cleared",
-                            "turn_id": 0,
-                            "message": clear_res.get("message", "Memoria conversazione azzerata."),
-                            "timestamp": time.time()
-                        })
-                except Exception:
-                    pass
+                        except Exception:
+                            await send_event({"event": "error", "error": "Invalid base64 audio payload"})
+                    else:
+                        await send_event({"event": "error", "error": "Missing audio data in payload"})
+                elif msg_type == "interrupt":
+                    session.is_ai_speaking = False
+                    session.turn_id += 1
+                    if session.current_processing_task and not session.current_processing_task.done():
+                        session.current_processing_task.cancel()
+                    if session.current_tts_task and not session.current_tts_task.done():
+                        session.current_tts_task.cancel()
+                    if session.current_tts_queue is not None:
+                        while not session.current_tts_queue.empty():
+                            try:
+                                session.current_tts_queue.get_nowait()
+                                session.current_tts_queue.task_done()
+                            except Exception:
+                                break
+                    session.current_tts_queue = None
+                    await send_event({"event": "interrupted", "turn_id": session.turn_id})
+                elif msg_type in ("end_of_speech", "flush"):
+                    if session.in_speech or len(session.speech_buffer) > 0:
+                        await session._trigger_turn_completion()
+                elif msg_type == "ping":
+                    await send_event({"event": "pong", "timestamp": time.time()})
+                elif msg_type in ("config", "update_settings"):
+                    settings = payload.get("settings", {})
+                    if not isinstance(settings, dict):
+                        await send_event({"event": "error", "error": "Settings must be a JSON object"})
+                        continue
+                    session.update_settings(settings)
+                    await send_event({
+                        "event": "settings_updated",
+                        "settings": {
+                            "max_context_turns": session.max_context_turns,
+                            "max_tokens": session.max_tokens,
+                            "temperature": session.temperature,
+                            "voice": session.voice,
+                            "speed": getattr(session, "speed", 1.0),
+                            "min_silence_duration_s": session.min_silence_duration_s,
+                            "enable_thinking": session.enable_thinking,
+                            "tts_mode": session.tts_mode
+                        }
+                    })
+                elif msg_type in ("clear_memory", "reset_context", "reset_history"):
+                    clear_res = session.clear_memory()
+                    await send_event({
+                        "event": "memory_cleared",
+                        "turn_id": session.turn_id,
+                        "message": clear_res.get("message", "Memoria conversazione azzerata."),
+                        "timestamp": time.time()
+                    })
+                elif msg_type in ("register_client", "register", "handshake"):
+                    client_id = str(payload.get("client_id", "anonymous"))[:128].strip()
+                    room_val = payload.get("room", "")
+                    if isinstance(room_val, str):
+                        room_val = room_val.strip().strip('"\'')[:128]
+                    else:
+                        room_val = str(room_val)[:128]
+                    mode = str(payload.get("mode", "voice_satellite"))[:64].strip()
+                    device_name = str(payload.get("device_name", ""))[:128].strip()
+
+                    session.client_id = client_id
+                    session.room = room_val
+                    session.client_mode = mode
+                    session.device_name = device_name
+
+                    await send_event({
+                        "event": "client_registered",
+                        "client_id": client_id,
+                        "room": room_val,
+                        "mode": mode,
+                        "status": "ok",
+                        "timestamp": time.time()
+                    })
+                elif msg_type in ("heartbeat", "keepalive"):
+                    await send_event({"event": "pong", "timestamp": time.time()})
+                else:
+                    await send_event({"event": "error", "error": f"Unknown message type: '{msg_type}'"})
     except WebSocketDisconnect:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            await websocket.close(code=1011, reason=f"Server error: {e}")
+        except Exception:
+            pass
+    finally:
+        if session is not None:
+            session.close()
 
 class BuildKernelsRequest(BaseModel):
     model: Optional[str] = None

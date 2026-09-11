@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ServerControl, { deduplicateModelOptions } from './ServerControl';
 import { I18nProvider } from '../i18n/I18nContext';
@@ -194,5 +194,38 @@ describe('ServerControl Component', () => {
     const kokoroDedup = deduplicateModelOptions(kokoroRaw);
     expect(kokoroDedup).toHaveLength(1);
     expect(kokoroDedup[0]).toEqual({ id: 'hexgrad/Kokoro-82M', label: 'Kokoro 82M' });
+  });
+
+  it('opens and dismisses buildTargetModal using the X button', () => {
+    render(
+      <I18nProvider>
+        <ServerControl
+          apiBase="http://localhost:8080"
+          status={mockStatus}
+          models={mockModels}
+          modelsLoading={false}
+          onRefresh={vi.fn()}
+        />
+      </I18nProvider>
+    );
+
+    const compileBtn = screen.getByLabelText(`Compila kernel per ${mockModels[0].id}`);
+    expect(compileBtn).toBeTruthy();
+    fireEvent.click(compileBtn);
+
+    // Modal is open
+    const modal = screen.getByRole('dialog');
+    expect(modal).toBeTruthy();
+    expect(within(modal).getByText(mockModels[0].id)).toBeTruthy();
+
+    // Close using the X button
+    const closeBtn = within(modal).getByRole('button', { name: '' });
+    expect(closeBtn).toBeTruthy();
+    act(() => {
+      fireEvent.click(closeBtn);
+    });
+
+    // Modal is dismissed
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Play, Square, RotateCw, Server, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, ChevronDown, ChevronUp, Plus, Trash2, Zap, Cpu, Radio, Volume2 } from 'lucide-react';
+import { Play, Square, RotateCw, Server, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, ChevronDown, ChevronUp, Plus, Trash2, Zap, Cpu, Radio, Volume2, X } from 'lucide-react';
 import AddModelModal from './AddModelModal';
 import { useTranslation } from '../i18n/I18nContext';
 

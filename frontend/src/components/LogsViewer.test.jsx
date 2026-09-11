@@ -132,4 +132,35 @@ describe('LogsViewer Component', () => {
     // manual scroll position is preserved
     expect(logContainer.scrollTop).toBe(120);
   });
+
+  it('does NOT poll logs when isActive is false', async () => {
+    let fetchCount = 0;
+    global.fetch = vi.fn((url) => {
+      if (url.includes('/api/logs')) {
+        fetchCount++;
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ logs: initialLogs })
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(
+        <I18nProvider>
+          <LogsViewer apiBase={mockApiBase} isActive={false} />
+        </I18nProvider>
+      );
+    });
+
+    const initialCount = fetchCount;
+    expect(initialCount).toBe(0);
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(fetchCount).toBe(0);
+  });
 });

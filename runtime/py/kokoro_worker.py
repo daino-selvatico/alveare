@@ -104,6 +104,9 @@ def resolve_voice_and_lang(voice_name: str, language: str) -> tuple[str, str]:
     elif v in ("daino", "male", "nicola", "m"):
         chosen_voice = "im_nicola"
         lang_code = "i"
+    elif v in ("bolt", "assistant", "conciso"):
+        chosen_voice = "im_nicola"
+        lang_code = "i"
     elif v == "if_sara":
         chosen_voice = "if_sara"
         lang_code = "i"
@@ -112,26 +115,29 @@ def resolve_voice_and_lang(voice_name: str, language: str) -> tuple[str, str]:
         lang_code = "i"
     else:
         chosen_voice = voice_name.strip()
-        if chosen_voice.startswith("i"):
+        # Strictly check exact Kokoro prefixes
+        if chosen_voice.startswith(("if_", "im_")):
             lang_code = "i"
-        elif chosen_voice.startswith("a"):
+        elif chosen_voice.startswith(("af_", "am_")):
             lang_code = "a"
-        elif chosen_voice.startswith("b"):
+        elif chosen_voice.startswith(("bf_", "bm_")):
             lang_code = "b"
-        elif chosen_voice.startswith("j"):
+        elif chosen_voice.startswith(("jf_", "jm_")):
             lang_code = "j"
-        elif chosen_voice.startswith("z"):
+        elif chosen_voice.startswith(("zf_", "zm_")):
             lang_code = "z"
-        elif chosen_voice.startswith("e"):
+        elif chosen_voice.startswith(("ef_", "em_")):
             lang_code = "e"
-        elif chosen_voice.startswith("f"):
+        elif chosen_voice.startswith(("ff_", "fm_")):
             lang_code = "f"
-        elif chosen_voice.startswith("h"):
+        elif chosen_voice.startswith(("hf_", "hm_")):
             lang_code = "h"
-        elif chosen_voice.startswith("p"):
+        elif chosen_voice.startswith(("pf_", "pm_")):
             lang_code = "p"
         else:
             lang_code = "i" if lang.startswith("it") else "a"
+            if lang_code == "i" and chosen_voice not in ("if_sara", "im_nicola"):
+                chosen_voice = "if_sara"
 
     return chosen_voice, lang_code
 
@@ -170,7 +176,13 @@ def main():
         if lang_code not in pipelines:
             sys.stderr.write(f"[Kokoro Worker] Initializing KPipeline for lang='{lang_code}' on {torch_device}...\n")
             repo_id = model_id if "/" in model_id else "hexgrad/Kokoro-82M"
-            p = KPipeline(lang_code=lang_code, repo_id=repo_id, device=torch_device)
+            try:
+                p = KPipeline(lang_code=lang_code, repo_id=repo_id, device=torch_device)
+            except Exception as pe:
+                sys.stderr.write(f"[Kokoro Worker] Error loading pipeline for '{lang_code}': {pe}, falling back to Italian 'i'\n")
+                if "i" in pipelines:
+                    return pipelines["i"]
+                p = KPipeline(lang_code="i", repo_id=repo_id, device=torch_device)
             pipelines[lang_code] = p
         return pipelines[lang_code]
 
@@ -196,9 +208,17 @@ def main():
         format_type: str = "pcm16"
     ):
         chosen_voice, lang_code = resolve_voice_and_lang(voice, language)
-        pipeline = get_pipeline(lang_code)
-
-        chunks = list(pipeline(text_segment, voice=chosen_voice, speed=speed))
+        try:
+            pipeline = get_pipeline(lang_code)
+            chunks = list(pipeline(text_segment, voice=chosen_voice, speed=speed))
+        except Exception as pe:
+            sys.stderr.write(f"[Kokoro Worker] Synthesis error with voice '{chosen_voice}' lang '{lang_code}': {pe}, falling back to Italian pipeline\n")
+            try:
+                p_fallback = get_pipeline("i")
+                chunks = list(p_fallback(text_segment, voice="if_sara", speed=speed))
+            except Exception as pe2:
+                sys.stderr.write(f"[Kokoro Worker] Critical synthesis fallback error: {pe2}\n")
+                chunks = []
         if not chunks:
             audio_tensor = torch.zeros(0, dtype=torch.float32)
         elif len(chunks) == 1:

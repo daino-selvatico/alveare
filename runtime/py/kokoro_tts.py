@@ -196,6 +196,10 @@ class KokoroTTS:
             worker_script = str(Path(__file__).resolve().parent / "kokoro_worker.py")
             clean_env = os.environ.copy()
             clean_env.pop("PYTHONPATH", None)
+            venv_dir = Path(ext_py).parent.parent
+            if (venv_dir / "pyvenv.cfg").exists():
+                clean_env["VIRTUAL_ENV"] = str(venv_dir)
+                clean_env["PATH"] = str(Path(ext_py).parent) + os.pathsep + clean_env.get("PATH", "")
 
             cmd = [ext_py, worker_script, self.model_id, self.device]
             proc = subprocess.Popen(

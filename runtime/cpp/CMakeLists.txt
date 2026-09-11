@@ -126,3 +126,10 @@ target_link_libraries(cpu_backend_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${
 add_executable(gpu_backend_test test/gpu_backend_test.cpp ${ALVEARE_CORE_SRC})
 target_include_directories(gpu_backend_test PRIVATE ${XRT_INCLUDE_DIRS})
 target_link_libraries(gpu_backend_test PRIVATE ${XRT_COREUTIL_TARGET} pthread ${ALVEARE_OMP} ${MTMD_LIBS} ${Vulkan_LIBRARIES})
+
+# CTest Registration
+enable_testing()
+add_test(NAME cpu_backend_test COMMAND cpu_backend_test)
+add_test(NAME gpu_backend_test COMMAND gpu_backend_test)
+add_test(NAME gpu_backend_test_negative_control COMMAND gpu_backend_test --negative-control)
+set_tests_properties(gpu_backend_test_negative_control PROPERTIES WILL_FAIL TRUE)

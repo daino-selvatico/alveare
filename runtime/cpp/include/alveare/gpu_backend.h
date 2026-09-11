@@ -43,12 +43,33 @@ public:
     void pin_gemv(int N, int K) override {}
     void pin_ffn_fused(int H, int I, const std::string& activation) override {}
 
+    struct GpuStats {
+        uint64_t gemv_gpu_calls = 0;
+        uint64_t gemm_gpu_calls = 0;
+        uint64_t fault_fallback_calls = 0;
+        uint64_t intentional_cpu_ffn_calls = 0;
+        std::string last_fallback_reason;
+        double wall_seconds = 0.0;
+        double gpu_fence_wait_seconds = 0.0;
+        double copy_in_seconds = 0.0;
+        double copy_out_seconds = 0.0;
+    };
+
     double device_seconds() const override { return elapsed_seconds_; }
     double ffn_seconds() const override { return ffn_seconds_; }
     long device_calls() const override { return total_calls_; }
-    void reset_profile() override { elapsed_seconds_ = 0.0; ffn_seconds_ = 0.0; total_calls_ = 0; }
+    void reset_profile() override;
 
     bool is_vulkan_active() const;
+    GpuStats stats() const;
+    uint64_t fallback_count() const;
+    std::string last_fallback_reason() const;
+
+    // Subgroup control inspection & test configuration
+    bool supports_subgroup_size_control() const;
+    uint32_t default_subgroup_size() const;
+    bool enable_forced_subgroup32(bool enable);
+    bool is_forced_subgroup32() const;
 
 private:
     struct Impl;

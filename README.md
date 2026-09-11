@@ -25,6 +25,7 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
   - **Kokoro-82M**: Ultra-fast non-autoregressive neural TTS (StyleTTS2 + ISTFTNet, 82M) with natural Italian prosody, RTF ~0.10x on Zen 5 CPU, and sub-500ms TTFA.
   - **Audio8 TTS (0.1B & 0.6B)**: High-fidelity autoregressive neural speech synthesis with zero-shot voice cloning, accelerated on AMD NPU and CPU.
 - **🔌 OpenAI-Compatible API**: Standard `/v1/chat/completions`, `/v1/audio/transcriptions`, `/v1/audio/speech`, and `/v1/models` REST endpoints for direct drop-in replacement with the OpenAI Python SDK, LangChain, LlamaIndex, Continue, etc.
+- **🛰️ Android Companion Voice Satellite**: Connect repurposed Android devices (Android 7.0+) as dedicated smart speakers and ambient voice satellites via the [Alveare Android Satellite](https://github.com/daino-selvatico/alveare-android) companion client (in active development). Supports offline "Ehi Alveare" wake phrase, Assistente mode, and full-duplex Live streaming.
 - **🧩 Custom Quantizer Plugin Architecture**: Bring any custom architecture to the NPU by implementing `BaseQuantizer` (`tools/convert/base_quantizer.py`).
 
 ---
@@ -92,6 +93,7 @@ For the complete guide, see 🚀 [**Quickstart Guide**](docs/quickstart.md).
 - 🗣️ [**Text-to-Speech Engine Guide**](docs/tts-engine.md): Audio8 TTS on AMD NPU, voice cloning, and OpenAI speech endpoint.
 - 🛠️ [**Full Hardware & Toolchain Setup**](docs/SETUP.md): Deep dive into Linux driver permissions, XRT libraries, and AIE compiler requirements.
 - 🔌 [**Custom Quantizer Plugins**](docs/CUSTOM_QUANTIZERS.md): Build custom tensor tiling and layout plugins for new model architectures.
+- 🛰️ [**Android Satellite Companion**](https://github.com/daino-selvatico/alveare-android): Native Android companion app, Vosk offline hotword, and smart speaker setup (in active development).
 - 🏛️ [**System Architecture**](docs/architecture.md): Overview of C++ engine, Python control server, and AIE kernel pipeline.
 
 ---

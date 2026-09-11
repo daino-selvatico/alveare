@@ -137,3 +137,11 @@ Send raw 16-bit mono 16000Hz PCM audio directly as binary frames.
 # Specify custom host or port
 ./alveare live --host 127.0.0.1 --port 8080
 ```
+
+### Via Android Satellite Client (In Active Development)
+Repurpose older Android devices (Android 7.0+ / `minSdk 24`) as dedicated smart speakers with the companion [**Alveare Android Satellite**](https://github.com/daino-selvatico/alveare-android) client (pre-release `v0.1.0-alpha.1`).
+Features include:
+- Offline Italian wake phrase ("Ehi Alveare") via Kaldi/Vosk.
+- Seamless WebSocket connection to `wss://<host>:8443/ws/live` with handshake registration (`register_client`).
+- Dual operational modes: **Modalità Assistente** (turn-based, wake word / tap-to-talk) and **Modalità Live** (full-duplex streaming).
+- Robust acoustic echo suppression during assistant speech playback.

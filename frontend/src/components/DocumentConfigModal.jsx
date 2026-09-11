@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { FileText, X, Check, Sliders, Sparkles, BookOpen } from 'lucide-react';
+import { FileText, X, Check, Sparkles, BookOpen } from 'lucide-react';
 import { formatPdfDocumentText, estimateTokens, parsePageRange } from '../utils/documentParser';
 
 export default function DocumentConfigModal({
@@ -9,6 +9,21 @@ export default function DocumentConfigModal({
 }) {
   if (!attachment) return null;
 
+  return (
+    <DocumentConfigModalContent
+      key={attachment.id || 'doc-config-modal'}
+      attachment={attachment}
+      onSave={onSave}
+      onClose={onClose}
+    />
+  );
+}
+
+function DocumentConfigModalContent({
+  attachment,
+  onSave,
+  onClose
+}) {
   const isPdf = attachment.pdfData && attachment.pdfData.pages && attachment.pdfData.pages.length > 0;
   const totalPages = isPdf ? attachment.pdfData.pages.length : 1;
 
