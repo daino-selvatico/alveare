@@ -313,6 +313,40 @@ def run_setup(
 
     log_progress("quantize", 75.0, "Quantization and weight packing completed.")
 
+    # 2.5 Generate Medusa Speculative Prediction Heads if applicable
+    emb_file = weights_dir / "token_embd.npy"
+    tok_file = weights_dir / "tokenizer.json"
+    medusa_0 = weights_dir / "medusa_head_0.npy"
+    if emb_file.exists() and tok_file.exists():
+        if not medusa_0.exists():
+            log_progress("speculative_setup", 76.0, f"Generating fast Medusa speculative prediction heads for '{alias}'...")
+            medusa_train_script = ROOT_DIR / "tools" / "train_medusa_fast.py"
+            corpus_path = ROOT_DIR / "tools" / "corpus.jsonl"
+            if medusa_train_script.exists() and corpus_path.exists():
+                py_exe_temp = os.environ.get("ALVEARE_PYTHON")
+                if not py_exe_temp and os.environ.get("CONDA_PREFIX"):
+                    py_exe_temp = str(Path(os.environ.get("CONDA_PREFIX")) / "bin" / "python")
+                if not py_exe_temp:
+                    alveare_env_py = Path("/home/daino/miniconda3/envs/alveare-aie/bin/python")
+                    py_exe_temp = str(alveare_env_py) if alveare_env_py.exists() else sys.executable
+
+                m_cmd = [
+                    py_exe_temp, str(medusa_train_script),
+                    "--model-dir", str(weights_dir),
+                    "--corpus", str(corpus_path),
+                    "--num-heads", "3"
+                ]
+                try:
+                    m_res = subprocess.run(m_cmd, capture_output=True, text=True, timeout=120)
+                    if m_res.returncode == 0:
+                        log_progress("speculative_setup", 79.0, "Medusa speculative prediction heads generated successfully.")
+                    else:
+                        print(f"[setup_model] Medusa head training returned non-zero ({m_res.returncode}): {m_res.stderr}")
+                except Exception as e:
+                    print(f"[setup_model] Non-fatal warning: failed to generate Medusa heads: {e}")
+        else:
+            log_progress("speculative_setup", 76.0, f"Medusa speculative prediction heads already present for '{alias}'.")
+
     # 3. Build Kernels
     log_progress("build_kernels", 80.0, "Compiling / harvesting NPU AOT hardware kernels...")
     kernels_out_dir = ROOT_DIR / "kernels" / "build" / alias

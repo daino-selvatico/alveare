@@ -181,6 +181,7 @@ void Generator::run_lm_head(const bf16* x, std::vector<float>& logits) {
     for (int i = 0; i < hidden_size && i < K_padded; ++i) xf[i] = x[i].to_float();
 
     const uint8_t* base = weights_.lm_head.data();
+    #pragma omp parallel for schedule(static)
     for (int v = 0; v < vocab_size; ++v) {
         const uint8_t* row = base + static_cast<size_t>(v) * row_bytes;
         float dot = 0.0f;
@@ -589,6 +590,7 @@ GenerationStats Generator::generate(
             int corr = preds[accept];
             current_token = corr;
             pos = pos + accept + 1;
+            std::memcpy(cur_x, &xb[static_cast<size_t>(accept) * hidden_size], hidden_size * sizeof(bf16));
             if (generated >= params.max_tokens) break;
             if (!emit(corr)) break;
         }
