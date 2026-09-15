@@ -515,6 +515,8 @@ def discover_models() -> List[Dict[str, Any]]:
         else:
             if "llama" in alias:
                 arch = "llama"
+            elif "qwen" in alias:
+                arch = "qwen"
 
         # Calculate approximate size
         size_bytes = 0
@@ -564,6 +566,15 @@ def discover_models() -> List[Dict[str, Any]]:
                     description = "Ultra-compact neural text-to-speech with natural Italian prosody, zero-shot voice cloning and NPU acceleration."
             if size_mb == 0:
                 size_mb = 1200.0 if "0.6b" in alias else 340.0
+
+        elif "qwen" in alias or arch == "qwen":
+            task = "text-generation"
+            arch = "qwen"
+            if not name or name == alias:
+                name = "Qwen 3.8 27B GSQ-RCO (MTP Speculative)"
+                description = "State-of-the-art 27B reasoning model with GSQ-RCO mixed precision and Multi-Token Prediction (MTP) speculative decoding."
+            if size_mb == 0:
+                size_mb = 11400.0
 
         if task == "speech-to-text":
             supported_devices = ["cpu", "npu", "gpu"]
@@ -849,6 +860,8 @@ def start_llm_slot(model: str = "gemma4-e4b", host: str = "127.0.0.1", port: int
         llm_slot.total_layers = 42
     elif "12b" in model.lower() or "gemma4" in model.lower():
         llm_slot.total_layers = 48
+    elif "qwen" in model.lower() or "27b" in model.lower():
+        llm_slot.total_layers = 64
     elif "1b" in model.lower() or "llama" in model.lower():
         llm_slot.total_layers = 26
     else:
@@ -1168,6 +1181,13 @@ async def delete_model(model_id: str):
             ROOT_DIR / "quantized_weights_gemma4-e4b",
             ROOT_DIR / "kernels" / "build" / "gemma4-e4b"
         ])
+    elif model_id in ("qwen", "qwen3.8-27b", "qwen-27b"):
+        possible_dirs.extend([
+            ROOT_DIR / "quantized_weights_qwen",
+            ROOT_DIR / "quantized_weights_qwen3.8-27b",
+            ROOT_DIR / "kernels" / "build" / "qwen",
+            ROOT_DIR / "kernels" / "build" / "qwen3.8-27b"
+        ])
 
     import shutil
     deleted_items = []
@@ -1322,7 +1342,7 @@ async def start_model_setup(req: ModelSetupRequest):
     if not re.match(r'^[a-zA-Z0-9_\-]+$', alias):
         raise HTTPException(status_code=400, detail="L'alias può contenere solo lettere, numeri, trattini e underscore.")
 
-    valid_archs = {"gemma4", "gemma4-e4b", "llama", "custom"}
+    valid_archs = {"gemma4", "gemma4-e4b", "llama", "qwen", "custom"}
     if req.arch not in valid_archs:
         raise HTTPException(status_code=400, detail=f"Architettura non supportata '{req.arch}'. Opzioni ammesse: {', '.join(valid_archs)}")
 
