@@ -119,8 +119,11 @@ def load_quantizer_plugin(quantizer_spec: str) -> Any:
     elif key in ("llama", "llama3", "llama-3.2"):
         from tools import quantize_model
         return quantize_model
+    elif key in ("qwen", "qwen2", "qwen3", "qwen2.5", "qwen3.8"):
+        from tools import quantize_qwen
+        return quantize_qwen
     else:
         raise ValueError(
             f"Unknown architecture or missing quantizer script: '{quantizer_spec}'. "
-            f"Supported built-ins: gemma4, gemma4-e4b, gemma3, llama. Or pass a path to a .py script."
+            f"Supported built-ins: gemma4, gemma4-e4b, gemma3, llama, qwen. Or pass a path to a .py script."
         )

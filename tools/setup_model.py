@@ -108,6 +108,16 @@ SUPPORTED_MODELS = [
         "filename": "model.safetensors",
         "size_approx": "~1.2 GB",
         "description": "SOTA-class 600M multilingual text-to-speech with rich acoustic details and zero-shot voice cloning."
+    },
+    {
+        "id": "qwen3.8-27b",
+        "name": "Qwen 3.8 27B GSQ-RCO (MTP Speculative)",
+        "arch": "qwen",
+        "default_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF/resolve/main/Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf",
+        "repo_id": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+        "filename": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf",
+        "size_approx": "~11.4 GB",
+        "description": "State-of-the-art 27B reasoning model with GSQ-RCO mixed precision and Multi-Token Prediction (MTP) speculative decoding."
     }
 ]
 

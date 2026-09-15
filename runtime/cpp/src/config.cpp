@@ -53,6 +53,15 @@ ModelConfig load_config(const std::string& path) {
         cfg.num_hidden_layers = j.value("num_hidden_layers", 48);
         cfg.vocab_size = j.value("vocab_size", 262144);
         cfg.rms_norm_eps = 1e-6f;
+    } else if (cfg.is_qwen()) {
+        cfg.hidden_size = j.value("hidden_size", 5120);
+        cfg.intermediate_size = j.value("intermediate_size", 27648);
+        cfg.num_attention_heads = j.value("num_attention_heads", 40);
+        cfg.num_key_value_heads = j.value("num_key_value_heads", 8);
+        cfg.head_dim = j.value("head_dim", 128);
+        cfg.num_hidden_layers = j.value("num_hidden_layers", 64);
+        cfg.vocab_size = j.value("vocab_size", 152064);
+        cfg.rms_norm_eps = j.value("rms_norm_eps", 1e-6f);
     } else {
         cfg.hidden_size = j.value("hidden_size", 2048);
         cfg.intermediate_size = j.value("intermediate_size", 8192);

@@ -24,6 +24,9 @@ SUPPORTED = {
     "llama": "llama",
     "gemma3": "gemma3",
     "gemma4": "gemma4",
+    "qwen": "qwen",
+    "qwen2": "qwen",
+    "qwen3": "qwen",
 }
 
 
