@@ -59,21 +59,37 @@ class WhisperSTT:
     _loading = False
     _external_py = None
 
+    @staticmethod
+    def normalize_model_id(model_id: str) -> str:
+        m = (model_id or "").lower().strip()
+        if "large-v3-turbo" in m or "turbo" in m:
+            return "openai/whisper-large-v3-turbo"
+        elif "large-v3" in m or "large" in m:
+            return "openai/whisper-large-v3"
+        elif "base" in m:
+            return "openai/whisper-base"
+        elif "tiny" in m:
+            return "openai/whisper-tiny"
+        elif "whisper" in m:
+            return "openai/whisper-large-v3-turbo"
+        return model_id
+
     def __init__(self, model_id: str = "openai/whisper-large-v3-turbo", device: str = "cpu"):
-        self.model_id = model_id
+        self.model_id = self.normalize_model_id(model_id)
         self.device = device or "cpu"
         self._external_py = None
 
     @classmethod
     def get_instance(cls, model_id: str = "openai/whisper-large-v3-turbo", device: str = "cpu"):
         dev = device or "cpu"
-        if cls._instance is None or cls._instance.model_id != model_id or cls._instance.device != dev:
+        norm_id = cls.normalize_model_id(model_id)
+        if cls._instance is None or cls._instance.model_id != norm_id or cls._instance.device != dev:
             if cls._instance and cls._instance._worker_proc:
                 try:
                     cls._instance._worker_proc.terminate()
                 except Exception:
                     pass
-            cls._instance = cls(model_id=model_id, device=dev)
+            cls._instance = cls(model_id=norm_id, device=dev)
         return cls._instance
 
     def _ensure_loaded(self):

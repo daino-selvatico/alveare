@@ -703,8 +703,8 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
             else
                 std::memcpy(scratch_.v.data(), scratch_.k.data(), size_t(N_kv) * sizeof(bf16)); // 12B gemma4 global layers are MQA: reuse K for V
         } else {
-            int N_q_padded = config_.model_type == "gemma3" ? 2048 : N_q;
-            int N_kv_padded = config_.model_type == "gemma3" ? 2048 : N_kv;
+            int N_q_padded = config_.model_type == "gemma3" ? 2048 : (config_.is_qwen() ? ((N_q + 2047) / 2048) * 2048 : N_q);
+            int N_kv_padded = config_.model_type == "gemma3" ? 2048 : (config_.is_qwen() ? ((N_kv + 2047) / 2048) * 2048 : N_kv);
 
             reg_.run_gemv(N_q_padded, K_padded, lw.w_q, scratch_.x_norm.data(), scratch_.q_buf.data());
             std::memcpy(scratch_.q.data(), scratch_.q_buf.data(), size_t(N_q) * sizeof(bf16));
@@ -735,7 +735,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
             }
             std::memcpy(scratch_.q.data(), qkv_ptr, size_t(N_q) * sizeof(bf16));
         } else {
-            int N_q_padded = config_.model_type == "gemma3" ? 2048 : N_q;
+            int N_q_padded = config_.model_type == "gemma3" ? 2048 : (config_.is_qwen() ? ((N_q + 2047) / 2048) * 2048 : N_q);
             reg_.run_gemv(N_q_padded, K_padded, lw.w_q, scratch_.x_norm.data(), scratch_.q_buf.data());
             std::memcpy(scratch_.q.data(), scratch_.q_buf.data(), size_t(N_q) * sizeof(bf16));
         }
@@ -798,7 +798,7 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
     int o_n = lw.o_gemv_n > 0 ? lw.o_gemv_n : N_out_padded;
     // o_gemv_k > 0 means O was zero-padded to share the fused-QKV kernel context.
     int N_q_padded = lw.o_gemv_k > 0 ? lw.o_gemv_k
-                                     : ((config_.model_type == "gemma3") ? 2048 : N_q);
+                                     : ((config_.model_type == "gemma3") ? 2048 : (config_.is_qwen() ? ((N_q + 2047) / 2048) * 2048 : N_q));
 
     const bool os_o_on = (!lw.os_o_tiles.empty() && lw.os_n > 0);
     auto t_o = pclock::now();
@@ -894,7 +894,12 @@ void Model::run_layer(const bf16* x_bf16, int pos, int layer, bf16* out_bf16, co
             const uint8_t* row_u = lw.ffn_up_bytes.data() + static_cast<size_t>(r) * gate_stride;
             float g = q4_0_dot_product(row_g, scratch_.x_norm2_f.data(), K_padded);
             float u = q4_0_dot_product(row_u, scratch_.x_norm2_f.data(), K_padded);
-            float a = 0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f));
+            float a;
+            if (act_type == "silu") {
+                a = g / (1.0f + std::exp(-g));
+            } else {
+                a = 0.5f * g * (1.0f + std::erf(g * 0.7071067811865475f));
+            }
             scratch_.geglu[r] = a * u;
         }
 

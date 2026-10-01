@@ -265,18 +265,10 @@ def main():
                         inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
                         input_features = inputs.input_features
 
+                    is_long_form = input_features.shape[-1] > 3000
                     lang = language if language and language not in ("auto", "unknown", "") else "it"
-                    gen_kwargs = {
-                        "max_new_tokens": 64,
-                        "language": lang,
-                        "task": "transcribe",
-                        "do_sample": False,
-                        "num_beams": 1,
-                        "temperature": 0.0,
-                        "condition_on_previous_text": False
-                    }
                     model_kwargs = {
-                        "max_new_tokens": 64,
+                        "max_new_tokens": 440,
                         "language": lang,
                         "task": "transcribe",
                         "do_sample": False,
@@ -285,6 +277,8 @@ def main():
                         "return_dict_in_generate": True,
                         "output_scores": False
                     }
+                    if is_long_form:
+                        model_kwargs["return_timestamps"] = True
 
                     with torch.no_grad():
                         try:

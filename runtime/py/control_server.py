@@ -583,12 +583,23 @@ def discover_models() -> List[Dict[str, Any]]:
             if arch == "kokoro" or "kokoro" in alias:
                 supported_devices = ["cpu", "gpu"]
                 default_dev = "cpu"
+            elif arch == "audio8" or "audio8" in alias:
+                supported_devices = ["npu", "cpu"]
+                default_dev = "npu"
             else:
                 supported_devices = ["npu", "cpu", "gpu"]
                 default_dev = "npu"
         else:
-            supported_devices = ["gpu", "npu", "cpu"]
-            default_dev = "gpu"
+            if arch == "qwen" or "qwen" in alias:
+                qwen_npu_manifest = ROOT_DIR / "kernels" / "build" / "qwen" / "manifest.json"
+                if qwen_npu_manifest.exists():
+                    supported_devices = ["gpu", "npu", "cpu"]
+                else:
+                    supported_devices = ["gpu", "cpu"]
+                default_dev = "gpu"
+            else:
+                supported_devices = ["gpu", "npu", "cpu"]
+                default_dev = "gpu"
         models.append({
             "id": alias,
             "alias": alias,
@@ -821,6 +832,11 @@ def start_tts_slot(model: str = "hexgrad/Kokoro-82M", device: Optional[str] = No
 
 def start_llm_slot(model: str = "gemma4-e4b", host: str = "127.0.0.1", port: int = 8000, device: str = "gpu", legacy: bool = False, offline: bool = False) -> bool:
     device = (device or "gpu").lower()
+    if "qwen" in model.lower() and device == "npu":
+        qwen_manifest = ROOT_DIR / "kernels" / "build" / "qwen" / "manifest.json"
+        if not qwen_manifest.exists():
+            append_log("[LLM Slot] Avviso: Nessun kernel NPU hardware presente per Qwen. Reindirizzamento su GPU...")
+            device = "gpu"
     llm_slot = state.slots["llm"]
 
     if llm_slot.process and llm_slot.process.poll() is None and llm_slot.model == model and llm_slot.device == device and llm_slot.is_loaded:
@@ -2693,6 +2709,16 @@ async def get_logs():
 
 import atexit
 atexit.register(stop_inference_server)
+
+@app.on_event("startup")
+def on_startup():
+    preload_stt = os.getenv("ALVEARE_PRELOAD_STT", "1")
+    if preload_stt.lower() in ("1", "true", "yes"):
+        stt_slot = state.slots.get("stt")
+        stt_model = os.getenv("ALVEARE_STT_MODEL", (stt_slot.model if stt_slot and stt_slot.model else "openai/whisper-large-v3-turbo"))
+        stt_device = os.getenv("ALVEARE_STT_DEVICE", (stt_slot.device if stt_slot and stt_slot.device else "cpu"))
+        print(f"[ControlServer] Preloading Whisper STT slot ({stt_model}) on {stt_device}...")
+        start_stt_slot(model=stt_model, device=stt_device)
 
 @app.on_event("shutdown")
 def on_shutdown():
