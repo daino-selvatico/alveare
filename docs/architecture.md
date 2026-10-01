@@ -1,39 +1,48 @@
 # Architecture
 
-High-level architectural overview of the Alveare NPU LLM stack.
+High-level architectural overview of the Alveare Heterogeneous Neural Computing Stack (NPU • GPU • CPU).
 
 ---
 
 ## 🏛️ System Architecture
 
-Alveare is divided into four distinct components:
+Alveare is divided into four distinct components operating across AMD Ryzen AI hardware:
 
 ```
     ┌─────────────────────────────────────────────────────────────────────────────┐
     │  React Web UI Dashboard  (http://127.0.0.1:8000)                             │
-    │  - Real-time NPU telemetry, server controls, live terminal logs             │
+    │  - Real-time telemetry, multi-device slot controls, live terminal logs      │
+    │  - Full-Duplex Live Voice-to-Voice Studio with context window controls      │
     │  - 1-Click model setup modal ("Aggiungi Modello") & model deletion manager  │
     └─────────────────────────────────────┬───────────────────────────────────────┘
                                           │ HTTP / WebSocket
                                           ▼
     ┌─────────────────────────────────────────────────────────────────────────────┐
     │  Python Control Server (runtime/py/control_server.py)                       │
-    │  - Manages background download & setup tasks, model package discovery       │
-    │  - Forwards /v1 OpenAI endpoints to Native C++ Engine                       │
+    │  - Multi-slot lifecycle manager (llm, stt, tts) across NPU, GPU, and CPU    │
+    │  - Live Orchestrator (/ws/live) full-duplex conversational pipeline         │
+    │  - Forwards /v1 OpenAI REST endpoints (chat, speech, transcriptions)        │
     └─────────────────────────────────────┬───────────────────────────────────────┘
-                                          │ IPC / HTTP Proxy
+                                          │ IPC / Direct Subprocess Routing
                                           ▼
     ┌─────────────────────────────────────────────────────────────────────────────┐
-    │  Native C++ Inference Server (runtime/cpp/ -> alveare_runtime)              │
-    │  - Zero Python overhead decode loop, native C++ KV cache & samplers         │
-    │  - Self-contained BPE / SentencePiece tokenizer                             │
-    │  - Direct XRT memory-resident weight context management                     │
+    │  Execution Engines:                                                         │
+    │  1. Native C++ Engine (runtime/cpp/ -> alveare_runtime):                    │
+    │     - Vulkan 1.4 GPU backend (Radeon 890M subgroup GLSL compute shaders)    │
+    │     - XRT NPU backend (Ryzen AI XDNA2 32-core AIE2 .xclbin)                 │
+    │     - AVX-512 / OpenMP CPU backend                                          │
+    │  2. Speech-to-Text Engine (runtime/py/whisper_stt.py): Whisper on NPU/CPU   │
+    │  3. Text-to-Speech Engine (runtime/py/tts_factory.py):                      │
+    │     - Kokoro-82M (CPU Zen 5 / GPU CUDA, sub-500ms TTFA, StyleTTS2)          │
+    │     - Audio8 TTS (AMD NPU / CPU, DualAR 10-codebook, zero-shot cloning)     │
     └─────────────────────────────────────┬───────────────────────────────────────┘
-                                          │ XRT Buffer Objects & Kernel Submissions
+                                          │ Hardware Instructions & DMA
                                           ▼
     ┌─────────────────────────────────────────────────────────────────────────────┐
-    │  Open AIE Hardware Kernels (kernels/ -> .xclbin)                            │
-    │  - Fused FFN (gate/up + GeGLU + down in 1 xclbin), 32-core GEMV kernels     │
+    │  Accelerated Hardware Targets:                                              │
+    │  - ⚡ AMD Ryzen AI NPU (32 AIE2 Cores): Matrix GEMV Q4_0 & Fused FFN        │
+    │  - 🎮 AMD Radeon 890M GPU (Vulkan 1.4 SPIR-V compute shaders)              │
+    │  - 🖥️ AMD Zen 5 CPU (24 Threads AVX-512 vector pipeline)                    │
     └─────────────────────────────────────────────────────────────────────────────┘
 ```
 

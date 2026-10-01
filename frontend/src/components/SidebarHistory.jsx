@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Plus,
   MessageSquare,
@@ -60,6 +60,23 @@ export default function SidebarHistory({
   const [importError, setImportError] = useState(null);
   const [importSuccess, setImportSuccess] = useState(null);
   const fileInputRef = useRef(null);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const handleSelect = (id) => {
+    onSelectConversation(id);
+    if (isMobile && onToggleCollapse) {
+      onToggleCollapse();
+    }
+  };
 
   const startRename = (conv, e) => {
     e.stopPropagation();
@@ -163,6 +180,7 @@ export default function SidebarHistory({
   });
 
   if (isCollapsed) {
+    if (isMobile) return null;
     return (
       <div style={{
         width: '60px',
@@ -217,7 +235,7 @@ export default function SidebarHistory({
             return (
               <button
                 key={conv.id}
-                onClick={() => onSelectConversation(conv.id)}
+                onClick={() => handleSelect(conv.id)}
                 style={{
                   width: '42px',
                   height: '42px',
@@ -245,19 +263,25 @@ export default function SidebarHistory({
     );
   }
 
-  return (
+  const asideElement = (
     <aside
+      className="chat-sidebar"
       aria-label={t('sidebar.chatHistory')}
       style={{
-        width: '280px',
-        minWidth: '280px',
+        width: isMobile ? 'min(300px, 85vw)' : '280px',
+        minWidth: isMobile ? 'min(300px, 85vw)' : '280px',
+        position: isMobile ? 'fixed' : 'relative',
+        top: isMobile ? 0 : undefined,
+        bottom: isMobile ? 0 : undefined,
+        left: isMobile ? 0 : undefined,
         borderRight: '1px solid var(--border-color)',
-        background: 'rgba(13, 19, 33, 0.95)',
-        backdropFilter: 'blur(12px)',
+        background: 'rgba(13, 19, 33, 0.98)',
+        backdropFilter: 'blur(16px)',
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        zIndex: 10,
+        zIndex: isMobile ? 200 : 10,
+        boxShadow: isMobile ? '4px 0 24px rgba(0,0,0,0.6)' : 'none',
         userSelect: 'none'
       }}
     >
@@ -401,11 +425,11 @@ export default function SidebarHistory({
                 tabIndex={0}
                 aria-label={`${conv.title || t('sidebar.defaultTitle')} (${formatDateLabel(conv.updatedAt, t)})`}
                 aria-selected={isActive}
-                onClick={() => !isEditing && onSelectConversation(conv.id)}
+                onClick={() => !isEditing && handleSelect(conv.id)}
                 onKeyDown={e => {
                   if ((e.key === 'Enter' || e.key === ' ') && !isEditing) {
                     e.preventDefault();
-                    onSelectConversation(conv.id);
+                    handleSelect(conv.id);
                   }
                 }}
                 style={{
@@ -712,5 +736,22 @@ export default function SidebarHistory({
       </div>
     </aside>
   );
+
+  if (isMobile) {
+    return (
+      <>
+        <div
+          className="mobile-drawer-overlay"
+          onClick={onToggleCollapse}
+          aria-label={t('sidebar.collapseSidebar') || 'Chiudi cronologia'}
+          role="button"
+          tabIndex={0}
+        />
+        {asideElement}
+      </>
+    );
+  }
+
+  return asideElement;
 }
 

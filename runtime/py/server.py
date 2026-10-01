@@ -17,7 +17,7 @@ from runtime.py.model import LlamaNPUModel
 from runtime.py.tokenizer_glue import TokenizerGlue
 from runtime.py.sampler import sample
 
-app = FastAPI(title="Alveare NPU Server")
+app = FastAPI(title="Alveare Server")
 
 # Global states
 model = None
@@ -43,9 +43,9 @@ def startup_event():
     if config_path.exists():
         with open(config_path, "r") as f:
             config = json.load(f)
-        if config.get("model_type") == "gemma3":
-            model_id = "gemma-3-1b-it"
-            hf_model_id = "unsloth/gemma-3-1b-it"
+        if config.get("model_type") == "gemma4-e4b":
+            model_id = "gemma-4-e4b-it"
+            hf_model_id = "unsloth/gemma-4-e4b-it-GGUF"
         elif config.get("model_type") == "gemma4":
             model_id = "gemma-4-12b-it"
             hf_model_id = "google/gemma-4-12b-it"

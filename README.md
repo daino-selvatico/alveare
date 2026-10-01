@@ -4,37 +4,45 @@
 
 Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-source stack** — including open AIE hardware kernels (MLIR-AIE / IRON), a high-throughput native C++ inference engine (`alveare_runtime`), a Python control server, and an interactive React Web UI dashboard.
 
+> **🔥 Alveare 3.0 Release:** Introduces **Tri-Hardware Concurrent Execution** across **GPU** (AMD Radeon 890M / Vulkan 1.4 Native), **NPU** (AMD Ryzen AI XDNA2), and **CPU** (24-Thread AVX2/512). Features a real-time full-duplex **"Live" Voice-to-Voice Studio** with RMS VAD, sub-second turn-taking, interactive user barge-in, and simultaneous multi-model serving (LLM Chat on GPU, Whisper STT on NPU, Audio8 TTS on CPU).
+>
 > **Alveare 2.0:** Supports **THREE Gemma model families** end-to-end on the NPU (**Gemma-4-12B**, **Gemma-4-E4B**, **Gemma-3-1B**) and **Llama-3.2-1B**. Includes a full-featured **React Web UI Dashboard** with in-browser Hugging Face model setup, real-time streaming chat, conversation history management, multimodal file upload, generation sampling controls (`temperature`, `top_p`, `top_k`, `enable_thinking`), and a dark/light theme switcher.
 
 ---
 
 ## 🌟 Key Features
 
-- **🚀 Native C++ Inference Server (`alveare_runtime`)**: Zero Python overhead in the execution loop. Direct XRT device management, fused FFN NPU kernels (gate/up + GeGLU + down), native KV caching, and multi-core GEMV tiled across all 32 NPU compute tiles.
+- **🎮 High-Performance Vulkan 1.4 GPU Engine**: Direct RDNA 3.5 compute shaders with subgroup horizontal arithmetic (`GL_KHR_shader_subgroup_arithmetic`) achieving **32–45+ tok/s** on Gemma-3-1B on the AMD Radeon 890M integrated GPU with zero external hardware.
+- **⚡ Tri-Hardware Concurrent Serving**: Run independent models across GPU, NPU, and CPU simultaneously without thrashing or context switching (e.g. LLM Chat on GPU + Whisper STT on NPU + Audio8 TTS on CPU).
+- **🎙️ Full-Duplex "Live" Voice-to-Voice Studio**: Natural conversational experience with real-time VAD, streaming Whisper transcription, token-chunked neural TTS, sub-second TTFA, and instant user barge-in interruption. Available via Web UI Live Studio, WebSocket (`/ws/live`), and CLI (`./alveare live`).
+- **🚀 Native C++ Inference Server (`alveare_runtime`)**: Zero Python overhead in the execution loop. Direct XRT NPU device management, Vulkan GPU backend, AVX-512 CPU backend, fused FFN kernels, native KV caching, and multi-core GEMV.
 - **🖥️ Modern React Web UI Dashboard**: A sleek, real-time control center at `http://127.0.0.1:8000`. Monitors NPU telemetry, streams server logs live, manages model lifecycle, and provides an interactive chat playground.
 - **⚡ In-Browser & Automated 1-Click Model Setup**: "Aggiungi Modello" modal enables 1-click GGUF downloading and quantization from Hugging Face for Gemma-4 12B, Gemma-4 E4B, Gemma-3 1B, and Llama 3.2 1B.
 - **💬 Rich Chat Experience**: Real-time token streaming with Markdown & code highlighting, persistent multi-turn conversation sessions (sidebar history manager), multimodal file upload (PDF/text/image/audio parsing), and dark/light theme toggle.
 - **🎛️ Advanced Sampling Controls**: Full control over `temperature` (0.0 to 2.0 with greedy decoding at 0.0), `top_p` (nucleus sampling), `top_k`, `max_tokens`, `max_context_length`, system prompt customization, and `enable_thinking` toggle for reasoning models.
 - **🎙️ Real-Time Speech-to-Text (`Whisper Base` & `Whisper Large v3`)**: Integrated speech recognition. Supports live microphone voice recording in Web UI, automatic audio file transcription (MP3/WAV/M4A/OGG/FLAC/WebM), and OpenAI-compatible `/v1/audio/transcriptions` API with accurate multilingual transcription (Italian, English, European & Asian languages) on AMD NPU and CPU.
-- **🗣️ Neural Text-to-Speech & Voice Cloning (`Audio8 TTS 0.1B & 0.6B`)**: High-fidelity neural voice synthesis with natural Italian prosody, zero-shot voice cloning, and OpenAI-compatible `/v1/audio/speech` API accelerated on AMD NPU and CPU.
+- **🗣️ Neural Text-to-Speech & Voice Cloning (`Kokoro-82M` & `Audio8 TTS`)**: 
+  - **Kokoro-82M**: Ultra-fast non-autoregressive neural TTS (StyleTTS2 + ISTFTNet, 82M) with natural Italian prosody, RTF ~0.10x on Zen 5 CPU, and sub-500ms TTFA.
+  - **Audio8 TTS (0.1B & 0.6B)**: High-fidelity autoregressive neural speech synthesis with zero-shot voice cloning, accelerated on AMD NPU and CPU.
 - **🔌 OpenAI-Compatible API**: Standard `/v1/chat/completions`, `/v1/audio/transcriptions`, `/v1/audio/speech`, and `/v1/models` REST endpoints for direct drop-in replacement with the OpenAI Python SDK, LangChain, LlamaIndex, Continue, etc.
+- **🛰️ Android Companion Voice Satellite**: Connect repurposed Android devices (Android 7.0+) as dedicated smart speakers and ambient voice satellites via the [Alveare Android Satellite](https://github.com/daino-selvatico/alveare-android) companion client (in active development). Supports offline "Ehi Alveare" wake phrase, Assistente mode, and full-duplex Live streaming.
 - **🧩 Custom Quantizer Plugin Architecture**: Bring any custom architecture to the NPU by implementing `BaseQuantizer` (`tools/convert/base_quantizer.py`).
 
 ---
 
-## 📦 Supported Models & NPU Performance
+## 📦 Supported Models & Performance
 
-| Model | Architecture Key | Features | Output Size | NPU Status & Performance (32 Cores) |
+| Model | Architecture Key | Features | Output Size | Acceleration Backend & Performance |
 |---|---|---|---|---|
-| **Gemma 4 E4B** | `gemma4-e4b` | 42 layers, Per-Layer Embedding (PLE) | ~2.4 GB | **290–305 ms/tok (3.3–3.45 tok/s native)**, bursts **4.5–17 tok/s** |
-| **Gemma 4 12B** | `gemma4` | 48 layers, 32-core unified GEMV | ~6.8 GB | **696–705 ms/tok (1.43–1.94 tok/s)**, full 12.8B model |
-| **Gemma 3 1B** | `gemma3` | SentencePiece SPM, 26 layers | ~0.8 GB | **7–12 tok/s**, lightweight edge model |
-| **Llama 3.2 1B** | `llama` | Llama architecture, GQA attention | ~0.8 GB | **10–15 tok/s**, fast conversational model |
-| **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **High-accuracy audio transcription**, AMD NPU (XDNA2) + CPU fallback |
-| **Whisper Large v3 Turbo** | `whisper-large-v3-turbo` | State-of-the-art accuracy & speed, 90+ langs | ~1.6 GB | **Maximum accuracy SOTA speech recognition**, AMD NPU (XDNA2) + CPU |
-| **Whisper Large v3** | `whisper-large-v3` | Full 32-layer deep multilingual STT | ~3.1 GB | **Ultra-deep audio transcription**, AMD NPU (XDNA2) + CPU |
-| **Audio8 TTS 0.1B Preview** | `audio8-0.1b` | Neural speech synthesis & voice cloning (IT/Multilingual) | ~340 MB | **Low-latency TTS**, AMD NPU (XDNA2) + CPU |
-| **Audio8 TTS 0.6B Preview** | `audio8-0.6b` | High-fidelity 600M TTS with zero-shot cloning | ~1.2 GB | **SOTA acoustic fidelity**, AMD NPU (XDNA2) + CPU |
+| **Kokoro 82M TTS** | `hexgrad/Kokoro-82M` | Non-autoregressive StyleTTS2, Italian (`if_sara`, `im_nicola`, `af_heart`) | ~320 MB | **CPU Zen 5 (RTF ~0.10x, 250–450ms TTFA)** / GPU (CUDA) |
+| **Gemma 4 E4B** | `gemma4-e4b` | 42 layers, Per-Layer Embedding (PLE) | ~2.4 GB | **NPU (3.3–3.45 tok/s native)**, bursts **4.5–17 tok/s** |
+| **Gemma 4 12B** | `gemma4` | 48 layers, 32-core unified GEMV | ~6.8 GB | **NPU (1.43–1.94 tok/s)**, full 12.8B model |
+| **Llama 3.2 1B** | `llama` | Llama architecture, GQA attention | ~0.8 GB | **GPU Vulkan (35–50 tok/s)** / NPU (10–15 tok/s) |
+| **Whisper Base** | `whisper-base` | Multilingual STT (Italian, English, 90+ langs) | ~145 MB | **AMD NPU (XDNA2)** + CPU fallback (<600ms latency) |
+| **Whisper Large v3 Turbo** | `whisper-large-v3-turbo` | State-of-the-art accuracy & speed, 90+ langs | ~1.6 GB | **AMD NPU (XDNA2)** + CPU |
+| **Whisper Large v3** | `whisper-large-v3` | Full 32-layer deep multilingual STT | ~3.1 GB | **AMD NPU (XDNA2)** + CPU |
+| **Audio8 TTS 0.1B Preview** | `audio8-0.1b` | Neural speech synthesis & voice cloning (IT/Multilingual) | ~340 MB | **AMD NPU (XDNA2)** + CPU (DualAR 10-codebook) |
+| **Audio8 TTS 0.6B Preview** | `audio8-0.6b` | High-fidelity 600M TTS with zero-shot cloning | ~1.2 GB | **AMD NPU (XDNA2)** + CPU |
 
 > **⚡ Performance Transparency**: All models execute natively across all 32 AIE2 cores with zero-bubble asynchronous pipelining, saturating the physical memory bandwidth of the AMD Ryzen AI 300 series processor.
 
@@ -62,7 +70,7 @@ Alveare runs large language models on the AMD Ryzen AI NPU with a **100% open-so
 Open `http://127.0.0.1:8000` in your browser.
 
 ### 4. Pick or Add a Model
-Click **"Aggiungi Modello"** in the Web UI to download and quantize **Gemma 4 12B**, **Gemma 4 E4B**, or **Gemma 3 1B** directly from Hugging Face in one click.
+Click **"Aggiungi Modello"** in the Web UI to download and quantize **Gemma 4 12B**, **Gemma 4 E4B**, **Kokoro 82M**, or **Whisper Large** directly from Hugging Face in one click.
 
 Or from the command line:
 ```bash
@@ -75,6 +83,9 @@ For the complete guide, see 🚀 [**Quickstart Guide**](docs/quickstart.md).
 
 ## 📚 Documentation & Guides
 
+- 🎙️ [**Live Voice-to-Voice Engine**](docs/live.md): Full-duplex conversational live assistant, VAD, sentence streaming, and barge-in.
+- ⚡ [**Tri-Hardware Multi-Device Serving**](docs/multi-device.md): Simultaneous execution across GPU, NPU, and CPU with slot management.
+- 🎮 [**Vulkan 1.4 GPU Engine**](docs/gpu-engine.md): Architecture of the AMD Radeon 890M GPU backend, subgroup GLSL shaders, and benchmarks.
 - 🚀 [**Quickstart Guide**](docs/quickstart.md): Step-by-step 5-minute setup and usage.
 - 📦 [**Adding & Quantizing Models**](docs/adding_models.md): 1-click HF downloads, CLI setup, manual GGUF quantization, and quantizer plugins.
 - 🎛️ [**Sampling Controls & API Reference**](docs/sampling.md): Sampling parameters (`temperature`, `top_p`, `top_k`, `seed`, `enable_thinking`, system prompt) and OpenAI API schema.
@@ -82,6 +93,7 @@ For the complete guide, see 🚀 [**Quickstart Guide**](docs/quickstart.md).
 - 🗣️ [**Text-to-Speech Engine Guide**](docs/tts-engine.md): Audio8 TTS on AMD NPU, voice cloning, and OpenAI speech endpoint.
 - 🛠️ [**Full Hardware & Toolchain Setup**](docs/SETUP.md): Deep dive into Linux driver permissions, XRT libraries, and AIE compiler requirements.
 - 🔌 [**Custom Quantizer Plugins**](docs/CUSTOM_QUANTIZERS.md): Build custom tensor tiling and layout plugins for new model architectures.
+- 🛰️ [**Android Satellite Companion**](https://github.com/daino-selvatico/alveare-android): Native Android companion app, Vosk offline hotword, and smart speaker setup (in active development).
 - 🏛️ [**System Architecture**](docs/architecture.md): Overview of C++ engine, Python control server, and AIE kernel pipeline.
 
 ---
@@ -95,7 +107,9 @@ alveare quantize [alias] <gguf> [--arch A]    Quantize local GGUF into Alveare Q
 alveare setup <alias> --arch A [--url URL]    Download HF GGUF and quantize in one step.
 alveare list  (or: models)                    List all installed model packages.
 alveare delete <model_id>                     Remove a quantized model package from disk.
-alveare serve [model] [--host H] [--port P]   Launch C++ runtime & Python API/Web UI server.
+alveare serve [model] [--device gpu|npu|cpu]  Launch C++ runtime on chosen hardware backend.
+alveare start [--host H] [--port P]           Start Web UI & Control Center dashboard (port 8080).
+alveare live [--host H] [--port P]            Start interactive full-duplex live voice session.
 alveare chat [--host H] [--port P]            Interactive terminal chat client.
 alveare help                                  Show help message.
 ```

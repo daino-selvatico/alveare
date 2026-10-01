@@ -16,33 +16,59 @@
 #include "alveare/vision_embedder.h"
 #include "alveare/audio_embedder.h"
 #include "alveare/server.h"
+#include "alveare/cpu_backend.h"
+#include "alveare/gpu_backend.h"
 
 using namespace alveare;
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "Usage: alveare_runtime <model_dir> <manifest.json> [port]\n";
+        std::cerr << "Usage: alveare_runtime <model_dir> <manifest.json> [port] [--device npu|cpu|gpu]\n";
         return 1;
     }
 
     std::string model_dir = argv[1];
     std::string manifest_path = argv[2];
     int port = 8080;
-    if (argc >= 4) {
-        port = std::stoi(argv[3]);
+    std::string device_str = "npu";
+
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--device" && i + 1 < argc) {
+            device_str = argv[++i];
+        } else if (arg.rfind("--device=", 0) == 0) {
+            device_str = arg.substr(9);
+        } else if (arg[0] != '-') {
+            try {
+                port = std::stoi(arg);
+            } catch (...) {}
+        }
     }
+    if (const char* env_dev = std::getenv("ALVEARE_DEVICE")) {
+        device_str = env_dev;
+    }
+    std::transform(device_str.begin(), device_str.end(), device_str.begin(), ::tolower);
 
     try {
         std::cout << "Loading config from " << model_dir << "/config.json\n";
         ModelConfig config = load_config(model_dir + "/config.json");
         
-        std::cout << "Initializing NPU Registry with manifest: " << manifest_path << "\n";
-        NpuRegistry reg(manifest_path);
+        std::unique_ptr<ComputeDevice> dev;
+        if (device_str == "cpu") {
+            std::cout << "Initializing CPU Compute Backend (OpenMP + AVX2/AVX-512)...\n";
+            dev = std::make_unique<CpuBackend>();
+        } else if (device_str == "gpu" || device_str == "vulkan") {
+            std::cout << "Initializing GPU Compute Backend (AMD Radeon 890M / Vulkan 1.4)...\n";
+            dev = std::make_unique<GpuBackend>();
+        } else {
+            std::cout << "Initializing NPU Registry with manifest: " << manifest_path << "\n";
+            dev = std::make_unique<NpuRegistry>(manifest_path);
+        }
 
         std::cout << "Loading model weights...\n";
-        ModelWeights mw = load_weights(model_dir, config, reg);
+        ModelWeights mw = load_weights(model_dir, config, *dev);
         
-        Model model(config, mw, reg);
+        Model model(config, mw, *dev);
 
         // Launch-overhead probe: time gemv calls that stay on ONE shape vs calls
         // that ALTERNATE between two resident shapes. If alternating is much
@@ -53,15 +79,15 @@ int main(int argc, char** argv) {
             const int IT = 200;
             const auto& L0 = mw.layers[0];   // sliding: w_q 4096x4096, w_k 2048x4096
             std::vector<bf16> x4(4096, bf16(0.02f)), yq(4096), yk(2048);
-            reg.run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
-            reg.run_gemv(2048, 4096, L0.w_k, x4.data(), yk.data());
+            dev->run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
+            dev->run_gemv(2048, 4096, L0.w_k, x4.data(), yk.data());
             auto t0 = clk::now();
-            for (int i = 0; i < IT; ++i) reg.run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
+            for (int i = 0; i < IT; ++i) dev->run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
             double same_ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count() / IT;
             t0 = clk::now();
             for (int i = 0; i < IT; ++i) {
-                reg.run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
-                reg.run_gemv(2048, 4096, L0.w_k, x4.data(), yk.data());
+                dev->run_gemv(4096, 4096, L0.w_q, x4.data(), yq.data());
+                dev->run_gemv(2048, 4096, L0.w_k, x4.data(), yk.data());
             }
             double alt_ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count() / IT;
             std::cout << "\nLAUNCH probe (per gemv call):\n"
@@ -79,7 +105,7 @@ int main(int argc, char** argv) {
             using clk = std::chrono::steady_clock;
             const int N = 16384, K = 4096, B = 16;  // FFN gate
             auto& gate = mw.layers[0].ffn_gate_bytes;
-            WeightHandle wg = reg.create_gemv_weight(N, K, gate.data(), gate.size());
+            WeightHandle wg = dev->create_gemv_weight(N, K, gate.data(), gate.size());
             std::vector<bf16> x(K, bf16(0.02f)), y_gemv(N);
             std::vector<bf16> xb(static_cast<size_t>(B) * K, bf16(0.02f));
             std::vector<bf16> yb(static_cast<size_t>(B) * N);
@@ -87,14 +113,14 @@ int main(int argc, char** argv) {
                 return std::chrono::duration<double, std::milli>(b - a).count() / n;
             };
             const int IT = 20;
-            reg.run_gemv(N, K, wg, x.data(), y_gemv.data());        // warmup
+            dev->run_gemv(N, K, wg, x.data(), y_gemv.data());        // warmup
             auto t0 = clk::now();
-            for (int i = 0; i < IT; ++i) reg.run_gemv(N, K, wg, x.data(), y_gemv.data());
+            for (int i = 0; i < IT; ++i) dev->run_gemv(N, K, wg, x.data(), y_gemv.data());
             double gemv_ms = ms(t0, clk::now(), IT);
 
-            reg.run_gemm(B, N, K, wg, xb.data(), yb.data());        // warmup
+            dev->run_gemm(B, N, K, wg, xb.data(), yb.data());        // warmup
             t0 = clk::now();
-            for (int i = 0; i < IT; ++i) reg.run_gemm(B, N, K, wg, xb.data(), yb.data());
+            for (int i = 0; i < IT; ++i) dev->run_gemm(B, N, K, wg, xb.data(), yb.data());
             double gemm_ms = ms(t0, clk::now(), IT);
 
             // Correctness: xb rows all equal x, so every gemm output row must
@@ -112,7 +138,7 @@ int main(int argc, char** argv) {
             }
             // Streamed variant: fresh weight upload (like the standalone verify).
             std::vector<bf16> ybs(static_cast<size_t>(B) * N);
-            reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), ybs.data());
+            dev->run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), ybs.data());
             for (int r : {0, 8, 15}) {
                 float dr = 0.0f;
                 for (int i = 0; i < N; ++i)
@@ -122,10 +148,10 @@ int main(int argc, char** argv) {
                 std::cout << "\n" << std::flush;
             }
 
-            reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
+            dev->run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
             t0 = clk::now();
             for (int i = 0; i < IT; ++i)
-                reg.run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
+                dev->run_gemm_streamed(B, N, K, gate.data(), gate.size(), xb.data(), yb.data());
             double gemm_str_ms = ms(t0, clk::now(), IT);
 
             // Fused FFN (whole gate+up+gelu+down) in isolation, vs the isolated
@@ -133,18 +159,18 @@ int main(int argc, char** argv) {
             // separate gemvs.
             const int H = 4096, I = 16384;
             std::vector<bf16> xh(H, bf16(0.02f)), yh(H);
-            reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, xh.data(), yh.data());
+            dev->run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, xh.data(), yh.data());
             t0 = clk::now();
             for (int i = 0; i < IT; ++i)
-                reg.run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, xh.data(), yh.data());
+                dev->run_ffn_fused(H, I, "gelu", mw.layers[0].w_ffn_fused, xh.data(), yh.data());
             double fused_ms = ms(t0, clk::now(), IT);
 
             // up gemv (same 16384x4096 shape as gate) for the separate estimate.
             auto& up = mw.layers[0].ffn_up_bytes;
-            WeightHandle wu = reg.create_gemv_weight(N, K, up.data(), up.size());
-            reg.run_gemv(N, K, wu, x.data(), y_gemv.data());
+            WeightHandle wu = dev->create_gemv_weight(N, K, up.data(), up.size());
+            dev->run_gemv(N, K, wu, x.data(), y_gemv.data());
             t0 = clk::now();
-            for (int i = 0; i < IT; ++i) reg.run_gemv(N, K, wu, x.data(), y_gemv.data());
+            for (int i = 0; i < IT; ++i) dev->run_gemv(N, K, wu, x.data(), y_gemv.data());
             double up_ms = ms(t0, clk::now(), IT);
 
             std::cout << "\nFFN gate 16384x4096 timing (avg over " << IT << "):\n"
@@ -250,9 +276,9 @@ int main(int argc, char** argv) {
 
             auto bench_gemv = [&](const char* label, int N, int K, WeightHandle w) {
                 std::vector<bf16> x(K, bf16(0.02f)), y(N);
-                reg.run_gemv(N, K, w, x.data(), y.data());  // warmup
+                dev->run_gemv(N, K, w, x.data(), y.data());  // warmup
                 auto t0 = clk::now();
-                for (int i = 0; i < IT; ++i) reg.run_gemv(N, K, w, x.data(), y.data());
+                for (int i = 0; i < IT; ++i) dev->run_gemv(N, K, w, x.data(), y.data());
                 double ms = avg_ms(t0, clk::now(), IT);
                 double gmacs = double(N) * K / (ms / 1000.0) / 1e9;
                 std::cout << "KERNEL gemv " << label << " " << N << " " << K << " "
@@ -284,10 +310,10 @@ int main(int argc, char** argv) {
                 int I = config.get_padded_intermediate_size();
                 std::string act = (config.model_type == "gemma3" || config.is_gemma4()) ? "gelu" : "silu";
                 std::vector<bf16> xh(H, bf16(0.02f)), yh(H);
-                reg.run_ffn_fused(H, I, act, mw.layers[0].w_ffn_fused, xh.data(), yh.data());
+                dev->run_ffn_fused(H, I, act, mw.layers[0].w_ffn_fused, xh.data(), yh.data());
                 auto t0 = clk::now();
                 for (int i = 0; i < IT; ++i)
-                    reg.run_ffn_fused(H, I, act, mw.layers[0].w_ffn_fused, xh.data(), yh.data());
+                    dev->run_ffn_fused(H, I, act, mw.layers[0].w_ffn_fused, xh.data(), yh.data());
                 double ms = avg_ms(t0, clk::now(), IT);
                 double gmacs = 3.0 * H * I / (ms / 1000.0) / 1e9;
                 std::cout << "KERNEL ffn_fused ffn " << H << " " << I << " " << ms
@@ -296,11 +322,11 @@ int main(int argc, char** argv) {
             {   // batched gemm on the FFN gate shape (for the batch-vs-gemv record)
                 int N = 16384, K = 4096, B = 16;
                 auto& gate = mw.layers[0].ffn_gate_bytes;
-                WeightHandle wg = reg.create_gemv_weight(N, K, gate.data(), gate.size());
+                WeightHandle wg = dev->create_gemv_weight(N, K, gate.data(), gate.size());
                 std::vector<bf16> xb(size_t(B) * K, bf16(0.02f)), yb(size_t(B) * N);
-                reg.run_gemm(B, N, K, wg, xb.data(), yb.data());
+                dev->run_gemm(B, N, K, wg, xb.data(), yb.data());
                 auto t0 = clk::now();
-                for (int i = 0; i < IT; ++i) reg.run_gemm(B, N, K, wg, xb.data(), yb.data());
+                for (int i = 0; i < IT; ++i) dev->run_gemm(B, N, K, wg, xb.data(), yb.data());
                 double ms = avg_ms(t0, clk::now(), IT);
                 double gmacs = double(B) * N * K / (ms / 1000.0) / 1e9;
                 std::cout << "KERNEL gemm16 gate " << N << " " << K << " " << ms

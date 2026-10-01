@@ -13,15 +13,15 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
   const [supportedModels, setSupportedModels] = useState([]);
   
   // Auto Mode State
-  const [selectedSupported, setSelectedSupported] = useState('gemma4');
-  const [autoAlias, setAutoAlias] = useState('gemma4');
+  const [selectedSupported, setSelectedSupported] = useState('gemma4-e4b');
+  const [autoAlias, setAutoAlias] = useState('gemma4-e4b');
   const [autoUrl, setAutoUrl] = useState('');
   const [autoFilename, setAutoFilename] = useState('');
 
   // Manual Mode State
   const [manualAlias, setManualAlias] = useState('custom-model');
   const [localGgufPath, setLocalGgufPath] = useState('');
-  const [manualArch, setManualArch] = useState('gemma4');
+  const [manualArch, setManualArch] = useState('gemma4-e4b');
   const [customScriptPath, setCustomScriptPath] = useState('');
 
   // Progress / Setup Task State
@@ -30,8 +30,11 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
   const [currentStep, setCurrentStep] = useState('');
   const [logs, setLogs] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
+  const [autoScroll, setAutoScroll] = useState(true);
 
   const logEndRef = useRef(null);
+  const logContainerRef = useRef(null);
+  const scrollPosRef = useRef(null);
 
   const fetchSupportedModels = useCallback(async () => {
     try {
@@ -111,8 +114,17 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
   }, [isSettingUp, fetchSetupStatus]);
 
   useEffect(() => {
+    if (!autoScroll) {
+      if (logContainerRef.current && scrollPosRef.current !== null) {
+        logContainerRef.current.scrollTop = scrollPosRef.current;
+      }
+      return;
+    }
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+  }, [logs, autoScroll]);
 
   const handleSelectSupported = (modelId) => {
     const found = supportedModels.find(m => m.id === modelId);
@@ -492,9 +504,8 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                       fontSize: '0.85rem'
                     }}
                   >
+                    <option value="gemma4-e4b">Gemma 4 E4B 4B (gemma4-e4b)</option>
                     <option value="gemma4">Gemma 4 12B (gemma4)</option>
-                    <option value="gemma4-e4b">Gemma 4 E4B (gemma4-e4b)</option>
-                    <option value="gemma3">Gemma 3 1B (gemma3)</option>
                     <option value="llama">Llama 3.2 (llama)</option>
                     <option value="custom">{t('addModel.customAlgorithmOption')}</option>
                   </select>
@@ -580,19 +591,46 @@ export default function AddModelModal({ apiBase, isOpen, onClose, onSetupComplet
                 </div>
               </div>
 
+              {/* Console Logs Box Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Console Logs</span>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                  <input
+                    type="checkbox"
+                    checked={autoScroll}
+                    onChange={e => {
+                      const checked = e.target.checked;
+                      setAutoScroll(checked);
+                      if (!checked && logContainerRef.current) {
+                        scrollPosRef.current = logContainerRef.current.scrollTop;
+                      }
+                    }}
+                  />
+                  <span>Auto-scroll</span>
+                </label>
+              </div>
+
               {/* Console Logs Box */}
-              <div style={{
-                background: 'rgba(10, 14, 26, 0.95)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '8px',
-                padding: '0.85rem',
-                height: '240px',
-                overflowY: 'auto',
-                fontFamily: 'Consolas, Monaco, monospace',
-                fontSize: '0.78rem',
-                color: 'var(--text-muted)',
-                lineHeight: '1.5'
-              }}>
+              <div
+                ref={logContainerRef}
+                onScroll={e => {
+                  if (!autoScroll) {
+                    scrollPosRef.current = e.currentTarget.scrollTop;
+                  }
+                }}
+                style={{
+                  background: 'rgba(10, 14, 26, 0.95)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  padding: '0.85rem',
+                  height: '240px',
+                  overflowY: 'auto',
+                  fontFamily: 'Consolas, Monaco, monospace',
+                  fontSize: '0.78rem',
+                  color: 'var(--text-muted)',
+                  lineHeight: '1.5'
+                }}
+              >
                 {logs.length === 0 ? (
                   <div style={{ color: 'rgba(255,255,255,0.4)', fontStyle: 'italic' }}>{t('addModel.startingProcess')}</div>
                 ) : (

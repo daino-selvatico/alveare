@@ -1,12 +1,101 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Play, Square, RotateCw, Server, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
+import { Play, Square, RotateCw, Server, HardDrive, Settings, AlertCircle, CheckCircle, Hammer, ChevronDown, ChevronUp, Plus, Trash2, Zap, Cpu, Radio, Volume2, X } from 'lucide-react';
 import AddModelModal from './AddModelModal';
 import { useTranslation } from '../i18n/I18nContext';
 
+export const CANONICAL_MODEL_MAP = {
+  // STT
+  'whisper-base': 'openai/whisper-base',
+  'whisper-large-v3-turbo': 'openai/whisper-large-v3-turbo',
+  'whisper-large-v3': 'openai/whisper-large-v3',
+  // TTS
+  'audio8-0.1b': 'Audio8/Audio8-TTS-Preview-0.1b',
+  'audio8-100m': 'Audio8/Audio8-TTS-Preview-0.1b',
+  '0.1b': 'Audio8/Audio8-TTS-Preview-0.1b',
+  'audio8-0.6b': 'Audio8/Audio8-TTS-Preview-0.6b',
+  'audio8-600m': 'Audio8/Audio8-TTS-Preview-0.6b',
+  '0.6b': 'Audio8/Audio8-TTS-Preview-0.6b',
+  'kokoro': 'hexgrad/Kokoro-82M',
+  'kokoro-82m': 'hexgrad/Kokoro-82M',
+  'cocore': 'hexgrad/Kokoro-82M',
+  'cocore-82m': 'hexgrad/Kokoro-82M',
+  '82m': 'hexgrad/Kokoro-82M',
+  'gemma4-e4b': 'gemma4-e4b',
+  'gemma4-4b': 'gemma4-e4b',
+  'e4b': 'gemma4-e4b',
+  'gemma4-12b': 'gemma4',
+  'g4-12b': 'gemma4',
+};
+
+export const DEFAULT_MODEL_LABELS = {
+  // LLM
+  'gemma4': 'Gemma 4 12B',
+  'gemma4-e4b': 'Gemma 4 E4B (4B)',
+  'llama': 'Llama 3.2 3B',
+  // STT
+  'openai/whisper-large-v3-turbo': 'Whisper Large v3 Turbo',
+  'openai/whisper-large-v3': 'Whisper Large v3',
+  'openai/whisper-base': 'Whisper Base',
+  // TTS
+  'hexgrad/Kokoro-82M': 'Kokoro 82M',
+  'Audio8/Audio8-TTS-Preview-0.1b': 'Audio8 0.1B',
+  'Audio8/Audio8-TTS-Preview-0.6b': 'Audio8 0.6B',
+};
+
+export const normalizeModelOption = (m) => {
+  const rawId = typeof m === 'string' ? m : m.id;
+  const canonicalId = CANONICAL_MODEL_MAP[rawId] || rawId;
+  const label = DEFAULT_MODEL_LABELS[canonicalId] || (typeof m === 'object' && m.name) || canonicalId;
+  return { id: canonicalId, label };
+};
+
+export const deduplicateModelOptions = (options) => {
+  const seen = new Set();
+  const result = [];
+  for (const opt of options) {
+    const norm = normalizeModelOption(opt);
+    if (!seen.has(norm.id)) {
+      seen.add(norm.id);
+      result.push(norm);
+    }
+  }
+  return result;
+};
+
 export default function ServerControl({ apiBase, status, models = [], modelsLoading = false, onRefresh }) {
   const { t } = useTranslation();
-  const [loading, setLoading] = useState(false);
-  const [targetModel, setTargetModel] = useState(status?.model || (models.length > 0 ? models[0].id : 'gemma4'));
+  const [loadingSlot, setLoadingSlot] = useState({}); // { llm: boolean, stt: boolean, tts: boolean, all: boolean }
+
+  const slots = status?.slots || {};
+  const llmSlot = slots.llm || {};
+  const sttSlot = slots.stt || {};
+  const ttsSlot = slots.tts || {};
+
+  // Slot Model & Device selections
+  const [slotModels, setSlotModels] = useState({
+    llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model || 'gemma4-e4b',
+    stt: CANONICAL_MODEL_MAP[sttSlot.model] || sttSlot.model || 'openai/whisper-large-v3-turbo',
+    tts: CANONICAL_MODEL_MAP[ttsSlot.model] || ttsSlot.model || 'hexgrad/Kokoro-82M'
+  });
+
+  const [slotDevices, setSlotDevices] = useState({
+    llm: llmSlot.device || 'gpu',
+    stt: sttSlot.device || 'cpu',
+    tts: ttsSlot.device || 'cpu'
+  });
+
+  // Keep state in sync with status when it arrives
+  useEffect(() => {
+    if (llmSlot.model) setSlotModels(prev => ({ ...prev, llm: CANONICAL_MODEL_MAP[llmSlot.model] || llmSlot.model }));
+    if (sttSlot.model) setSlotModels(prev => ({ ...prev, stt: CANONICAL_MODEL_MAP[sttSlot.model] || sttSlot.model }));
+    if (ttsSlot.model) setSlotModels(prev => ({ ...prev, tts: CANONICAL_MODEL_MAP[ttsSlot.model] || ttsSlot.model }));
+
+    if (llmSlot.device) setSlotDevices(prev => ({ ...prev, llm: llmSlot.device }));
+    if (sttSlot.device) setSlotDevices(prev => ({ ...prev, stt: sttSlot.device }));
+    if (ttsSlot.device) setSlotDevices(prev => ({ ...prev, tts: ttsSlot.device }));
+  }, [llmSlot.model, llmSlot.device, sttSlot.model, sttSlot.device, ttsSlot.model, ttsSlot.device]);
+
+  // Server host & port settings
   const [host, setHost] = useState(status?.host || '127.0.0.1');
   const [port, setPort] = useState(status?.port || 8000);
   const [legacy, setLegacy] = useState(status?.legacy || false);
@@ -18,6 +107,9 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
   const [noGemm, setNoGemm] = useState(false);
   const [maxBatch, setMaxBatch] = useState(16);
   const [buildingModel, setBuildingModel] = useState(null);
+  const [buildTargetModal, setBuildTargetModal] = useState(null);
+  const [buildTargetDevice, setBuildTargetDevice] = useState('npu');
+  const [ttsVoice, setTtsVoice] = useState('if_sara');
   const [isAddModelOpen, setIsAddModelOpen] = useState(false);
 
   const fetchKernelStatus = useCallback(async () => {
@@ -28,7 +120,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         setKernelStatus(data);
       }
     } catch (e) {
-      console.error("Failed to fetch kernel status:", e);
+      console.error('Failed to fetch kernel status:', e);
     }
   }, [apiBase]);
 
@@ -36,17 +128,119 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     fetchKernelStatus();
   }, [status?.model, fetchKernelStatus]);
 
-  useEffect(() => {
-    if (models.length > 0 && !targetModel) {
-      setTargetModel(models[0].id);
-    }
-  }, [models, targetModel]);
+  // Available model options for each slot
+  const llmModelOptions = deduplicateModelOptions([
+    ...models.filter(m => m.task === 'text-generation'),
+    'gemma4', 'gemma4-e4b', 'llama'
+  ]);
 
-  const [modelDevices, setModelDevices] = useState({});
-  const getSelectedDevice = (modelId) => modelDevices[modelId] || 'npu';
+  const sttModelOptions = deduplicateModelOptions([
+    ...models.filter(m => m.task === 'speech-to-text'),
+    'openai/whisper-large-v3-turbo', 'openai/whisper-base'
+  ]);
+
+  const ttsModelOptions = deduplicateModelOptions([
+    ...models.filter(m => m.task === 'text-to-speech'),
+    'hexgrad/Kokoro-82M', 'Audio8/Audio8-TTS-Preview-0.1b', 'Audio8/Audio8-TTS-Preview-0.6b'
+  ]);
+
+  const isKokoroTts = Boolean(
+    slotModels.tts?.toLowerCase().includes('kokoro') ||
+    slotModels.tts?.toLowerCase().includes('cocore') ||
+    slotModels.tts?.includes('82m')
+  );
+
+  useEffect(() => {
+    if (isKokoroTts && slotDevices.tts === 'npu') {
+      setSlotDevices(prev => ({ ...prev, tts: 'cpu' }));
+    }
+  }, [isKokoroTts, slotDevices.tts]);
+
+  // Slot start & stop handlers
+  const handleStartSlot = async (slotId) => {
+    const model = slotModels[slotId];
+    const device = slotDevices[slotId];
+    setLoadingSlot(prev => ({ ...prev, [slotId]: true }));
+    try {
+      await fetch(`${apiBase}/api/control/slot/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot: slotId, model, device, host, port })
+      });
+      setTimeout(() => {
+        if (onRefresh) onRefresh();
+        fetchKernelStatus();
+      }, 1000);
+    } catch (e) {
+      alert(t('serverControl.startError', { error: e.message || e }));
+    } finally {
+      setLoadingSlot(prev => ({ ...prev, [slotId]: false }));
+    }
+  };
+
+  const handleStopSlot = async (slotId) => {
+    setLoadingSlot(prev => ({ ...prev, [slotId]: true }));
+    try {
+      await fetch(`${apiBase}/api/control/slot/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot: slotId })
+      });
+      setTimeout(() => {
+        if (onRefresh) onRefresh();
+        fetchKernelStatus();
+      }, 800);
+    } catch (e) {
+      alert(t('serverControl.stopError', { error: e.message || e }));
+    } finally {
+      setLoadingSlot(prev => ({ ...prev, [slotId]: false }));
+    }
+  };
+
+  // Master Tri-Hardware Live Start & Stop
+  const handleMasterStart = async () => {
+    setLoadingSlot(prev => ({ ...prev, all: true }));
+    try {
+      await fetch(`${apiBase}/api/live/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          llm_model: slotModels.llm || 'gemma4-e4b',
+          llm_device: slotDevices.llm || 'gpu',
+          stt_model: slotModels.stt || 'openai/whisper-large-v3-turbo',
+          stt_device: slotDevices.stt || 'cpu',
+          tts_model: slotModels.tts || 'hexgrad/Kokoro-82M',
+          tts_device: isKokoroTts && slotDevices.tts === 'npu' ? 'cpu' : (slotDevices.tts || (isKokoroTts ? 'cpu' : 'npu'))
+        })
+      });
+      setTimeout(() => {
+        if (onRefresh) onRefresh();
+        fetchKernelStatus();
+      }, 1200);
+    } catch (e) {
+      alert(t('serverControl.startError', { error: e.message || e }));
+    } finally {
+      setLoadingSlot(prev => ({ ...prev, all: false }));
+    }
+  };
+
+  const handleMasterStop = async () => {
+    setLoadingSlot(prev => ({ ...prev, all: true }));
+    try {
+      await fetch(`${apiBase}/api/live/stop`, { method: 'POST' });
+      setTimeout(() => {
+        if (onRefresh) onRefresh();
+        fetchKernelStatus();
+      }, 800);
+    } catch (e) {
+      alert(t('serverControl.stopError', { error: e.message || e }));
+    } finally {
+      setLoadingSlot(prev => ({ ...prev, all: false }));
+    }
+  };
 
   const handleDeleteModel = async (modelId) => {
-    if (status?.is_running && status?.model === modelId) {
+    if (status?.is_running && (status?.model === modelId || llmSlot.model === modelId)) {
       alert(t('serverControl.deleteRunningModelAlert', { modelId }));
       return;
     }
@@ -59,7 +253,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
       });
       if (res.ok) {
         alert(t('serverControl.deleteSuccess', { modelId }));
-        onRefresh();
+        if (onRefresh) onRefresh();
         fetchKernelStatus();
       } else {
         const err = await res.json();
@@ -70,73 +264,13 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     }
   };
 
-  const handleStart = async (modelToStart, deviceOverride) => {
-    const selected = modelToStart || targetModel;
-    if (!selected) {
-      alert(t('serverControl.selectModelFirst'));
-      return;
-    }
-    const device = deviceOverride || getSelectedDevice(selected) || 'npu';
-    setLoading(true);
-    try {
-      await fetch(`${apiBase}/api/control/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
-      });
-      setTimeout(() => {
-        onRefresh();
-        fetchKernelStatus();
-      }, 1000);
-    } catch (e) {
-      alert(t('serverControl.startError', { error: e }));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleStop = async () => {
-    setLoading(true);
-    try {
-      await fetch(`${apiBase}/api/control/stop`, { method: 'POST' });
-      setTimeout(() => {
-        onRefresh();
-        fetchKernelStatus();
-      }, 1000);
-    } catch (e) {
-      alert(t('serverControl.stopError', { error: e }));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRestart = async (modelToRestart, deviceOverride) => {
-    const selected = modelToRestart || targetModel;
-    const device = deviceOverride || getSelectedDevice(selected) || 'npu';
-    setLoading(true);
-    try {
-      await fetch(`${apiBase}/api/control/restart`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selected, host, port, device, legacy, offline })
-      });
-      setTimeout(() => {
-        onRefresh();
-        fetchKernelStatus();
-      }, 1500);
-    } catch (e) {
-      alert(t('serverControl.restartError', { error: e }));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleBuildKernels = async (modelId, deviceOverride) => {
-    const device = deviceOverride || getSelectedDevice(modelId) || 'npu';
-    if (!confirm(t('serverControl.buildKernelConfirm', { modelId }))) {
+    const device = deviceOverride || buildTargetDevice || slotDevices.llm || 'npu';
+    if (!confirm(t('serverControl.buildKernelConfirm', { modelId, device: device.toUpperCase() }))) {
       return;
     }
     setBuildingModel(modelId);
+    setBuildTargetModal(null);
     try {
       await fetch(`${apiBase}/api/control/build-kernels`, {
         method: 'POST',
@@ -148,7 +282,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           max_batch: maxBatch
         })
       });
-      alert(t('serverControl.buildKernelStarted', { modelId }));
+      alert(t('serverControl.buildKernelStarted', { modelId, device: device.toUpperCase() }));
       setTimeout(fetchKernelStatus, 3000);
     } catch (e) {
       alert(t('serverControl.buildKernelError', { error: e }));
@@ -157,138 +291,535 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
     }
   };
 
+  const activeSlotsCount = [llmSlot, sttSlot, ttsSlot].filter(s => s.status === 'running' || s.is_loaded).length;
+
   return (
-    <div role="region" aria-label={t('serverControl.engineController')} style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-      
-      {/* 1. HERO SERVER STATUS BANNER */}
-      <div className="glass-card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
+    <div
+      role="region"
+      aria-label={t('serverControl.engineController')}
+      className="responsive-page-container"
+      style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem', width: '100%' }}
+    >
+      {/* 1. MASTER TRI-HARDWARE CONTROLLER BANNER */}
+      <div className="glass-card" style={{ padding: 'clamp(1.25rem, 3vw, 1.75rem)', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.25rem' }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
               <Server size={26} color="var(--accent-purple)" aria-hidden="true" />
-              <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>{t('serverControl.engineController')}</h2>
+              <h2 style={{ fontSize: 'clamp(1.2rem, 3vw, 1.45rem)', fontWeight: 800 }}>{t('serverControl.engineController')}</h2>
               
-              {status?.status === 'running' && status?.is_loaded && (
-                <>
-                  <span className="badge badge-success"><CheckCircle size={14} aria-hidden="true" /> {t('serverControl.statusRunning', { model: status.model })}</span>
-                  <span className="badge" style={{
-                    background: status.device === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                    color: status.device === 'cpu' ? '#60a5fa' : '#34d399',
-                    border: status.device === 'cpu' ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
-                    fontWeight: 700
-                  }}>
-                    {status.device === 'cpu' ? '🖥️ CPU' : '⚡ NPU (XDNA2 Native)'}
-                  </span>
-                </>
+              {activeSlotsCount === 3 ? (
+                <span className="badge badge-success">
+                  <CheckCircle size={14} aria-hidden="true" /> {t('serverControl.allSlotsActive')} (3/3)
+                </span>
+              ) : activeSlotsCount > 0 ? (
+                <span className="badge badge-warning">
+                  <RotateCw size={14} className="pulse-icon" aria-hidden="true" /> {activeSlotsCount}/3 Slot Attivi
+                </span>
+              ) : (
+                <span className="badge badge-danger">
+                  <AlertCircle size={14} aria-hidden="true" /> {t('serverControl.statusStopped')}
+                </span>
               )}
-              {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
-                <span className="badge badge-warning"><RotateCw size={14} className="pulse-icon" aria-hidden="true" /> {t('serverControl.statusLoading', { progress: status?.load_progress || 0 })}</span>
-              )}
-              {status?.status === 'stopped' && <span className="badge badge-danger"><AlertCircle size={14} aria-hidden="true" /> {t('serverControl.statusStopped')}</span>}
-              {status?.status === 'error' && <span className="badge badge-danger"><AlertCircle size={14} aria-hidden="true" /> {t('serverControl.statusError')}</span>}
-              {status?.status === 'building_kernels' && <span className="badge badge-warning"><Hammer size={14} className="pulse-icon" aria-hidden="true" /> {t('serverControl.statusBuildingKernels')}</span>}
             </div>
             
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-              {status?.is_running
-                ? t('serverControl.serverActiveOn', { host: status.host, port: status.port, pid: status.pid, uptime: status.uptime_seconds })
-                : models.length > 0
-                ? t('serverControl.selectModelToStart')
-                : t('serverControl.noModelsFound')}
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', maxWidth: '650px', lineHeight: '1.5' }}>
+              {t('serverControl.triHardwareDesc')}
             </p>
           </div>
 
-          {/* Global Action Controls */}
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
-            {status?.is_running ? (
-              <>
-                <button className="btn-secondary" onClick={() => handleRestart(targetModel)} disabled={loading} aria-label={t('serverControl.restartNpu')}>
-                  <RotateCw size={18} className={loading ? "pulse-icon" : ""} aria-hidden="true" /> {t('serverControl.restart')}
+          {/* Master 1-Click Action Buttons */}
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', width: 'auto' }}>
+            <button
+              className="btn-primary mobile-touch-target"
+              onClick={handleMasterStart}
+              disabled={loadingSlot.all}
+              style={{
+                background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)',
+                padding: '0.75rem 1.4rem',
+                fontSize: '0.92rem',
+                fontWeight: 700
+              }}
+              aria-label={t('serverControl.triHardwareMaster')}
+            >
+              <Play size={18} className={loadingSlot.all ? 'pulse-icon' : ''} aria-hidden="true" />
+              {loadingSlot.all ? t('serverControl.starting') : t('serverControl.triHardwareMaster')}
+            </button>
+
+            <button
+              className="btn-danger mobile-touch-target"
+              onClick={handleMasterStop}
+              disabled={loadingSlot.all || activeSlotsCount === 0}
+              style={{ padding: '0.75rem 1.25rem', fontSize: '0.92rem' }}
+              aria-label={t('serverControl.stopAllSlots')}
+            >
+              <Square size={18} aria-hidden="true" />
+              {t('serverControl.stopAllSlots')}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. DEDICATED 3-SLOT CARDS (LLM, STT, TTS) */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
+        gap: '1.25rem',
+        width: '100%'
+      }}>
+        {/* SLOT 1: LLM Engine (Text Generation) */}
+        <div className="glass-card" style={{
+          padding: '1.4rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '1rem',
+          borderLeft: '4px solid #c084fc',
+          background: llmSlot.status === 'running' ? 'rgba(168, 85, 247, 0.06)' : 'var(--bg-card)'
+        }}>
+          {/* Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+            <div>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#c084fc', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Slot 1 • LLM Engine
+              </span>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginTop: '0.2rem', color: 'var(--text-main)' }}>
+                {t('serverControl.slotLlmTitle')}
+              </h3>
+            </div>
+            <div>
+              {llmSlot.status === 'running' && llmSlot.is_loaded ? (
+                <span className="badge badge-success"><CheckCircle size={12} /> {t('serverControl.slotStatusActive')}</span>
+              ) : llmSlot.status === 'starting' ? (
+                <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> {t('serverControl.slotStatusStarting')}</span>
+              ) : llmSlot.status === 'error' ? (
+                <span className="badge badge-danger"><AlertCircle size={12} /> {t('serverControl.slotStatusError')}</span>
+              ) : (
+                <span className="badge badge-secondary">{t('serverControl.slotStatusStopped')}</span>
+              )}
+            </div>
+          </div>
+
+          {/* Model Selector */}
+          <div>
+            <label htmlFor="slot-llm-model" style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {t('serverControl.slotModelLabel')}
+            </label>
+            <select
+              id="slot-llm-model"
+              value={slotModels.llm}
+              onChange={e => setSlotModels(prev => ({ ...prev, llm: e.target.value }))}
+              style={{
+                width: '100%',
+                padding: '0.65rem 0.75rem',
+                borderRadius: '8px',
+                background: 'rgba(0,0,0,0.4)',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-main)',
+                fontSize: '0.88rem',
+                fontFamily: 'var(--font-mono)'
+              }}
+            >
+              {llmModelOptions.map(opt => (
+                <option key={opt.id} value={opt.id} style={{ background: '#131b2e' }}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Hardware Device Selector (GPU, NPU, CPU) */}
+          <div>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {t('serverControl.slotDeviceLabel')}
+            </label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
+              {[
+                { id: 'gpu', label: '🎮 GPU', name: 'Radeon 890M', color: '#c084fc' },
+                { id: 'npu', label: '⚡ NPU', name: 'XDNA2', color: '#34d399' },
+                { id: 'cpu', label: '🖥️ CPU', name: 'Host AVX2', color: '#60a5fa' }
+              ].map(dev => (
+                <button
+                  key={dev.id}
+                  type="button"
+                  className="mobile-touch-target"
+                  onClick={() => setSlotDevices(prev => ({ ...prev, llm: dev.id }))}
+                  style={{
+                    padding: '0.45rem 0.3rem',
+                    borderRadius: '8px',
+                    border: slotDevices.llm === dev.id ? `2px solid ${dev.color}` : '1px solid var(--border-color)',
+                    background: slotDevices.llm === dev.id ? `${dev.color}22` : 'rgba(0,0,0,0.25)',
+                    color: slotDevices.llm === dev.id ? dev.color : 'var(--text-muted)',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '0.1rem',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <span>{dev.label}</span>
+                  <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>{dev.name}</span>
                 </button>
-                <button className="btn-danger" onClick={handleStop} disabled={loading} aria-label={t('serverControl.stopNpu')}>
-                  <Square size={18} aria-hidden="true" /> {t('serverControl.stop')}
-                </button>
-              </>
+              ))}
+            </div>
+          </div>
+
+          {/* Real-time telemetry badges */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0.75rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', fontSize: '0.8rem' }}>
+            <span style={{ color: 'var(--text-muted)' }}>Dispositivo:</span>
+            <span style={{ fontWeight: 700, color: slotDevices.llm === 'gpu' ? '#c084fc' : slotDevices.llm === 'npu' ? '#34d399' : '#60a5fa' }}>
+              {slotDevices.llm === 'gpu' ? '🎮 GPU (Vulkan 1.4 Native)' : slotDevices.llm === 'npu' ? '⚡ NPU (Ryzen AI)' : '🖥️ CPU Multi-Thread'}
+            </span>
+          </div>
+
+          {llmSlot.tok_per_sec > 0 && (
+            <div style={{ fontSize: '0.82rem', padding: '0.4rem 0.75rem', borderRadius: '6px', background: 'rgba(6, 182, 212, 0.15)', border: '1px solid rgba(6, 182, 212, 0.3)', color: 'var(--accent-cyan)', display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+              <span>{t('serverControl.measuredSpeed')}</span>
+              <span>⚡ {llmSlot.tok_per_sec} tok/s</span>
+            </div>
+          )}
+
+          {/* Slot Action Button */}
+          <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
+            {llmSlot.status === 'running' || llmSlot.status === 'starting' ? (
+              <button
+                className="btn-danger mobile-touch-target"
+                onClick={() => handleStopSlot('llm')}
+                disabled={loadingSlot.llm}
+                style={{ width: '100%', justifyContent: 'center', minHeight: '46px' }}
+                aria-label={t('serverControl.stopSlot')}
+              >
+                <Square size={16} /> {t('serverControl.stopSlot')}
+              </button>
             ) : (
               <button
-                className="btn-primary"
-                onClick={() => handleStart(targetModel)}
-                disabled={loading || models.length === 0}
-                style={{ background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}
-                aria-label={t('serverControl.startNpu')}
+                className="btn-primary mobile-touch-target"
+                onClick={() => handleStartSlot('llm')}
+                disabled={loadingSlot.llm}
+                style={{ width: '100%', justifyContent: 'center', minHeight: '46px', background: 'linear-gradient(135deg, #a855f7 0%, #06b6d4 100%)' }}
+                aria-label={t('serverControl.startSlot')}
               >
-                <Play size={18} className={loading ? "pulse-icon" : ""} aria-hidden="true" />
-                {loading ? t('serverControl.starting') : targetModel ? t('serverControl.startServerModel', { model: targetModel }) : t('serverControl.startServer')}
+                <Play size={16} className={loadingSlot.llm ? 'pulse-icon' : ''} /> {t('serverControl.startSlot')}
               </button>
             )}
           </div>
         </div>
 
-        {/* Model Load Progress Bar */}
-        {(status?.status === 'starting' || (status?.is_running && !status?.is_loaded)) && (
-          <div
-            role="status"
-            aria-live="polite"
-            style={{
-              background: 'rgba(0,0,0,0.3)',
-              borderRadius: '10px',
-              padding: '1rem',
-              border: '1px solid rgba(245, 158, 11, 0.3)'
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 600, color: 'white', marginBottom: '0.4rem' }}>
-              <span>{status?.load_step || t('serverControl.loadingWeightsStep')}</span>
-              <span style={{ color: '#fbbf24' }}>{status?.load_progress || 0}%</span>
+        {/* SLOT 2: STT Engine (Speech-to-Text) */}
+        <div className="glass-card" style={{
+          padding: '1.4rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '1rem',
+          borderLeft: '4px solid #60a5fa',
+          background: sttSlot.status === 'running' ? 'rgba(96, 165, 250, 0.06)' : 'var(--bg-card)'
+        }}>
+          {/* Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+            <div>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Slot 2 • STT Engine
+              </span>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginTop: '0.2rem', color: 'var(--text-main)' }}>
+                {t('serverControl.slotSttTitle')}
+              </h3>
             </div>
-            <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
-              <div style={{
-                height: '100%',
-                width: `${status?.load_progress || 0}%`,
-                background: 'linear-gradient(90deg, #f59e0b 0%, #10b981 100%)',
-                borderRadius: '4px',
-                transition: 'width 0.3s ease'
-              }} />
+            <div>
+              {sttSlot.status === 'running' && sttSlot.is_loaded ? (
+                <span className="badge badge-success"><CheckCircle size={12} /> {t('serverControl.slotStatusActive')}</span>
+              ) : sttSlot.status === 'starting' ? (
+                <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> {t('serverControl.slotStatusStarting')}</span>
+              ) : sttSlot.status === 'error' ? (
+                <span className="badge badge-danger"><AlertCircle size={12} /> {t('serverControl.slotStatusError')}</span>
+              ) : (
+                <span className="badge badge-secondary">{t('serverControl.slotStatusStopped')}</span>
+              )}
             </div>
           </div>
-        )}
 
-        {/* Error Alert Box */}
-        {(status?.status === 'error' || status?.last_error) && (
-          <div
-            role="alert"
-            style={{
-              background: 'rgba(239, 68, 68, 0.12)',
-              border: '1px solid rgba(239, 68, 68, 0.4)',
-              borderRadius: '10px',
-              padding: '1rem 1.25rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: '0.85rem'
-            }}
-          >
-            <AlertCircle size={22} color="#ef4444" style={{ marginTop: '0.1rem', flexShrink: 0 }} aria-hidden="true" />
-            <div style={{ flex: 1 }}>
-              <div style={{ color: '#ef4444', fontWeight: 700, fontSize: '0.95rem', marginBottom: '0.25rem' }}>
-                {t('serverControl.executionErrorTitle')}
-              </div>
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', maxHeight: '120px', overflowY: 'auto' }}>
-                {status?.last_error || t('serverControl.serverStoppedUnexpectedly')}
-              </div>
-            </div>
-            <button
-              className="btn-secondary"
-              style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#ef4444' }}
-              onClick={() => handleStart(targetModel)}
-              aria-label={t('serverControl.retry')}
+          {/* Model Selector */}
+          <div>
+            <label htmlFor="slot-stt-model" style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {t('serverControl.slotModelLabel')}
+            </label>
+            <select
+              id="slot-stt-model"
+              value={slotModels.stt}
+              onChange={e => setSlotModels(prev => ({ ...prev, stt: e.target.value }))}
+              style={{
+                width: '100%',
+                padding: '0.65rem 0.75rem',
+                borderRadius: '8px',
+                background: 'rgba(0,0,0,0.4)',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-main)',
+                fontSize: '0.88rem',
+                fontFamily: 'var(--font-mono)'
+              }}
             >
-              {t('serverControl.retry')}
-            </button>
+              {sttModelOptions.map(opt => (
+                <option key={opt.id} value={opt.id} style={{ background: '#131b2e' }}>{opt.label}</option>
+              ))}
+            </select>
           </div>
-        )}
+
+          {/* Hardware Device Selector (CPU default, NPU, GPU) */}
+          <div>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {t('serverControl.slotDeviceLabel')}
+            </label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
+              {[
+                { id: 'cpu', label: '🖥️ CPU', name: 'Multi-Core', color: '#60a5fa' },
+                { id: 'npu', label: '⚡ NPU', name: 'XDNA2', color: '#34d399' },
+                { id: 'gpu', label: '🎮 GPU', name: 'Radeon 890M', color: '#c084fc' }
+              ].map(dev => (
+                <button
+                  key={dev.id}
+                  type="button"
+                  className="mobile-touch-target"
+                  onClick={() => setSlotDevices(prev => ({ ...prev, stt: dev.id }))}
+                  style={{
+                    padding: '0.45rem 0.3rem',
+                    borderRadius: '8px',
+                    border: slotDevices.stt === dev.id ? `2px solid ${dev.color}` : '1px solid var(--border-color)',
+                    background: slotDevices.stt === dev.id ? `${dev.color}22` : 'rgba(0,0,0,0.25)',
+                    color: slotDevices.stt === dev.id ? dev.color : 'var(--text-muted)',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '0.1rem',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <span>{dev.label}</span>
+                  <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>{dev.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Real-time telemetry badges */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0.75rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', fontSize: '0.8rem' }}>
+            <span style={{ color: 'var(--text-muted)' }}>Dispositivo:</span>
+            <span style={{ fontWeight: 700, color: slotDevices.stt === 'cpu' ? '#60a5fa' : slotDevices.stt === 'npu' ? '#34d399' : '#c084fc' }}>
+              {slotDevices.stt === 'cpu' ? '🖥️ CPU Multi-Thread (Ottimale)' : slotDevices.stt === 'npu' ? '⚡ NPU (Ryzen AI)' : '🎮 GPU (Vulkan 1.4)'}
+            </span>
+          </div>
+
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.35rem 0.5rem' }}>
+            Trascrizione audio e VAD in streaming continuo senza interferire con l'inferenza LLM.
+          </div>
+
+          {/* Slot Action Button */}
+          <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
+            {sttSlot.status === 'running' || sttSlot.status === 'starting' ? (
+              <button
+                className="btn-danger mobile-touch-target"
+                onClick={() => handleStopSlot('stt')}
+                disabled={loadingSlot.stt}
+                style={{ width: '100%', justifyContent: 'center', minHeight: '46px' }}
+                aria-label={t('serverControl.stopSlot')}
+              >
+                <Square size={16} /> {t('serverControl.stopSlot')}
+              </button>
+            ) : (
+              <button
+                className="btn-primary mobile-touch-target"
+                onClick={() => handleStartSlot('stt')}
+                disabled={loadingSlot.stt}
+                style={{ width: '100%', justifyContent: 'center', minHeight: '46px', background: 'linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%)' }}
+                aria-label={t('serverControl.startSlot')}
+              >
+                <Play size={16} className={loadingSlot.stt ? 'pulse-icon' : ''} /> {t('serverControl.startSlot')}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* SLOT 3: TTS Engine (Text-to-Speech) */}
+        <div className="glass-card" style={{
+          padding: '1.4rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '1rem',
+          borderLeft: '4px solid #34d399',
+          background: ttsSlot.status === 'running' ? 'rgba(52, 211, 153, 0.06)' : 'var(--bg-card)'
+        }}>
+          {/* Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+            <div>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#34d399', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Slot 3 • TTS Engine
+              </span>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginTop: '0.2rem', color: 'var(--text-main)' }}>
+                {t('serverControl.slotTtsTitle')}
+              </h3>
+            </div>
+            <div>
+              {ttsSlot.status === 'running' && ttsSlot.is_loaded ? (
+                <span className="badge badge-success"><CheckCircle size={12} /> {t('serverControl.slotStatusActive')}</span>
+              ) : ttsSlot.status === 'starting' ? (
+                <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> {t('serverControl.slotStatusStarting')}</span>
+              ) : ttsSlot.status === 'error' ? (
+                <span className="badge badge-danger"><AlertCircle size={12} /> {t('serverControl.slotStatusError')}</span>
+              ) : (
+                <span className="badge badge-secondary">{t('serverControl.slotStatusStopped')}</span>
+              )}
+            </div>
+          </div>
+
+          {/* Model Selector */}
+          <div>
+            <label htmlFor="slot-tts-model" style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {t('serverControl.slotModelLabel')}
+            </label>
+            <select
+              id="slot-tts-model"
+              value={slotModels.tts}
+              onChange={e => setSlotModels(prev => ({ ...prev, tts: e.target.value }))}
+              style={{
+                width: '100%',
+                padding: '0.65rem 0.75rem',
+                borderRadius: '8px',
+                background: 'rgba(0,0,0,0.4)',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-main)',
+                fontSize: '0.88rem',
+                fontFamily: 'var(--font-mono)'
+              }}
+            >
+              {ttsModelOptions.map(opt => (
+                <option key={opt.id} value={opt.id} style={{ background: '#131b2e' }}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Hardware Device Selector (NPU default, CPU, GPU) */}
+          <div>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {t('serverControl.slotDeviceLabel')}
+            </label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
+              {[
+                { id: 'npu', label: '⚡ NPU', name: 'XDNA2', color: '#34d399', disabled: isKokoroTts },
+                { id: 'cpu', label: '🖥️ CPU', name: isKokoroTts ? 'Zen 5 AVX-512' : 'Multi-Core', color: '#60a5fa' },
+                { id: 'gpu', label: '🎮 GPU', name: isKokoroTts ? 'CUDA / Direct' : 'Radeon 890M', color: '#c084fc' }
+              ].map(dev => (
+                <button
+                  key={dev.id}
+                  type="button"
+                  disabled={dev.disabled}
+                  className="mobile-touch-target"
+                  onClick={() => !dev.disabled && setSlotDevices(prev => ({ ...prev, tts: dev.id }))}
+                  title={dev.disabled ? 'NPU non supportata per architettura StyleTTS2 (Richiede CPU Zen 5 o GPU CUDA)' : ''}
+                  style={{
+                    padding: '0.45rem 0.3rem',
+                    borderRadius: '8px',
+                    border: slotDevices.tts === dev.id ? `2px solid ${dev.color}` : '1px solid var(--border-color)',
+                    background: dev.disabled ? 'rgba(0,0,0,0.4)' : (slotDevices.tts === dev.id ? `${dev.color}22` : 'rgba(0,0,0,0.25)'),
+                    color: dev.disabled ? '#475569' : (slotDevices.tts === dev.id ? dev.color : 'var(--text-muted)'),
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    cursor: dev.disabled ? 'not-allowed' : 'pointer',
+                    opacity: dev.disabled ? 0.4 : 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '0.1rem',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <span>{dev.label}</span>
+                  <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>{dev.disabled ? 'Non supp.' : dev.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Real-time telemetry badges */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0.75rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', fontSize: '0.8rem' }}>
+            <span style={{ color: 'var(--text-muted)' }}>Dispositivo:</span>
+            <span style={{ fontWeight: 700, color: slotDevices.tts === 'npu' ? '#34d399' : slotDevices.tts === 'cpu' ? '#60a5fa' : '#c084fc' }}>
+              {isKokoroTts
+                ? (slotDevices.tts === 'gpu' ? '🎮 GPU (CUDA / Direct)' : '🖥️ CPU Multi-Thread Zen 5 (Consigliato RTF ~0.10x)')
+                : (slotDevices.tts === 'npu' ? '⚡ NPU Ryzen AI (Hardware Native)' : slotDevices.tts === 'cpu' ? '🖥️ CPU Multi-Thread' : '🎮 GPU (Vulkan 1.4)')}
+            </span>
+          </div>
+
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.35rem 0.5rem' }}>
+            {isKokoroTts
+              ? 'Sintesi vocale Kokoro-82M neurale non-autoregressiva ultraveloce (RTF ~0.10x su CPU Zen 5) con prosodia italiana naturale.'
+              : 'Sintesi vocale Audio8 a bassissima latenza con voice cloning zero-shot ed espressività italiana.'}
+          </div>
+
+          {/* TTS Parameters Config Box */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', padding: '0.6rem 0.75rem', background: 'rgba(0,0,0,0.25)', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
+            <span style={{ fontWeight: 700, color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+              {isKokoroTts ? 'PARAMETRI KOKORO TTS' : 'PARAMETRI AUDIO8 TTS'}
+            </span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Voce Default:</span>
+              <select
+                value={ttsVoice}
+                onChange={e => setTtsVoice(e.target.value)}
+                style={{ padding: '0.25rem 0.5rem', borderRadius: '6px', background: 'rgba(0,0,0,0.4)', color: 'var(--text-main)', border: '1px solid var(--border-color)', fontSize: '0.78rem' }}
+              >
+                {isKokoroTts ? (
+                  <>
+                    <option value="if_sara">if_sara (Italiana Femminile)</option>
+                    <option value="im_nicola">im_nicola (Italiano Maschile)</option>
+                    <option value="af_heart">af_heart (Melodica HeartMuLa)</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="valeria">valeria (Ufficiale Alveare)</option>
+                    <option value="daino">daino (Italiano Maschile)</option>
+                    <option value="bolt">bolt (Conciso)</option>
+                  </>
+                )}
+              </select>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <span>Campionamento:</span>
+              <span style={{ fontWeight: 600, color: '#34d399' }}>
+                {isKokoroTts ? '24000 Hz (StyleTTS2)' : '44100 Hz (DualAR Mamba)'}
+              </span>
+            </div>
+          </div>
+
+          {/* Slot Action Button */}
+          <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
+            {ttsSlot.status === 'running' || ttsSlot.status === 'starting' ? (
+              <button
+                className="btn-danger mobile-touch-target"
+                onClick={() => handleStopSlot('tts')}
+                disabled={loadingSlot.tts}
+                style={{ width: '100%', justifyContent: 'center', minHeight: '46px' }}
+                aria-label={t('serverControl.stopSlot')}
+              >
+                <Square size={16} /> {t('serverControl.stopSlot')}
+              </button>
+            ) : (
+              <button
+                className="btn-primary mobile-touch-target"
+                onClick={() => handleStartSlot('tts')}
+                disabled={loadingSlot.tts}
+                style={{ width: '100%', justifyContent: 'center', minHeight: '46px', background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)' }}
+                aria-label={t('serverControl.startSlot')}
+              >
+                <Play size={16} className={loadingSlot.tts ? 'pulse-icon' : ''} /> {t('serverControl.startSlot')}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* 2. UNIFIED MODEL GALLERY / EMPTY ONBOARDING STATE */}
-      <div>
+      {/* 3. INSTALLED QUANTIZED MODELS GALLERY */}
+      <div style={{ width: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
           <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-main)' }}>
             <HardDrive size={22} color="var(--accent-cyan)" /> {t('serverControl.availableModels')}
@@ -297,19 +828,12 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
             <button
               onClick={() => setIsAddModelOpen(true)}
+              className="btn-primary mobile-touch-target"
               style={{
                 padding: '0.55rem 1.1rem',
-                borderRadius: '8px',
-                border: 'none',
-                background: 'var(--accent-purple)',
-                color: 'white',
-                fontWeight: 700,
                 fontSize: '0.88rem',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                boxShadow: '0 0 15px rgba(139, 92, 246, 0.4)'
+                fontWeight: 700,
+                background: 'var(--accent-purple)'
               }}
               aria-label={t('serverControl.addModel')}
             >
@@ -320,7 +844,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
         {/* Loading Skeletons */}
         {modelsLoading ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', gap: '1.25rem' }}>
             {[1, 2].map(n => (
               <div
                 key={n}
@@ -330,7 +854,6 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
             ))}
           </div>
         ) : models.length === 0 ? (
-          /* First-run Empty State Onboarding Card */
           <div
             className="glass-card"
             style={{
@@ -353,8 +876,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
               border: '1px solid rgba(139, 92, 246, 0.3)',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: 'var(--shadow-glow)'
+              justifyContent: 'center'
             }}>
               <HardDrive size={32} color="var(--accent-purple)" />
             </div>
@@ -370,7 +892,7 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
 
             <button
               onClick={() => setIsAddModelOpen(true)}
-              className="btn-primary"
+              className="btn-primary mobile-touch-target"
               style={{ padding: '0.75rem 1.5rem', fontSize: '0.95rem' }}
               aria-label={t('serverControl.downloadOrImportFirst')}
             >
@@ -378,32 +900,32 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
             </button>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '1.25rem' }}>
             {models.map(m => {
-              const isServed = status?.is_running && status?.model === m.id;
-              const isSelected = targetModel === m.id;
+              const isLlmServed = llmSlot.status === 'running' && (llmSlot.model === m.id || CANONICAL_MODEL_MAP[llmSlot.model] === m.id || llmSlot.model === CANONICAL_MODEL_MAP[m.id]);
+              const isSttServed = sttSlot.status === 'running' && (sttSlot.model === m.id || CANONICAL_MODEL_MAP[sttSlot.model] === m.id || sttSlot.model === CANONICAL_MODEL_MAP[m.id]);
+              const isTtsServed = ttsSlot.status === 'running' && (ttsSlot.model === m.id || CANONICAL_MODEL_MAP[ttsSlot.model] === m.id || ttsSlot.model === CANONICAL_MODEL_MAP[m.id]);
+              const isServed = isLlmServed || isSttServed || isTtsServed;
+
               const mKernel = kernelStatus?.[m.id] || (kernelStatus?.manifest_model_type === m.arch ? kernelStatus : null);
               const isKernelMatching = mKernel?.manifest_exists;
 
               return (
                 <div
                   key={m.id}
-                  onClick={() => setTargetModel(m.id)}
                   className="glass-card"
                   style={{
                     padding: '1.35rem',
-                    cursor: 'pointer',
-                    border: isServed ? '2px solid #10b981' : isSelected ? '2px solid var(--accent-purple)' : '1px solid var(--border-color)',
-                    background: isServed ? 'rgba(16, 185, 129, 0.08)' : isSelected ? 'rgba(139, 92, 246, 0.1)' : 'rgba(23, 32, 54, 0.6)',
+                    border: isServed ? '2px solid #10b981' : '1px solid var(--border-color)',
+                    background: isServed ? 'rgba(16, 185, 129, 0.08)' : 'rgba(23, 32, 54, 0.6)',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '1rem'
                   }}
                 >
-                  {/* Header Card */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
                     <div>
-                      <h4 style={{ fontSize: '1.15rem', fontWeight: 700, color: isSelected ? '#c084fc' : 'var(--text-main)' }}>
+                      <h4 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-main)' }}>
                         {m.id}
                       </h4>
                       <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
@@ -412,137 +934,70 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.3rem' }}>
-                      {isServed && status?.is_loaded && <span className="badge badge-success"><CheckCircle size={12} /> {t('serverControl.inExecution')}</span>}
-                      {isServed && !status?.is_loaded && <span className="badge badge-warning"><RotateCw size={12} className="pulse-icon" /> {t('serverControl.loadingBadge', { progress: status?.load_progress || 0 })}</span>}
-                      {isSelected && !isServed && <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.4)' }}>{t('serverControl.selectedBadge')}</span>}
+                      {isServed && <span className="badge badge-success"><CheckCircle size={12} /> {t('serverControl.inExecution')}</span>}
+                      <span className="badge badge-secondary" style={{ fontSize: '0.7rem' }}>
+                        {m.task === 'speech-to-text' ? 'STT' : m.task === 'text-to-speech' ? 'TTS' : 'LLM'}
+                      </span>
                     </div>
                   </div>
 
-                  {/* Performance Speed Badge if active */}
-                  {isServed && status?.tok_per_sec > 0 && (
-                    <div style={{
-                      fontSize: '0.83rem',
-                      padding: '0.45rem 0.75rem',
-                      borderRadius: '6px',
-                      background: 'rgba(6, 182, 212, 0.15)',
-                      border: '1px solid rgba(6, 182, 212, 0.3)',
-                      color: 'var(--accent-cyan)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      fontWeight: 600
-                    }}>
-                      <span>{t('serverControl.measuredSpeed')}</span>
-                      <span>⚡ {status.tok_per_sec} tok/s</span>
-                    </div>
-                  )}
-
-                  {/* Device Target Selector */}
-                  {m.supported_devices && m.supported_devices.length > 1 ? (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.4rem 0.6rem', borderRadius: '8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)' }}>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Dispositivo:</span>
-                      <div style={{ display: 'flex', gap: '0.35rem' }} onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          onClick={() => setModelDevices(prev => ({ ...prev, [m.id]: 'npu' }))}
-                          style={{
-                            padding: '0.25rem 0.55rem',
-                            borderRadius: '6px',
-                            border: (modelDevices[m.id] || 'npu') === 'npu' ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid transparent',
-                            background: (modelDevices[m.id] || 'npu') === 'npu' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
-                            color: (modelDevices[m.id] || 'npu') === 'npu' ? '#34d399' : 'var(--text-muted)',
-                            fontSize: '0.75rem',
-                            fontWeight: 700,
-                            cursor: 'pointer',
-                            transition: 'all 0.15s ease'
-                          }}
-                        >
-                          ⚡ NPU (Default)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setModelDevices(prev => ({ ...prev, [m.id]: 'cpu' }))}
-                          style={{
-                            padding: '0.25rem 0.55rem',
-                            borderRadius: '6px',
-                            border: (modelDevices[m.id] || 'npu') === 'cpu' ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
-                            background: (modelDevices[m.id] || 'npu') === 'cpu' ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
-                            color: (modelDevices[m.id] || 'npu') === 'cpu' ? '#60a5fa' : 'var(--text-muted)',
-                            fontSize: '0.75rem',
-                            fontWeight: 700,
-                            cursor: 'pointer',
-                            transition: 'all 0.15s ease'
-                          }}
-                        >
-                          🖥️ CPU
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.4rem 0.6rem', borderRadius: '8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)' }}>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Dispositivo:</span>
-                      <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#34d399' }}>⚡ NPU (XDNA2 Native)</span>
-                    </div>
-                  )}
-
-                  {/* Kernel Status Indicator */}
-                  <div style={{ fontSize: '0.82rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{t('serverControl.hardwareKernels')}</span>
-                    {isKernelMatching ? (
-                      <span style={{ color: '#34d399', fontWeight: 600 }}>
-                        {t('serverControl.compiledCount', { count: mKernel.kernels_count })}
+                  {/* Multi-Hardware Acceleration Status */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', padding: '0.65rem 0.8rem', borderRadius: '8px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text-muted)', fontSize: '0.72rem', letterSpacing: '0.04em' }}>
+                        {t('serverControl.hardwareKernels')}
                       </span>
-                    ) : (
-                      <span style={{ color: '#fbbf24', fontWeight: 600 }}>
-                        {t('serverControl.notCompiled')}
+                    </div>
+
+                    {/* NPU Backend */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: '#34d399', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        ⚡ NPU:
                       </span>
-                    )}
+                      <span style={{ fontWeight: 600, color: (mKernel?.manifest_exists || isKernelMatching) ? '#34d399' : (mKernel?.is_kokoro ? 'var(--text-muted)' : '#fbbf24'), fontSize: '0.78rem' }}>
+                        {mKernel?.backends?.npu?.info || ((mKernel?.manifest_exists || isKernelMatching) ? t('serverControl.compiledCount', { count: mKernel?.kernels_count || 0 }) : (mKernel?.is_kokoro ? 'Non applicabile (StyleTTS2)' : t('serverControl.notCompiled')))}
+                      </span>
+                    </div>
+
+                    {/* GPU Backend */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: '#c084fc', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        🎮 GPU:
+                      </span>
+                      <span style={{ fontWeight: 600, color: '#c084fc', fontSize: '0.78rem' }}>
+                        {mKernel?.backends?.gpu?.info || (mKernel?.is_tts ? 'PyTorch CUDA / Direct' : 'SPIR-V Shaders Vulkan 1.4')}
+                      </span>
+                    </div>
+
+                    {/* CPU Backend */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: '#60a5fa', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        🖥️ CPU:
+                      </span>
+                      <span style={{ fontWeight: 600, color: '#60a5fa', fontSize: '0.78rem' }}>
+                        {mKernel?.backends?.cpu?.info || 'AVX-512 / OpenMP (Nativo)'}
+                      </span>
+                    </div>
                   </div>
 
-                  {/* Action Buttons */}
-                  <div style={{ display: 'flex', gap: '0.6rem', marginTop: 'auto', paddingTop: '0.5rem' }}>
+                  {/* Actions */}
+                  <div style={{ display: 'flex', gap: '0.6rem', marginTop: 'auto', paddingTop: '0.5rem', flexWrap: 'wrap' }}>
                     <button
-                      className="btn-primary"
-                      style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem', justifyContent: 'center' }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTargetModel(m.id);
-                        if (isServed) {
-                          handleRestart(m.id);
-                        } else {
-                          handleStart(m.id);
-                        }
-                      }}
-                      disabled={loading}
-                      aria-label={`Avvia o riavvia modello ${m.id}`}
-                    >
-                      {isServed ? <RotateCw size={14} /> : <Play size={14} />}
-                      {isServed ? t('serverControl.restart') : t('serverControl.loadAndStart')}
-                    </button>
-
-                    <button
-                      className="btn-secondary"
-                      style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)' }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTargetModel(m.id);
-                        handleBuildKernels(m.id);
-                      }}
+                      className="btn-secondary mobile-touch-target"
+                      style={{ flex: 1, padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#c084fc', borderColor: 'rgba(139,92,246,0.4)', justifyContent: 'center' }}
+                      onClick={() => setBuildTargetModal({ modelId: m.id })}
                       disabled={buildingModel === m.id}
                       title={t('serverControl.compileKernelTitle')}
-                      aria-label={`Compila kernel NPU per ${m.id}`}
+                      aria-label={`Compila kernel per ${m.id}`}
                     >
                       <Hammer size={14} /> {buildingModel === m.id ? t('serverControl.compiling') : t('serverControl.compileKernel')}
                     </button>
 
                     <button
-                      className="btn-danger"
-                      style={{ padding: '0.5rem 0.65rem', fontSize: '0.85rem' }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteModel(m.id);
-                      }}
-                      disabled={loading || (status?.is_running && status?.model === m.id)}
+                      className="btn-danger mobile-touch-target"
+                      style={{ padding: '0.5rem 0.85rem', fontSize: '0.85rem' }}
+                      onClick={() => handleDeleteModel(m.id)}
+                      disabled={isServed}
                       title={t('serverControl.deleteModelTitle')}
                       aria-label={`Elimina modello ${m.id}`}
                     >
@@ -556,24 +1011,30 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         )}
       </div>
 
-      {/* 3. SETTINGS & OPTIONS PANEL */}
-      <div className="glass-card" style={{ padding: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+      {/* 4. SERVER CONFIG & ADVANCED OPTIONS */}
+      <div className="glass-card" style={{ padding: 'clamp(1rem, 3vw, 1.5rem)', width: '100%' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Settings size={20} color="var(--accent-cyan)" /> {t('serverControl.serverConfig')}
           </h3>
 
-          <button className="btn-secondary" onClick={() => setShowBuildOptions(!showBuildOptions)} style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem' }} aria-expanded={showBuildOptions}>
+          <button
+            className="btn-secondary mobile-touch-target"
+            onClick={() => setShowBuildOptions(!showBuildOptions)}
+            style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem' }}
+            aria-expanded={showBuildOptions}
+          >
             {showBuildOptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />} {t('serverControl.advancedCompilationOptions')}
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: '1.25rem' }}>
           <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+            <label htmlFor="server-host" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
               {t('serverControl.hostAddress')}
             </label>
             <input
+              id="server-host"
               type="text"
               value={host}
               onChange={e => setHost(e.target.value)}
@@ -590,10 +1051,11 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+            <label htmlFor="server-port" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
               {t('serverControl.httpPort')}
             </label>
             <input
+              id="server-port"
               type="number"
               value={port}
               onChange={e => setPort(parseInt(e.target.value) || 8000)}
@@ -622,7 +1084,6 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
           </div>
         </div>
 
-        {/* Expandable Advanced Kernel Compilation Options */}
         {showBuildOptions && (
           <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'center' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.88rem' }}>
@@ -649,11 +1110,182 @@ export default function ServerControl({ apiBase, status, models = [], modelsLoad
         isOpen={isAddModelOpen}
         onClose={() => setIsAddModelOpen(false)}
         onSetupComplete={(alias) => {
-          onRefresh();
-          setTargetModel(alias);
+          if (onRefresh) onRefresh();
+          setSlotModels(prev => ({ ...prev, llm: alias }));
         }}
       />
 
+      {/* Build Target Hardware Modal */}
+      {buildTargetModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="build-modal-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.75)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1rem'
+          }}
+        >
+          <div
+            className="glass-card"
+            style={{
+              maxWidth: '540px',
+              width: '100%',
+              padding: '1.75rem',
+              borderRadius: '16px',
+              border: '1px solid rgba(139,92,246,0.4)',
+              background: '#0f172a',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.25rem',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.6)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Hammer size={22} color="var(--accent-purple)" />
+                <h3 id="build-modal-title" style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>
+                  {t('serverControl.compileKernel')}
+                </h3>
+              </div>
+              <button
+                className="btn-secondary"
+                onClick={() => setBuildTargetModal(null)}
+                style={{ padding: '0.35rem 0.6rem' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+              Modello: <strong style={{ color: 'var(--text-main)' }}>{buildTargetModal.modelId}</strong>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                {t('serverControl.targetHardware')}
+              </span>
+
+              {/* Target 1: NPU */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.75rem',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: buildTargetDevice === 'npu' ? '2px solid #34d399' : '1px solid var(--border-color)',
+                  background: buildTargetDevice === 'npu' ? 'rgba(52, 211, 153, 0.1)' : 'rgba(0,0,0,0.25)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <input
+                  type="radio"
+                  name="buildTarget"
+                  checked={buildTargetDevice === 'npu'}
+                  onChange={() => setBuildTargetDevice('npu')}
+                  style={{ marginTop: '0.2rem', accentColor: '#34d399' }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontWeight: 700, color: '#34d399' }}>
+                    {t('serverControl.targetNpuDesc')}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                    Compila micro-kernel AIE2 (.xclbin) per GEMV Q4 / prefill GEMM. Richiede compilazione XDNA2.
+                  </span>
+                </div>
+              </label>
+
+              {/* Target 2: GPU */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.75rem',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: buildTargetDevice === 'gpu' ? '2px solid #c084fc' : '1px solid var(--border-color)',
+                  background: buildTargetDevice === 'gpu' ? 'rgba(192, 132, 252, 0.1)' : 'rgba(0,0,0,0.25)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <input
+                  type="radio"
+                  name="buildTarget"
+                  checked={buildTargetDevice === 'gpu'}
+                  onChange={() => setBuildTargetDevice('gpu')}
+                  style={{ marginTop: '0.2rem', accentColor: '#c084fc' }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontWeight: 700, color: '#c084fc' }}>
+                    {t('serverControl.targetGpuDesc')}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                    Compila compute shaders SPIR-V (Vulkan 1.3/1.4) con glslc / glslangValidator.
+                  </span>
+                </div>
+              </label>
+
+              {/* Target 3: CPU */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.75rem',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: buildTargetDevice === 'cpu' ? '2px solid #60a5fa' : '1px solid var(--border-color)',
+                  background: buildTargetDevice === 'cpu' ? 'rgba(96, 165, 250, 0.1)' : 'rgba(0,0,0,0.25)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <input
+                  type="radio"
+                  name="buildTarget"
+                  checked={buildTargetDevice === 'cpu'}
+                  onChange={() => setBuildTargetDevice('cpu')}
+                  style={{ marginTop: '0.2rem', accentColor: '#60a5fa' }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontWeight: 700, color: '#60a5fa' }}>
+                    {t('serverControl.targetCpuDesc')}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                    Verifica e compila il motore C++ nativo AVX-512 / OpenMP per CPU Zen 5.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            {/* Modal Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+              <button
+                className="btn-secondary"
+                onClick={() => setBuildTargetModal(null)}
+              >
+                Annulla
+              </button>
+              <button
+                className="btn-primary"
+                onClick={() => handleBuildKernels(buildTargetModal.modelId, buildTargetDevice)}
+                style={{ background: 'linear-gradient(135deg, #a855f7 0%, #06b6d4 100%)' }}
+              >
+                Avvia Compilazione
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

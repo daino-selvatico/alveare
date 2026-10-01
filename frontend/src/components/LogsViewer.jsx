@@ -2,12 +2,14 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Terminal, Cpu, RefreshCw } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
 
-export default function LogsViewer({ apiBase }) {
+export default function LogsViewer({ apiBase, isActive = true }) {
   const { t } = useTranslation();
   const [logs, setLogs] = useState([]);
   const [npu, setNpu] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const logEndRef = useRef(null);
+  const logContainerRef = useRef(null);
+  const scrollPosRef = useRef(null);
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -34,22 +36,47 @@ export default function LogsViewer({ apiBase }) {
   }, [apiBase]);
 
   useEffect(() => {
+    if (!isActive) return;
+
     fetchLogs();
     fetchNpu();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && isActive) {
+        fetchLogs();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     const interval = setInterval(() => {
-      fetchLogs();
+      if (document.visibilityState !== 'hidden') {
+        fetchLogs();
+      }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [fetchLogs, fetchNpu]);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchLogs, fetchNpu, isActive]);
 
   useEffect(() => {
-    if (autoScroll) {
-      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!autoScroll) {
+      if (logContainerRef.current && scrollPosRef.current !== null) {
+        logContainerRef.current.scrollTop = scrollPosRef.current;
+      }
+      return;
+    }
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+    if (typeof logEndRef.current?.scrollIntoView === 'function') {
+      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logs, autoScroll]);
 
   return (
-    <div role="region" aria-label={t('logsViewer.realtimeServerLogs')} style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div role="region" aria-label={t('logsViewer.realtimeServerLogs')} className="responsive-page-container" style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.25rem', width: '100%', overflowX: 'hidden' }}>
       
       {/* NPU Health Card */}
       <div className="glass-card" style={{ padding: '1.25rem' }}>
@@ -58,7 +85,7 @@ export default function LogsViewer({ apiBase }) {
         </h3>
 
         {npu ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.85rem' }}>
             <div style={{ padding: '0.85rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('logsViewer.deviceNodeLabel')}</div>
               <div style={{ fontWeight: 600, marginTop: '0.2rem', color: npu.device_node ? '#34d399' : '#fca5a5' }}>
@@ -87,26 +114,42 @@ export default function LogsViewer({ apiBase }) {
 
       {/* Terminal Console Log View */}
       <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', flex: 1 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Terminal size={20} color="var(--accent-purple)" aria-hidden="true" /> {t('logsViewer.realtimeServerLogs')}
           </h3>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer' }}>
-              <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer', minHeight: '40px' }}>
+              <input
+                type="checkbox"
+                checked={autoScroll}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setAutoScroll(checked);
+                  if (!checked && logContainerRef.current) {
+                    scrollPosRef.current = logContainerRef.current.scrollTop;
+                  }
+                }}
+              />
               <span>{t('logsViewer.autoScroll')}</span>
             </label>
-            <button className="btn-secondary" onClick={fetchLogs} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }} aria-label={t('logsViewer.refresh')}>
+            <button className="btn-secondary mobile-touch-target" onClick={fetchLogs} style={{ padding: '0.45rem 0.85rem', fontSize: '0.85rem', minHeight: '44px', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }} aria-label={t('logsViewer.refresh')}>
               <RefreshCw size={14} aria-hidden="true" /> {t('logsViewer.refresh')}
             </button>
           </div>
         </div>
 
         <div
+          ref={logContainerRef}
           role="log"
           aria-live="polite"
           aria-label={t('logsViewer.realtimeServerLogs')}
+          onScroll={(e) => {
+            if (!autoScroll) {
+              scrollPosRef.current = e.currentTarget.scrollTop;
+            }
+          }}
           style={{
             background: '#090d16',
             borderRadius: '8px',

@@ -26,12 +26,19 @@ struct ModelConfig {
                model_type == "e4b";
     }
 
+    bool is_qwen() const {
+        return model_type.find("qwen") != std::string::npos;
+    }
+
     int get_padded_hidden_size() const {
         if (is_gemma4()) {
             return (hidden_size == 3840) ? 4096 : hidden_size;
         }
         if (model_type == "gemma3") {
             return 2048;
+        }
+        if (is_qwen()) {
+            return ((hidden_size + 2047) / 2048) * 2048;
         }
         return hidden_size;
     }
@@ -42,6 +49,9 @@ struct ModelConfig {
         }
         if (model_type == "gemma3") {
             return 8192;
+        }
+        if (is_qwen()) {
+            return ((intermediate_size + 2047) / 2048) * 2048;
         }
         return intermediate_size;
     }

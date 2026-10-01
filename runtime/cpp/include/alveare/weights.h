@@ -100,7 +100,7 @@ struct ModelWeights {
     std::vector<std::vector<float>> medusa_heads; // [head_idx][H * H]
 };
 
-ModelWeights load_weights(const std::string& dir, const ModelConfig& config, NpuRegistry& reg);
+ModelWeights load_weights(const std::string& dir, const ModelConfig& config, ComputeDevice& reg);
 std::vector<float> load_float_npy(const std::string& path);
 std::vector<uint16_t> load_uint16_npy(const std::string& path);
 

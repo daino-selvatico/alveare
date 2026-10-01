@@ -40,14 +40,14 @@ SUPPORTED_MODELS = [
         "description": "Ultra-fast edge model designed for real-time mobile & desktop NPU inference."
     },
     {
-        "id": "gemma3",
-        "name": "Gemma 3 1B Instruct",
-        "arch": "gemma3",
-        "default_url": "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
-        "repo_id": "unsloth/gemma-3-1b-it-GGUF",
-        "filename": "gemma-3-1b-it-Q4_K_M.gguf",
-        "size_approx": "~0.8 GB",
-        "description": "Lightweight 1B parameter model optimized for instant response times."
+        "id": "kokoro-82m",
+        "name": "Kokoro 82M TTS",
+        "arch": "kokoro",
+        "default_url": "hexgrad/Kokoro-82M",
+        "repo_id": "hexgrad/Kokoro-82M",
+        "filename": "model.safetensors",
+        "size_approx": "~320 MB",
+        "description": "Ultra-fast non-autoregressive neural text-to-speech with natural Italian prosody, <300ms latency, and CPU/GPU execution."
     },
     {
         "id": "llama",
@@ -108,6 +108,16 @@ SUPPORTED_MODELS = [
         "filename": "model.safetensors",
         "size_approx": "~1.2 GB",
         "description": "SOTA-class 600M multilingual text-to-speech with rich acoustic details and zero-shot voice cloning."
+    },
+    {
+        "id": "qwen3.8-27b",
+        "name": "Qwen 3.8 27B GSQ-RCO (MTP Speculative)",
+        "arch": "qwen",
+        "default_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF/resolve/main/Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf",
+        "repo_id": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+        "filename": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf",
+        "size_approx": "~11.4 GB",
+        "description": "State-of-the-art 27B reasoning model with GSQ-RCO mixed precision and Multi-Token Prediction (MTP) speculative decoding."
     }
 ]
 
@@ -296,10 +306,7 @@ def run_setup(
     # 2. Quantize & Pack
     log_progress("quantize", 40.0, f"Quantizing weights from {gguf_path.name} to Q4_0 layout...")
     
-    if alias in ("gemma3", "gemma"):
-        weights_dir = ROOT_DIR / "quantized_weights_gemma3"
-    else:
-        weights_dir = ROOT_DIR / f"quantized_weights_{alias}"
+    weights_dir = ROOT_DIR / f"quantized_weights_{alias}"
 
     weights_dir.mkdir(parents=True, exist_ok=True)
 
@@ -315,6 +322,40 @@ def run_setup(
         raise AttributeError(f"Quantizer plugin {quantizer_spec} has no quantize() or main() method.")
 
     log_progress("quantize", 75.0, "Quantization and weight packing completed.")
+
+    # 2.5 Generate Medusa Speculative Prediction Heads if applicable
+    emb_file = weights_dir / "token_embd.npy"
+    tok_file = weights_dir / "tokenizer.json"
+    medusa_0 = weights_dir / "medusa_head_0.npy"
+    if emb_file.exists() and tok_file.exists():
+        if not medusa_0.exists():
+            log_progress("speculative_setup", 76.0, f"Generating fast Medusa speculative prediction heads for '{alias}'...")
+            medusa_train_script = ROOT_DIR / "tools" / "train_medusa_fast.py"
+            corpus_path = ROOT_DIR / "tools" / "corpus.jsonl"
+            if medusa_train_script.exists() and corpus_path.exists():
+                py_exe_temp = os.environ.get("ALVEARE_PYTHON")
+                if not py_exe_temp and os.environ.get("CONDA_PREFIX"):
+                    py_exe_temp = str(Path(os.environ.get("CONDA_PREFIX")) / "bin" / "python")
+                if not py_exe_temp:
+                    alveare_env_py = Path("/home/daino/miniconda3/envs/alveare-aie/bin/python")
+                    py_exe_temp = str(alveare_env_py) if alveare_env_py.exists() else sys.executable
+
+                m_cmd = [
+                    py_exe_temp, str(medusa_train_script),
+                    "--model-dir", str(weights_dir),
+                    "--corpus", str(corpus_path),
+                    "--num-heads", "3"
+                ]
+                try:
+                    m_res = subprocess.run(m_cmd, capture_output=True, text=True, timeout=120)
+                    if m_res.returncode == 0:
+                        log_progress("speculative_setup", 79.0, "Medusa speculative prediction heads generated successfully.")
+                    else:
+                        print(f"[setup_model] Medusa head training returned non-zero ({m_res.returncode}): {m_res.stderr}")
+                except Exception as e:
+                    print(f"[setup_model] Non-fatal warning: failed to generate Medusa heads: {e}")
+        else:
+            log_progress("speculative_setup", 76.0, f"Medusa speculative prediction heads already present for '{alias}'.")
 
     # 3. Build Kernels
     log_progress("build_kernels", 80.0, "Compiling / harvesting NPU AOT hardware kernels...")
@@ -351,8 +392,8 @@ def run_setup(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Alveare Model Setup Pipeline")
-    parser.add_argument("alias", help="Alias for the model (e.g. gemma4, gemma3, whisper-base, mymodel)")
-    parser.add_argument("--arch", default=None, help="Architecture or quantizer spec (gemma4, gemma4-e4b, gemma3, llama, whisper, custom)")
+    parser.add_argument("alias", help="Alias for the model (e.g. gemma4-e4b, gemma4, whisper-large-v3-turbo, kokoro-82m)")
+    parser.add_argument("--arch", default=None, help="Architecture or quantizer spec (gemma4-e4b, gemma4, llama, whisper, kokoro, audio8, custom)")
     parser.add_argument("--url", help="HuggingFace repository ID or direct GGUF URL")
     parser.add_argument("--filename", help="Filename to download from HF repo")
     parser.add_argument("--gguf", help="Path to local .gguf file")
@@ -361,8 +402,12 @@ if __name__ == "__main__":
 
     arch = args.arch
     if not arch:
-        if args.alias in ("whisper", "whisper-base"):
+        if args.alias in ("whisper", "whisper-base", "whisper-large-v3-turbo", "whisper-large-v3"):
             arch = "whisper"
+        elif args.alias in ("kokoro", "kokoro-82m"):
+            arch = "kokoro"
+        elif args.alias in ("audio8", "audio8-0.1b", "audio8-0.6b"):
+            arch = "audio8"
         else:
             arch = args.alias
 

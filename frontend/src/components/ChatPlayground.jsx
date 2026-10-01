@@ -26,7 +26,7 @@ import {
   Mic,
   MicOff,
   Play,
-  Volume2
+  PanelLeft
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -197,7 +197,7 @@ export default function ChatPlayground({
   const [isGenerating, setIsGenerating] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [expandedThinking, setExpandedThinking] = useState({});
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
   const [generationError, setGenerationError] = useState(null);
   const [lastUserPrompt, setLastUserPrompt] = useState(null);
 
@@ -273,7 +273,10 @@ export default function ChatPlayground({
     }
   }, [status, isGenerating]);
 
+  const [autoScroll, setAutoScroll] = useState(true);
   const messagesEndRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  const scrollPosRef = useRef(null);
   const abortControllerRef = useRef(null);
 
   // Global app keyboard shortcuts: Esc, Ctrl+K, Ctrl+/, ?
@@ -347,9 +350,24 @@ export default function ChatPlayground({
   }, [t]);
 
 
+  const scrollToBottom = (force = false) => {
+    if (force || autoScroll) {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
   useEffect(() => {
+    if (!autoScroll) {
+      if (chatContainerRef.current && scrollPosRef.current !== null) {
+        chatContainerRef.current.scrollTop = scrollPosRef.current;
+      }
+      return;
+    }
     scrollToBottom();
-  }, [messages, isGenerating]);
+  }, [messages, isGenerating, autoScroll]);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -360,10 +378,6 @@ export default function ChatPlayground({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
 
   const toggleThinking = (idx) => {
     setExpandedThinking(prev => ({ ...prev, [idx]: !prev[idx] }));
@@ -718,7 +732,7 @@ export default function ChatPlayground({
           try {
             const formData = new FormData();
             formData.append('file', wavBlob, fileName);
-            formData.append('model', 'whisper-base');
+            formData.append('model', 'whisper-large-v3-turbo');
             const sttRes = await fetch(`${apiBase}/v1/audio/transcriptions`, {
               method: 'POST',
               body: formData
@@ -910,6 +924,8 @@ export default function ChatPlayground({
     if ((!messageText || !messageText.trim()) && attachments.length === 0) return;
     if (!isServerRunning) return;
 
+    setAutoScroll(true);
+    scrollPosRef.current = null;
     setGenerationError(null);
     setLastUserPrompt(messageText);
 
@@ -1259,6 +1275,23 @@ export default function ChatPlayground({
           gap: '0.5rem'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+            <button
+              type="button"
+              className="btn-secondary mobile-touch-target"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              title={t('sidebar.chatHistory')}
+              aria-label={t('sidebar.chatHistory')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '0.4rem 0.6rem',
+                minHeight: '36px',
+                borderRadius: '8px'
+              }}
+            >
+              <PanelLeft size={16} />
+            </button>
             <span style={{
               fontWeight: 700,
               fontSize: '1rem',
@@ -1348,6 +1381,18 @@ export default function ChatPlayground({
 
         {/* Message Stream or Empty Welcome Screen */}
         <div
+          ref={chatContainerRef}
+          onScroll={(e) => {
+            const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+            const isNearBottom = scrollHeight - scrollTop - clientHeight < 60;
+            if (isNearBottom) {
+              setAutoScroll(true);
+              scrollPosRef.current = null;
+            } else {
+              setAutoScroll(false);
+              scrollPosRef.current = scrollTop;
+            }
+          }}
           style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}
           role="log"
           aria-live="polite"
@@ -1390,7 +1435,7 @@ export default function ChatPlayground({
               {/* Prompt Suggestions */}
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 250px), 1fr))',
                 gap: '0.85rem',
                 width: '100%',
                 marginTop: '1rem'

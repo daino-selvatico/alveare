@@ -88,7 +88,7 @@ ensure_runtime_env() {
 
 usage() {
   cat <<'EOF'
-alveare — open NPU LLM runtime for the AMD Ryzen AI (XDNA2) NPU on Linux
+alveare — Heterogeneous Neural Runtime (NPU • GPU • CPU) for AMD Ryzen AI & Linux
 
 USAGE:
     alveare <command> [options]
@@ -104,7 +104,9 @@ COMMANDS:
     build-kernels <model> Compile the hardware NPU kernels (.xclbin) for a model.
     list  (or: models)    List installed models (quantized weight directories).
     serve <model> [opts]  Start the OpenAI-compatible HTTP server for a model.
-    start [opts]          Start the Web UI & Control Center dashboard (port 8080).
+    start [opts]          Start the Web UI & Control Center dashboard (port 8080/8443).
+    certs                 Generate or verify self-signed SSL certs for HTTPS (certs/).
+    live [opts]           Start the full-duplex Live voice-to-voice interactive session.
     chat [opts]           Minimal terminal chat against a running server.
     test                  Run the integration test suite (starts server and chat).
     bench [model]         Benchmark every NPU kernel + end-to-end prefill/decode;
@@ -128,37 +130,80 @@ QUANTIZE:
         alveare serve g4-12b
 
 BUILD-KERNELS:
-    alveare build-kernels <model> [--no-gemm] [--max-batch N]
+    alveare build-kernels <model> [--device npu|gpu|cpu] [--no-gemm] [--max-batch N]
 
-    Builds the XDNA2 hardware kernels (.xclbin) tailored to the exact matrix 
-    shapes of your model on the AMD Ryzen AI NPU.
+    Builds the accelerated hardware kernels:
+    - npu: XDNA2 hardware kernels (.xclbin) tailored to matrix shapes
+    - gpu: Vulkan 1.3/1.4 SPIR-V compute shaders (gemv/gemm)
+    - cpu: Native AVX-512 / OpenMP vector engine
 
     Options:
+        --device <dev>         Target hardware (npu, gpu, cpu) (default: npu)
         --no-gemm              Skip prefill GEMM compilation (GEMV only)
         --max-batch <N>        Max prefill batch size (default: 16)
 
     Examples:
-        alveare build-kernels gemma4
+        alveare build-kernels gemma4-e4b --device npu
+        alveare build-kernels gemma4-e4b --device gpu
+        alveare build-kernels gemma4-e4b --device cpu
 
 SERVE:
     <model> resolves in this order: built-in shorthand, then an existing
     directory path, then a generated name (quantized_weights_<model>):
 
-        llama    ->  ./quantized_weights_llama     (Llama-3.2-1B-Instruct)
-        gemma3   ->  ./quantized_weights_gemma3    (Gemma-3-1B-it)
+        gemma4-e4b -> ./quantized_weights_gemma4-e4b (Gemma-4-4B-it / E4B Edge, default)
         gemma4   ->  ./quantized_weights_gemma4    (Gemma-4-12B-it)
-        g4-12b   ->  ./quantized_weights_g4-12b     (from `quantize g4-12b ...`)
+        llama    ->  ./quantized_weights_llama     (Llama-3.2-1B-Instruct)
+        kokoro   ->  ./quantized_weights_kokoro-82m (Kokoro-82M TTS)
+        whisper  ->  ./quantized_weights_whisper-large-v3-turbo (Whisper Large Turbo STT)
         <dir>    ->  any directory with a config.json
 
     Options:
         --host <addr>   Bind address (default 127.0.0.1, or $ALVEARE_HOST).
         --port <port>   Port (default 8000, or $ALVEARE_PORT).
+        --device <dev>  Target hardware backend: gpu (Vulkan 1.4), npu (XDNA2), or cpu (AVX2/AVX-512) (default: gpu).
         --offline       Run completely offline (sets HF_HUB_OFFLINE=1).
         --legacy        Run the legacy Python server instead of the Native C++ server.
 
     Examples:
-        alveare serve gemma4
+        alveare serve gemma4-e4b --device gpu
+        alveare serve gemma4 --device npu
         alveare serve g4-12b --port 9000
+
+START:
+    alveare start [--host H] [--port P] [--ssl] [--ssl-port P] [--no-browser] [--dev]
+
+    Starts the Web UI & Control Center dashboard. By default listens on HTTP
+    (port 8080). Use --ssl to enable HTTPS (port 8443) for mobile microphone access.
+
+    Options:
+        --host <addr>      Bind address (default 0.0.0.0, or $ALVEARE_CONTROL_HOST).
+        --port <port>      HTTP/HTTPS port (default 8080, or 8443 if --ssl).
+        --ssl              Enable HTTPS with SSL certificates (auto-generated if missing).
+        --ssl-port <port>  SSL port when --ssl is used (default 8443).
+        --no-browser       Do not automatically open browser.
+        --dev              Run frontend in Vite dev mode.
+
+    Examples:
+        alveare start
+        alveare start --ssl
+        alveare start --ssl --ssl-port 8443
+
+CERTS:
+    alveare certs
+
+    Generates or verifies local self-signed SSL/TLS certificates (certs/cert.pem, certs/key.pem)
+    valid for localhost, 127.0.0.1, and detected LAN IPs.
+
+LIVE:
+    alveare live [--host H] [--port P]
+
+    Starts an interactive, full-duplex voice-to-voice Live session using the 
+    tri-hardware concurrent pipeline (GPU LLM + NPU STT + CPU TTS) with real-time HUD.
+
+    Examples:
+        alveare live
+        alveare live --port 8080
 
 CHAT:
     alveare chat [--host H] [--port P] [--model NAME] [--no-stream]
@@ -183,13 +228,23 @@ EOF
 resolve_weights_dir() {
   local model="$1"
   case "$model" in
+    gemma4-e4b|e4b|gemma4-4b|4b)   echo "$ROOT/quantized_weights_gemma4-e4b" ;;
+    gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
     llama|llama-3.2-1b|llama3.2)   echo "$ROOT/quantized_weights_llama" ;;
     gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/quantized_weights_gemma3" ;;
-    gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/quantized_weights_gemma4" ;;
-    gemma4-e4b|e4b)                echo "$ROOT/quantized_weights_gemma4-e4b" ;;
-    whisper|whisper-base)          echo "$ROOT/quantized_weights_whisper-base" ;;
-    whisper-large-v3-turbo|whisper-turbo) echo "$ROOT/quantized_weights_whisper-large-v3-turbo" ;;
-    whisper-large|whisper-large-v3)       echo "$ROOT/quantized_weights_whisper-large-v3" ;;
+    whisper|whisper-large-v3-turbo|whisper-turbo|whisper-large) echo "$ROOT/quantized_weights_whisper-large-v3-turbo" ;;
+    whisper-base)                  echo "$ROOT/quantized_weights_whisper-base" ;;
+    whisper-large-v3)              echo "$ROOT/quantized_weights_whisper-large-v3" ;;
+    kokoro|kokoro-82m|tts)         echo "$ROOT/quantized_weights_kokoro-82m" ;;
+    audio8|audio8-0.1b)            echo "$ROOT/quantized_weights_audio8-0.1b" ;;
+    audio8-0.6b)                   echo "$ROOT/quantized_weights_audio8-0.6b" ;;
+    qwen|qwen3.8-27b|qwen-27b|qwen3.8|qwen2.5)
+      if [ -d "$ROOT/quantized_weights_qwen3.8-27b" ]; then
+        echo "$ROOT/quantized_weights_qwen3.8-27b"
+      else
+        echo "$ROOT/quantized_weights_qwen"
+      fi
+      ;;
     *)
       if [ -d "$model" ]; then
         echo "$model"
@@ -207,6 +262,7 @@ resolve_quantizer() {
     gemma3|gemma-3-1b|gemma3-1b)   echo "$ROOT/tools/quantize_gemma.py" ;;
     gemma4|gemma-4-12b|gemma4-12b) echo "$ROOT/tools/quantize_gemma4.py" ;;
     gemma4-e4b|e4b)                echo "$ROOT/tools/quantize_gemma4e.py" ;;
+    qwen|qwen3.8-27b|qwen-27b|qwen3.8|qwen2.5) echo "$ROOT/tools/quantize_qwen.py" ;;
     *)                             echo "" ;;
   esac
 }
@@ -299,11 +355,9 @@ cmd_serve() {
   done
 
   device="$(echo "$device" | tr '[:upper:]' '[:lower:]')"
-  if [ "$device" = "cpu" ]; then
-    if [ "$model" != "whisper" ] && [ "$model" != "whisper-base" ] && [[ "$model" != *"whisper"* ]] && [[ "$model" != *"audio8"* ]] && [[ "$model" != *"tts"* ]]; then
-      echo "error: CPU execution is not supported for model '$model'. Only NPU (XDNA2) is supported." >&2
-      exit 1
-    fi
+  if [ "$device" != "npu" ] && [ "$device" != "gpu" ] && [ "$device" != "cpu" ] && [ "$device" != "vulkan" ]; then
+    echo "error: unsupported device '$device'. Supported devices: npu, gpu, cpu." >&2
+    exit 1
   fi
 
   if [ "$offline" -eq 1 ]; then
@@ -343,6 +397,7 @@ cmd_serve() {
   fi
 
   echo "Serving model from: $weights_dir"
+  echo "Compute Device:     $device"
   echo "OpenAI-compatible endpoint: http://$host:$port/v1"
   echo "  GET  /v1/models"
   echo "  POST /v1/chat/completions"
@@ -355,7 +410,8 @@ cmd_serve() {
 
   if [ "$model" = "whisper" ] || [ "$model" = "whisper-base" ] || [[ "$model" == *"whisper"* ]]; then
     local dev_label="NPU (XDNA2 Native)"
-    [ "$device" = "cpu" ] && dev_label="CPU"
+    [ "$device" = "cpu" ] && dev_label="CPU (Multi-Threaded)"
+    [ "$device" = "gpu" ] && dev_label="GPU (AMD Radeon 890M)"
     echo "Starting Whisper Speech-to-Text Server on $dev_label..."
     echo "  WebSocket Live Stream: ws://$host:$port/ws/stt"
     echo "  OpenAI STT Endpoint:   http://$host:$port/v1/audio/transcriptions"
@@ -368,10 +424,11 @@ uvicorn.run(app, host='$host', port=$port, log_level='info')
 "
   fi
 
-  if [ "$model" = "audio8" ] || [[ "$model" == *"audio8"* ]] || [[ "$model" == *"tts"* ]]; then
-    local dev_label="NPU (XDNA2 Native)"
-    [ "$device" = "cpu" ] && dev_label="CPU"
-    echo "Starting Audio8 Text-to-Speech Server on $dev_label..."
+  if [ "$model" = "audio8" ] || [[ "$model" == *"audio8"* ]] || [[ "$model" == *"tts"* ]] || [[ "$model" == *"kokoro"* ]]; then
+    local dev_label="CPU (Multi-Threaded Zen 5)"
+    [ "$device" = "gpu" ] && dev_label="GPU (CUDA / Compute)"
+    [ "$device" = "npu" ] && dev_label="NPU (XDNA2 Native)"
+    echo "Starting Text-to-Speech Server ($model) on $dev_label..."
     echo "  OpenAI TTS Endpoint:   http://$host:$port/v1/audio/speech"
     echo "  Web UI Studio:         http://$host:$port"
     echo
@@ -390,10 +447,12 @@ uvicorn.run(app, host='$host', port=$port, log_level='info')
     echo "Starting Native C++ Server..."
     local alias
     alias="$(basename "$weights_dir")"; alias="${alias#quantized_weights_}"; alias="${alias#quantized_weights}"
-    [ -z "$alias" ] && alias="gemma3"
+    [ -z "$alias" ] && alias="gemma4"
 
     local manifest=""
-    if [ -f "$ROOT/kernels/build/$alias/manifest.json" ]; then
+    if [ "$device" = "cpu" ] || [ "$device" = "gpu" ] || [ "$device" = "vulkan" ]; then
+      manifest="none"
+    elif [ -f "$ROOT/kernels/build/$alias/manifest.json" ]; then
       manifest="$ROOT/kernels/build/$alias/manifest.json"
     elif [ -f "$ROOT/kernels/build_$alias/manifest.json" ]; then
       manifest="$ROOT/kernels/build_$alias/manifest.json"
@@ -406,8 +465,10 @@ uvicorn.run(app, host='$host', port=$port, log_level='info')
       exit 1
     fi
 
-    echo "Using NPU manifest: $manifest"
-    exec "$ROOT/runtime/cpp/build/alveare_runtime" "$weights_dir" "$manifest" "$port"
+    if [ "$manifest" != "none" ]; then
+      echo "Using NPU manifest: $manifest"
+    fi
+    exec "$ROOT/runtime/cpp/build/alveare_runtime" "$weights_dir" "$manifest" "$port" --device "$device"
   fi
 }
 
@@ -425,6 +486,32 @@ cmd_build_kernels() {
     exit 2
   fi
   local model="$1"; shift
+  local device="npu"
+  local remaining=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --device) device="$2"; shift 2 ;;
+      --device=*) device="${1#--device=}"; shift ;;
+      *) remaining+=("$1"); shift ;;
+    esac
+  done
+  device="$(echo "$device" | tr '[:upper:]' '[:lower:]')"
+
+  if [ "$device" = "gpu" ]; then
+    echo "Compiling GPU compute shaders (SPIR-V) for Vulkan 1.3/1.4..."
+    echo "Compiler: glslc / glslangValidator -> kernels/gpu/*.spv"
+    echo "----------------------------------------------------------------------"
+    exec "$PY" "$ROOT/tools/build_gpu_shaders.py"
+  elif [ "$device" = "cpu" ]; then
+    echo "Verifying and building native AVX-512 CPU runtime kernels..."
+    local build_dir="$ROOT/runtime/cpp/build"
+    if [ -d "$build_dir" ] && command -v cmake >/dev/null 2>&1; then
+      cmake --build "$build_dir" -j
+    fi
+    echo "✓ CPU AVX-512 vector engine verified and ready."
+    exit 0
+  fi
+
   local weights_dir
   weights_dir="$(resolve_weights_dir "$model")"
 
@@ -435,14 +522,14 @@ cmd_build_kernels() {
 
   local alias
   alias="$(basename "$weights_dir")"; alias="${alias#quantized_weights_}"; alias="${alias#quantized_weights}"
-  [ -z "$alias" ] && alias="gemma3"
+  [ -z "$alias" ] && alias="gemma4"
 
   local out_dir="$ROOT/kernels/build/$alias"
   mkdir -p "$out_dir"
-  echo "Building hardware kernels for $weights_dir -> $out_dir"
+  echo "Building hardware NPU kernels for $weights_dir -> $out_dir"
   echo "NOTE: This interrogates the XDNA2 compiler and can take a long time."
   echo "----------------------------------------------------------------------"
-  exec "$PY" "$ROOT/tools/build_kernels.py" --weights-dir "$weights_dir" --out "$out_dir" "$@"
+  exec "$PY" "$ROOT/tools/build_kernels.py" --weights-dir "$weights_dir" --out "$out_dir" "${remaining[@]}"
 }
 
 cmd_quantize() {
@@ -539,21 +626,55 @@ cmd_bench() {
   exec "$PY" "$ROOT/tests/bench/run_bench.py" "$weights_dir"
 }
 
+cmd_certs() {
+  echo "Ensuring local SSL/TLS certificates for Alveare..."
+  "$PY" -c "
+from runtime.py.control_server import ensure_ssl_certs
+cert, key = ensure_ssl_certs()
+print('✓ SSL Certificates ready:')
+print(f'  Certificate: {cert}')
+print(f'  Private Key: {key}')
+"
+}
+
 cmd_start() {
-  local port="${ALVEARE_CONTROL_PORT:-8080}"
-  local host="${ALVEARE_CONTROL_HOST:-127.0.0.1}"
+  local port=""
+  local port_explicit=0
+  local host="${ALVEARE_CONTROL_HOST:-0.0.0.0}"
   local no_browser=0
   local dev=0
+  local ssl=0
+  local ssl_port="${ALVEARE_SSL_PORT:-8443}"
+  local ssl_cert="${ALVEARE_SSL_CERT:-}"
+  local ssl_key="${ALVEARE_SSL_KEY:-}"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --port) port="$2"; shift 2 ;;
+      --port) port="$2"; port_explicit=1; shift 2 ;;
       --host) host="$2"; shift 2 ;;
+      --ssl) ssl=1; shift 1 ;;
+      --ssl-port) ssl_port="$2"; ssl=1; shift 2 ;;
+      --ssl-cert) ssl_cert="$2"; ssl=1; shift 2 ;;
+      --ssl-key) ssl_key="$2"; ssl=1; shift 2 ;;
       --no-browser) no_browser=1; shift 1 ;;
       --dev) dev=1; shift 1 ;;
       *) echo "error: unknown start option '$1'" >&2; exit 2 ;;
     esac
   done
+
+  if [ "$ssl" -eq 1 ]; then
+    if [ "$port_explicit" -eq 0 ]; then
+      port="$ssl_port"
+    fi
+    local proto="https"
+    echo "[start] Ensuring SSL certificates for HTTPS mode..."
+    "$PY" -c "from runtime.py.control_server import ensure_ssl_certs; ensure_ssl_certs('${ssl_cert}', '${ssl_key}')"
+  else
+    if [ "$port_explicit" -eq 0 ]; then
+      port="${ALVEARE_CONTROL_PORT:-8080}"
+    fi
+    local proto="http"
+  fi
 
   if [ ! -d "$ROOT/frontend/dist" ] || [ "$dev" -eq 1 ]; then
     if [ ! -d "$ROOT/frontend/node_modules" ]; then
@@ -570,19 +691,68 @@ cmd_start() {
   fi
 
   echo "=========================================================="
-  echo " Alveare NPU Control Center & Web UI"
-  echo " Web UI URL:  http://$host:$port"
+  echo " Alveare Control Center & Web UI"
+  local open_host="$host"
+  [ "$open_host" = "0.0.0.0" ] && open_host="localhost"
+  echo " Web UI URL:  ${proto}://$open_host:$port"
+  local lan_ip
+  lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  if [ -n "$lan_ip" ] && [ "$lan_ip" != "127.0.0.1" ]; then
+    echo " Network URL: ${proto}://$lan_ip:$port"
+  fi
+  if [ "$ssl" -eq 1 ]; then
+    echo " SSL Mode:    Enabled (Port $port)"
+    echo " Mobile Note: Open ${proto}://$lan_ip:$port on mobile"
+    echo "              and accept the self-signed certificate warning."
+  fi
   echo "=========================================================="
   echo
 
   export ALVEARE_CONTROL_HOST="$host"
   export ALVEARE_CONTROL_PORT="$port"
-
-  if [ "$no_browser" -eq 0 ] && command -v xdg-open >/dev/null 2>&1; then
-    (sleep 1 && xdg-open "http://$host:$port" >/dev/null 2>&1 &) || true
+  if [ "$ssl" -eq 1 ]; then
+    export ALVEARE_SSL="1"
+    [ -n "$ssl_cert" ] && export ALVEARE_SSL_CERT="$ssl_cert"
+    [ -n "$ssl_key" ] && export ALVEARE_SSL_KEY="$ssl_key"
+    export ALVEARE_SSL_PORT="$ssl_port"
   fi
 
-  exec "$PY" "$ROOT/runtime/py/control_server.py"
+  if [ "$no_browser" -eq 0 ] && command -v xdg-open >/dev/null 2>&1; then
+    (sleep 1 && xdg-open "${proto}://$open_host:$port" >/dev/null 2>&1 &) || true
+  fi
+
+  local server_args=("--host" "$host" "--port" "$port")
+  if [ "$ssl" -eq 1 ]; then
+    server_args+=("--ssl")
+    [ -n "$ssl_cert" ] && server_args+=("--ssl-cert" "$ssl_cert")
+    [ -n "$ssl_key" ] && server_args+=("--ssl-key" "$ssl_key")
+  else
+    server_args+=("--no-ssl")
+  fi
+
+  exec "$PY" "$ROOT/runtime/py/control_server.py" "${server_args[@]}"
+}
+
+cmd_live() {
+  local host="${ALVEARE_HOST:-127.0.0.1}"
+  local port="${ALVEARE_PORT:-8080}"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --host) host="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      -h|--help)
+        echo "alveare live — start full-duplex voice-to-voice live session"
+        echo "Usage: alveare live [--host <addr>] [--port <port>]"
+        exit 0
+        ;;
+      *) echo "error: unknown live option '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  export ALVEARE_HOST="$host"
+  export ALVEARE_PORT="$port"
+  exec "$PY" "$ROOT/runtime/py/live_cli.py"
 }
 
 main() {
@@ -591,7 +761,7 @@ main() {
   # alveare-aie env (see ensure_runtime_env). 'install'/'setup'/'help' must NOT —
   # install creates the env, setup diagnoses it, help needs nothing.
   case "$cmd" in
-    serve|check|build-kernels|quantize|bench|test|chat|list|models|start|setup)
+    serve|check|build-kernels|quantize|bench|test|chat|list|models|start|setup|live|certs)
       ensure_runtime_env "$@" ;;
   esac
   [ "$#" -gt 0 ] && shift || true
@@ -604,6 +774,8 @@ main() {
     list|models)  cmd_list "$@" ;;
     serve)        cmd_serve "$@" ;;
     start)        cmd_start "$@" ;;
+    certs)        cmd_certs "$@" ;;
+    live)         cmd_live "$@" ;;
     chat)         cmd_chat "$@" ;;
     test)         cmd_test "$@" ;;
     bench)        cmd_bench "$@" ;;

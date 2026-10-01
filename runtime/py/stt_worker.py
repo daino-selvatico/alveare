@@ -35,6 +35,17 @@ def init_npu_lib():
         return None
     try:
         lib = ctypes.CDLL(str(LIB_PATH))
+        lib.alveare_device_create.restype = ctypes.c_void_p
+        lib.alveare_device_create.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        lib.alveare_device_free.argtypes = [ctypes.c_void_p]
+        lib.alveare_device_create_gemv_weight.restype = ctypes.c_uint32
+        lib.alveare_device_create_gemv_weight.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+        lib.alveare_device_run_gemv.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
+        lib.alveare_device_run_gemv_seq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        lib.alveare_device_has_shape.restype = ctypes.c_int
+        lib.alveare_device_has_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        
+        # Legacy NPU bindings fallback
         lib.alveare_npu_create_registry.restype = ctypes.c_void_p
         lib.alveare_npu_create_registry.argtypes = [ctypes.c_char_p]
         lib.alveare_npu_free_registry.argtypes = [ctypes.c_void_p]
@@ -46,16 +57,24 @@ def init_npu_lib():
         lib.alveare_npu_has_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         return lib
     except Exception as e:
-        sys.stderr.write(f"[WhisperSTT] NPU lib load failed: {e}\n")
+        sys.stderr.write(f"[WhisperSTT] Hardware accel lib load failed: {e}\n")
         return None
 
 def main():
     model_id = "openai/whisper-base"
-    device = "npu"
+    device = "cpu"
     if len(sys.argv) > 1 and sys.argv[1]:
         model_id = sys.argv[1]
     if len(sys.argv) > 2 and sys.argv[2]:
         device = sys.argv[2].lower()
+
+    # Normalize aliases
+    if model_id in ("whisper-base", "openai/whisper-base"):
+        model_id = "openai/whisper-base"
+    elif model_id in ("whisper-large-v3-turbo", "openai/whisper-large-v3-turbo"):
+        model_id = "openai/whisper-large-v3-turbo"
+    elif model_id in ("whisper-large-v3", "openai/whisper-large-v3"):
+        model_id = "openai/whisper-large-v3"
 
     # Save real IPC stdout descriptor and redirect sys.stdout to sys.stderr during model load
     ipc_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)
@@ -69,19 +88,19 @@ def main():
         import torchaudio
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
         
-        torch.set_num_threads(8)
+        torch.set_num_threads(16)
         
         processor = AutoProcessor.from_pretrained(model_id)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, torch_dtype=torch.float32, low_cpu_mem_usage=True)
         model.eval()
 
-        if device == "npu":
+        if device in ("npu", "gpu"):
             npu_lib = init_npu_lib()
             manifest_path = ROOT_DIR / "kernels" / "build" / "manifest.json"
             if not manifest_path.exists():
                 manifest_path = ROOT_DIR / "kernels" / "build" / "whisper-base" / "manifest.json"
-            if npu_lib and manifest_path.exists():
-                reg = npu_lib.alveare_npu_create_registry(str(manifest_path).encode("utf-8"))
+            if npu_lib:
+                reg = npu_lib.alveare_device_create(device.encode("utf-8"), str(manifest_path).encode("utf-8") if manifest_path.exists() else None)
                 if reg:
                     class FusedQKVNPU(nn.Module):
                         def __init__(self, q_proj: nn.Linear, k_proj: nn.Linear, v_proj: nn.Linear):
@@ -191,7 +210,7 @@ def main():
                             layer.fc2 = NPULinear(layer.fc2)
                             converted_count += 1
 
-                    sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} decoder layers to AMD Ryzen AI NPU hardware (XDNA2)!\n")
+                    sys.stderr.write(f"[WhisperSTT] Successfully offloaded {converted_count} decoder layers to {device.upper()} hardware acceleration!\n")
     else:
         from funasr import AutoModel
         target_device = "cpu" if device in ("cpu", "npu") else device
@@ -208,12 +227,14 @@ def main():
         try:
             req = json.loads(line)
             audio_target = req.get("input")
-            language = req.get("language", "auto")
+            language = req.get("language", "it")
+            if not language or language in ("auto", "unknown"):
+                language = "it"
             use_itn = req.get("use_itn", True)
             
             t0 = time.perf_counter()
             raw_text = ""
-            detected_lang = "it"
+            detected_lang = language
 
             if is_whisper:
                 import torch
@@ -225,21 +246,45 @@ def main():
                     speech = torchaudio.functional.resample(speech, sr, 16000)
                 speech_np = speech.squeeze(0).numpy()
 
-                if len(speech_np) >= 1200: # at least 75ms
-                    inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
-                    gen_kwargs = {
-                        "max_new_tokens": 128,
-                        "return_dict_in_generate": True,
-                        "output_scores": False,
+                rms = float(np.sqrt(np.mean(speech_np ** 2)))
+                peak = float(np.max(np.abs(speech_np))) if len(speech_np) > 0 else 0.0
+
+                # Filter audio that is too quiet / ambient noise floor
+                if len(speech_np) >= 1200 and rms >= 0.005 and peak >= 0.015:
+                    if len(speech_np) < 480000:
+                        # Fast log-mel extraction (< 30s): calculate features only on actual frames (<200ms latency)
+                        raw_features = processor.feature_extractor(
+                            speech_np, sampling_rate=16000, padding=False, return_tensors="pt"
+                        ).input_features
+                        cur_frames = raw_features.shape[-1]
+                        if cur_frames < 3000:
+                            input_features = torch.nn.functional.pad(raw_features, (0, 3000 - cur_frames))
+                        else:
+                            input_features = raw_features[:, :, :3000]
+                    else:
+                        inputs = processor(speech_np, sampling_rate=16000, return_tensors="pt")
+                        input_features = inputs.input_features
+
+                    is_long_form = input_features.shape[-1] > 3000
+                    lang = language if language and language not in ("auto", "unknown", "") else "it"
+                    model_kwargs = {
+                        "max_new_tokens": 440,
+                        "language": lang,
+                        "task": "transcribe",
                         "do_sample": False,
-                        "num_beams": 1
+                        "num_beams": 1,
+                        "temperature": 0.0,
+                        "return_dict_in_generate": True,
+                        "output_scores": False
                     }
-                    if language and language not in ("auto", "unknown", ""):
-                        gen_kwargs["language"] = language
-                        gen_kwargs["task"] = "transcribe"
+                    if is_long_form:
+                        model_kwargs["return_timestamps"] = True
 
                     with torch.no_grad():
-                        gen_out = model.generate(inputs.input_features, **gen_kwargs)
+                        try:
+                            gen_out = model.generate(input_features, condition_on_previous_text=False, **model_kwargs)
+                        except (TypeError, ValueError):
+                            gen_out = model.generate(input_features, **model_kwargs)
                     
                     # Extract detected language token if auto-detected
                     if language in ("auto", "unknown", "") and hasattr(gen_out, "sequences") and gen_out.sequences.shape[1] > 1:
@@ -255,7 +300,7 @@ def main():
                 res = model.generate(
                     input=audio_target,
                     cache={},
-                    language=language if language != "auto" else "auto",
+                    language=language if language != "auto" else "it",
                     use_itn=use_itn
                 )
                 if res and isinstance(res, list) and len(res) > 0:

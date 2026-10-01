@@ -131,7 +131,7 @@ static std::vector<uint8_t> pack_ffn_fused_weights(
     return fused;
 }
 
-ModelWeights load_weights(const std::string& dir, const ModelConfig& config, NpuRegistry& reg) {
+ModelWeights load_weights(const std::string& dir, const ModelConfig& config, ComputeDevice& reg) {
     ModelWeights mw;
     mw.token_embd = load_float_npy(dir + "/token_embd.npy");
     mw.output_norm = load_float_npy(dir + "/output_norm.weight.npy");
@@ -222,6 +222,11 @@ ModelWeights load_weights(const std::string& dir, const ModelConfig& config, Npu
             l_N_kv = 2048;
             l_N_out = 2048;
             K_attn_padded = 2048;
+        } else if (config.is_qwen()) {
+            l_N_q = ((N_q + 2047) / 2048) * 2048;
+            l_N_kv = ((N_kv + 2047) / 2048) * 2048;
+            l_N_out = config.get_padded_hidden_size();
+            K_attn_padded = config.get_padded_hidden_size();
         }
 
         std::string act_type = (config.model_type == "gemma3" || config.is_gemma4()) ? "gelu" : "silu";

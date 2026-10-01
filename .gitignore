@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+**/build*/
 *.xclbin
 *.o
 *.elf
@@ -8,6 +9,7 @@ build/
 # Python
 __pycache__/
 *.pyc
+*.log
 .venv/
 venv/
 *.egg-info/
@@ -42,3 +44,9 @@ tests/bench/*.raw
 .claude
 .alveare_config.json
 scratch/
+AGY*.txt
+
+# Local SSL certificates
+certs/
+*.pem
+

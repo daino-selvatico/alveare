@@ -17,15 +17,19 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
 def find_torch_python() -> Optional[str]:
-    """Find a Python interpreter that has torch and transformers installed."""
+    """Find a Python interpreter that has torch, transformers, and soundfile installed."""
     clean_env = os.environ.copy()
     clean_env.pop("PYTHONPATH", None)
 
     candidates = [
+        Path(os.path.expanduser("~/miniconda3/envs/comfyui/bin/python")),
         Path(os.path.expanduser("~/miniconda3/envs/gemma4-ref/bin/python")),
         Path(os.path.expanduser("~/progetti/voice-studio/.venv/bin/python")),
         Path(os.path.expanduser("~/miniconda3/envs/alveare-aie/bin/python")),
-        Path(sys.executable),
+        Path(os.path.expanduser("~/anaconda3/envs/comfyui/bin/python")),
+        Path(os.path.expanduser("~/anaconda3/envs/gemma4-ref/bin/python")),
+        Path("/opt/conda/envs/comfyui/bin/python"),
+        Path("/opt/conda/envs/gemma4-ref/bin/python"),
     ]
     for cand in candidates:
         if cand.exists():
@@ -41,6 +45,21 @@ def find_torch_python() -> Optional[str]:
                     return str(cand)
             except Exception:
                 pass
+
+    # Robust fallback: check if sys.executable has required dependencies
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c", "import torch, transformers, soundfile; print('ok')"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=clean_env
+        )
+        if res.returncode == 0 and "ok" in res.stdout:
+            return sys.executable
+    except Exception:
+        pass
+
     return None
 
 VOICE_PRESETS = {
@@ -153,24 +172,27 @@ class Audio8TTS:
         self.device = device or "npu"
         self._external_py = None
 
+    _instance_lock = threading.Lock()
+
     @classmethod
     def get_instance(cls, model_id: str = "Audio8/Audio8-TTS-Preview-0.1b", device: str = "npu"):
-        dev = device or "npu"
-        if model_id in ("audio8-0.1b", "audio8-100m", "0.1b"):
-            norm_model = "Audio8/Audio8-TTS-Preview-0.1b"
-        elif model_id in ("audio8-0.6b", "audio8-600m", "0.6b"):
-            norm_model = "Audio8/Audio8-TTS-Preview-0.6b"
-        else:
-            norm_model = model_id
+        with cls._instance_lock:
+            dev = (device or "npu").lower()
+            if model_id in ("audio8-0.1b", "audio8-100m", "0.1b"):
+                norm_model = "Audio8/Audio8-TTS-Preview-0.1b"
+            elif model_id in ("audio8-0.6b", "audio8-600m", "0.6b"):
+                norm_model = "Audio8/Audio8-TTS-Preview-0.6b"
+            else:
+                norm_model = model_id
 
-        if cls._instance is None or cls._instance.model_id != norm_model or cls._instance.device != dev:
-            if cls._instance and cls._instance._worker_proc:
-                try:
-                    cls._instance._worker_proc.terminate()
-                except Exception:
-                    pass
-            cls._instance = cls(model_id=norm_model, device=dev)
-        return cls._instance
+            if cls._instance is None or cls._instance.model_id != norm_model or cls._instance.device != dev:
+                if cls._instance and cls._instance._worker_proc:
+                    try:
+                        cls._instance._worker_proc.terminate()
+                    except Exception:
+                        pass
+                cls._instance = cls(model_id=norm_model, device=dev)
+            return cls._instance
 
     def _ensure_loaded(self):
         if self._worker_proc is not None and self._worker_proc.poll() is None:
@@ -183,7 +205,12 @@ class Audio8TTS:
         self._loading = True
         try:
             print(f"[Audio8TTS] Initializing {self.model_id} on {self.device}...")
-            ext_py = find_torch_python() or sys.executable
+            ext_py = find_torch_python()
+            if not ext_py:
+                raise RuntimeError(
+                    "Python environment with PyTorch, Transformers, and SoundFile not found for TTS worker. "
+                    "Please ensure ~/miniconda3/envs/comfyui or ~/miniconda3/envs/gemma4-ref is available."
+                )
             self._external_py = ext_py
             worker_script = str(Path(__file__).resolve().parent / "tts_worker.py")
             clean_env = os.environ.copy()
@@ -197,7 +224,8 @@ class Audio8TTS:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                env=clean_env
+                env=clean_env,
+                start_new_session=True
             )
             # Wait for worker to load weights and output READY
             ready_line = proc.stdout.readline().strip()
@@ -458,3 +486,60 @@ class Audio8TTS:
                 wav_bytes = f.read()
             return wav_bytes, res
         raise RuntimeError(res.get("error", "TTS synthesis failed"))
+
+    # High-level standard API aliases
+    def synthesize(self, text: str, **kwargs) -> Dict[str, Any]:
+        """Alias to generate() for standard TTS synthesis API."""
+        return self.generate(text, **kwargs)
+
+    def synthesize_stream(self, text: str, **kwargs):
+        """Alias to generate_stream() for streaming synthesis API."""
+        return self.generate_stream(text, **kwargs)
+
+    def synthesize_chunk(self, text: str, **kwargs) -> tuple[bytes, Dict[str, Any]]:
+        """Alias to generate_chunk() for clause-based synthesis."""
+        return self.generate_chunk(text, **kwargs)
+
+    def synthesize_bytes(self, text: str, **kwargs) -> tuple[bytes, Dict[str, Any]]:
+        """Alias to generate_bytes() for raw WAV binary output."""
+        return self.generate_bytes(text, **kwargs)
+
+    @property
+    def is_loaded(self) -> bool:
+        """Checks if the persistent worker process is running and alive."""
+        return self._worker_proc is not None and self._worker_proc.poll() is None
+
+    def shutdown(self):
+        """Gracefully terminates the persistent Audio8 TTS worker process."""
+        with self._worker_lock:
+            if self._worker_proc is not None:
+                try:
+                    if self._worker_proc.poll() is None:
+                        self._worker_proc.terminate()
+                        self._worker_proc.wait(timeout=1.0)
+                except Exception:
+                    try:
+                        self._worker_proc.kill()
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        if self._worker_proc.stdin:
+                            self._worker_proc.stdin.close()
+                    except Exception:
+                        pass
+                    try:
+                        if self._worker_proc.stdout:
+                            self._worker_proc.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        if self._worker_proc.stderr:
+                            self._worker_proc.stderr.close()
+                    except Exception:
+                        pass
+                    self._worker_proc = None
+
+    def stop(self):
+        """Alias to shutdown()."""
+        self.shutdown()

@@ -1,0 +1,1154 @@
+"""
+Alveare 3.0 Live Voice-to-Voice Orchestrator.
+
+Full-duplex real-time conversational engine:
+- Continuous audio streaming & Voice Activity Detection (VAD)
+- Sub-second turn-around latency
+- User barge-in interruption detection
+- Streaming LLM token generation with sentence chunking
+- Parallel TTS audio chunk synthesis & streaming playback
+- Tri-hardware routing (e.g. LLM on GPU, STT on NPU, TTS on CPU)
+"""
+import os
+import sys
+import io
+import time
+import json
+import uuid
+import re
+import base64
+import asyncio
+import numpy as np
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Callable, Awaitable
+import soundfile as sf
+import httpx
+
+from runtime.py.whisper_stt import WhisperSTT
+from runtime.py.tts_factory import get_tts_engine, is_kokoro_model, split_into_chunks
+from runtime.py.kokoro_tts import KokoroTTS
+from runtime.py.audio8_tts import Audio8TTS
+
+class LiveTurnMetrics:
+    def __init__(self):
+        self.speech_start: float = 0.0
+        self.speech_end: float = 0.0
+        self.stt_start: float = 0.0
+        self.stt_latency_ms: float = 0.0
+        self.llm_start: float = 0.0
+        self.ttft_ms: float = 0.0  # Time to First Token
+        self.ttfa_ms: float = 0.0  # Time to First Audio chunk
+        self.tts_total_ms: float = 0.0
+        self.e2e_latency_ms: float = 0.0
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "stt_latency_ms": round(self.stt_latency_ms, 1),
+            "ttft_ms": round(self.ttft_ms, 1),
+            "ttfa_ms": round(self.ttfa_ms, 1),
+            "tts_total_ms": round(self.tts_total_ms, 1),
+            "e2e_latency_ms": round(self.e2e_latency_ms, 1),
+        }
+
+class StreamingThoughtFilter:
+    """
+    Real-time streaming filter that detects and removes reasoning/thought blocks
+    such as <thought>...</thought>, <think>...</think>, and channel tokens
+    before tokens reach UI or TTS.
+    """
+    def __init__(self):
+        self.in_thought = False
+        self.tag_buffer = ""
+        self.open_tag_pattern = re.compile(
+            r'<thought\b[^>]*>|<think\b[^>]*>|<\|thought\|>|<\|channel\|>thought|<\|channel>thought',
+            re.IGNORECASE
+        )
+        self.close_tag_pattern = re.compile(
+            r'</thought>|</think>|<\|/thought\|>|<channel\|>|<\|channel\|>',
+            re.IGNORECASE
+        )
+
+    def filter(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+
+        text = self.tag_buffer + chunk
+        self.tag_buffer = ""
+        out = []
+
+        while text:
+            if self.in_thought:
+                m_close = self.close_tag_pattern.search(text)
+                if m_close:
+                    self.in_thought = False
+                    text = text[m_close.end():]
+                else:
+                    partial = re.search(r'</?[a-zA-Z0-9_|]*$', text)
+                    if partial and len(partial.group(0)) < 15:
+                        self.tag_buffer = partial.group(0)
+                        text = text[:partial.start()]
+                    break
+            else:
+                m_open = self.open_tag_pattern.search(text)
+                if m_open:
+                    out.append(text[:m_open.start()])
+                    self.in_thought = True
+                    text = text[m_open.end():]
+                else:
+                    partial = re.search(r'<[a-zA-Z0-9_|]*$', text)
+                    if partial and len(partial.group(0)) < 20:
+                        out.append(text[:partial.start()])
+                        self.tag_buffer = partial.group(0)
+                        break
+                    else:
+                        out.append(text)
+                        break
+
+        filtered = "".join(out)
+        filtered = self.open_tag_pattern.sub("", filtered)
+        filtered = self.close_tag_pattern.sub("", filtered)
+        return filtered
+
+    def flush(self) -> str:
+        if not self.in_thought and self.tag_buffer:
+            res = self.tag_buffer
+            self.tag_buffer = ""
+            return res
+        self.tag_buffer = ""
+        return ""
+
+class LiveSession:
+    """
+    Manages a single full-duplex live session.
+    """
+    def __init__(
+        self,
+        session_id: str,
+        send_event_fn: Callable[[Dict[str, Any]], Awaitable[None]],
+        llm_host: str = "127.0.0.1",
+        llm_port: int = 8000,
+        llm_model: str = "gemma4-e4b",
+        stt_device: str = "cpu",
+        tts_device: str = "cpu",
+        stt_model: str = "openai/whisper-large-v3-turbo",
+        tts_model: str = "hexgrad/Kokoro-82M",
+        voice: str = "if_sara",
+        language: str = "it",
+        system_prompt: Optional[str] = None,
+        max_context_turns: int = 4,
+        max_tokens: int = 120,
+        temperature: float = 0.5,
+        speed: float = 1.0,
+        enable_thinking: bool = False,
+        tts_mode: str = "server"
+    ):
+        is_kokoro = tts_model and is_kokoro_model(tts_model)
+        if is_kokoro:
+            if not tts_device or tts_device == "npu":
+                tts_device = "cpu"
+            if voice in ("valeria", "female_expressive", "default"):
+                voice = "if_sara"
+
+        self.session_id = session_id
+        self.send_event = send_event_fn
+        self.llm_host = llm_host
+        self.llm_port = llm_port
+        self.llm_model = llm_model
+        self.stt_device = stt_device
+        self.tts_device = tts_device
+        self.stt_model = stt_model
+        self.tts_model = tts_model
+        self.voice = voice
+        self.language = language or "it"
+
+        # Wire-compatible output metadata
+        self.input_sample_rate = 16000
+        self.sample_rate = 16000  # Legacy client compatibility
+        self.output_sample_rate = 24000 if is_kokoro else 44100
+        self.audio_format = "wav"
+        self.tts_mode = tts_mode if tts_mode in ("server", "client") else "server"
+
+        # Tunable Generation & History Parameters (clamped to sensible ranges)
+        try:
+            self.max_context_turns = max(1, min(50, int(max_context_turns))) if max_context_turns is not None else 4
+        except (ValueError, TypeError):
+            self.max_context_turns = 4
+        try:
+            self.max_tokens = max(20, min(2048, int(max_tokens))) if max_tokens is not None else 120
+        except (ValueError, TypeError):
+            self.max_tokens = 120
+        try:
+            self.temperature = max(0.0, min(2.0, float(temperature))) if temperature is not None else 0.5
+        except (ValueError, TypeError):
+            self.temperature = 0.5
+        try:
+            self.speed = max(0.5, min(2.0, float(speed))) if speed is not None else 1.0
+        except (ValueError, TypeError):
+            self.speed = 1.0
+        self.enable_thinking = bool(enable_thinking)
+
+        # VAD Parameters
+        self.bytes_per_sample = 2  # 16-bit mono PCM
+        self.speech_energy_threshold = 0.015  # Base RMS threshold
+        self.noise_floor = 0.005  # Adaptive ambient noise floor estimate
+        self.min_speech_duration_s = 0.25
+        self.min_silence_duration_s = 0.85
+        self.max_turn_duration_s = 15.0
+        self.vad_consecutive_speech_frames = 0
+        self.min_speech_frames_onset = 2  # Require consecutive speech frames to avoid pop/click barge-in
+        self.min_bargein_frames_onset = 15  # Require ~300ms of sustained loud speech for intentional barge-in
+        self.bargein_consecutive_frames = 0
+
+        # State
+        self.turn_id: int = 0
+        self.is_ai_speaking: bool = False
+        self.ai_speaking_start_time: float = 0.0
+        self.audio_buffer: bytearray = bytearray()
+        self.speech_buffer: bytearray = bytearray()
+        self.in_speech: bool = False
+        self.silence_samples_count: int = 0
+        self.speech_samples_count: int = 0
+        self.speech_start_time: float = 0.0
+        self._closed: bool = False
+        self._onset_buffer: List[bytes] = []
+        self._pcm_remainder: bytes = b""
+
+        # Client / satellite metadata
+        self.client_id: Optional[str] = None
+        self.room: Optional[str] = None
+        self.client_mode: Optional[str] = None
+        self.device_name: Optional[str] = None
+
+        from runtime.py.tool_engine import get_tool_engine
+        self.tool_engine = get_tool_engine()
+        tools_prompt = self.tool_engine.get_tools_system_prompt()
+
+        default_prompt = (
+            "Sei Alveare Live, assistente vocale e smart home ultra-rapido. Rispondi SEMPRE in modo brevissimo, diretto e conciso (massimo 1-2 frasi brevi, senza preamboli, senza elenchi). Parla in italiano naturale."
+        )
+        base_prompt = system_prompt or default_prompt
+        self.system_prompt = f"{base_prompt}\n{tools_prompt}"
+        self.history: List[Dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt}
+        ]
+
+        # Active background processing task and TTS pipeline for current turn
+        self.current_processing_task: Optional[asyncio.Task] = None
+        self.current_tts_task: Optional[asyncio.Task] = None
+        self.current_tts_queue: Optional[asyncio.Queue] = None
+
+        # Workers
+        self.stt: Optional[WhisperSTT] = None
+        self.tts: Optional[Any] = None
+
+    def _prune_history(self):
+        """Strictly bounds conversation history to max_context_turns, preserving system prompt."""
+        if not self.history:
+            self.history = [{"role": "system", "content": self.system_prompt}]
+            return
+
+        system_msgs = [m for m in self.history if m.get("role") == "system"]
+        sys_msg = system_msgs[0] if system_msgs else {"role": "system", "content": self.system_prompt}
+
+        conversation_msgs = [m for m in self.history if m.get("role") != "system"]
+        max_msgs = max(2, self.max_context_turns * 2)
+
+        if len(conversation_msgs) > max_msgs:
+            conversation_msgs = conversation_msgs[-max_msgs:]
+
+        self.history = [sys_msg] + conversation_msgs
+
+    def clear_memory(self) -> Dict[str, Any]:
+        """Wipes all conversation memory, cancels in-flight work, and preserves monotonic turn ID."""
+        # Monotonically advance turn identity to invalidate in-flight generation/workers
+        self.turn_id += 1
+        if self.current_processing_task and not self.current_processing_task.done():
+            self.current_processing_task.cancel()
+            self.current_processing_task = None
+        if self.current_tts_task and not self.current_tts_task.done():
+            self.current_tts_task.cancel()
+            self.current_tts_task = None
+        self.current_tts_queue = None
+
+        self.history = [
+            {"role": "system", "content": self.system_prompt}
+        ]
+        self.is_ai_speaking = False
+        self.audio_buffer.clear()
+        self.speech_buffer.clear()
+        self._onset_buffer.clear()
+        self._pcm_remainder = b""
+        self.in_speech = False
+        self.silence_samples_count = 0
+        self.speech_samples_count = 0
+        self.vad_consecutive_speech_frames = 0
+        return {
+            "status": "ok",
+            "message": "Memoria conversazione azzerata.",
+            "turns_remaining": 0
+        }
+
+    def close(self):
+        """Closes the session, aborting all active background tasks and releasing queues."""
+        self._closed = True
+        self.turn_id += 1
+        if self.current_processing_task and not self.current_processing_task.done():
+            self.current_processing_task.cancel()
+            self.current_processing_task = None
+        if self.current_tts_task and not self.current_tts_task.done():
+            self.current_tts_task.cancel()
+            self.current_tts_task = None
+        self.current_tts_queue = None
+        self.is_ai_speaking = False
+        self.audio_buffer.clear()
+        self.speech_buffer.clear()
+        self._onset_buffer.clear()
+        self._pcm_remainder = b""
+
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """Returns stats about current session memory."""
+        user_turns = sum(1 for m in self.history if m.get("role") == "user")
+        assistant_turns = sum(1 for m in self.history if m.get("role") == "assistant")
+        return {
+            "total_messages": len(self.history),
+            "user_turns": user_turns,
+            "assistant_turns": assistant_turns,
+            "max_context_turns": self.max_context_turns,
+            "session_id": self.session_id
+        }
+
+    async def _execute_tool_and_notify(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        turn_id: int
+    ) -> str:
+        """Executes tool in background, sends tool_call_start and tool_call_done WebSocket events, appends to history, returns summary."""
+        if self._closed or (turn_id is not None and turn_id < self.turn_id):
+            return ""
+
+        query = args.get("query", "")
+        cmd = args.get("command", "")
+
+        # 1. tool_call_start event
+        await self.send_event({
+            "event": "tool_call_start",
+            "tool": tool_name,
+            "query": query,
+            "command": cmd,
+            "tool_name": tool_name,
+            "tool_args": args,
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+        # Legacy event
+        await self.send_event({
+            "event": "tool_call",
+            "tool_name": tool_name,
+            "tool_args": args,
+            "turn_id": turn_id,
+            "status": "running",
+            "timestamp": time.time()
+        })
+
+        # 2. Tool execution in background thread
+        tool_res = await asyncio.to_thread(
+            self.tool_engine.execute_tool,
+            tool_name,
+            args
+        )
+
+        if self._closed or (turn_id is not None and turn_id < self.turn_id):
+            return ""
+
+        is_error = ("error" in tool_res and tool_res["error"]) or (tool_res.get("status") == "error")
+        status = "error" if is_error else "ok"
+        summary = tool_res.get("summary") or tool_res.get("stdout") or json.dumps(tool_res, ensure_ascii=False)
+        if is_error and not summary:
+            summary = tool_res.get("error", "Errore durante l'esecuzione del tool.")
+
+        # 3. tool_call_done event
+        await self.send_event({
+            "event": "tool_call_done",
+            "tool": tool_name,
+            "status": status,
+            "summary": summary,
+            "tool_name": tool_name,
+            "result_summary": summary,
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+        # Legacy event
+        await self.send_event({
+            "event": "tool_call_end",
+            "tool_name": tool_name,
+            "tool_args": args,
+            "status": "success" if not is_error else "error",
+            "result_summary": summary,
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+
+        if not self._closed and (turn_id is None or turn_id >= self.turn_id):
+            self.history.append({
+                "role": "assistant",
+                "content": f"[TOOL_CALL: {tool_name}({json.dumps(args, ensure_ascii=False)})]"
+            })
+            self.history.append({
+                "role": "user",
+                "content": f"Risultato strumento {tool_name}:\n{summary}\n\nRispondi ora all'utente in modo brevissimo, sintetico e naturale (1-2 frasi brevi al massimo) riportando il dato saliente per la voce."
+            })
+            self._prune_history()
+        return summary
+
+    def update_settings(self, settings: Dict[str, Any]):
+        """Dynamically updates live session settings without restarting the connection."""
+        if not settings or not isinstance(settings, dict):
+            return
+
+        if "max_context_turns" in settings:
+            try:
+                self.max_context_turns = max(1, min(50, int(settings["max_context_turns"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "max_tokens" in settings:
+            try:
+                self.max_tokens = max(20, min(2048, int(settings["max_tokens"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "temperature" in settings:
+            try:
+                self.temperature = max(0.0, min(2.0, float(settings["temperature"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "voice" in settings and settings["voice"]:
+            v = str(settings["voice"]).strip()
+            if self.tts_model and is_kokoro_model(self.tts_model):
+                if v in ("valeria", "female_expressive", "default"):
+                    v = "if_sara"
+            self.voice = v
+
+        if "speed" in settings:
+            try:
+                self.speed = max(0.5, min(2.0, float(settings["speed"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "system_prompt" in settings and settings["system_prompt"] is not None:
+            prompt_text = str(settings["system_prompt"]).strip()
+            if prompt_text:
+                tools_prompt = self.tool_engine.get_tools_system_prompt()
+                full_p = f"{prompt_text}\n{tools_prompt}"
+                self.system_prompt = full_p
+                if self.history and self.history[0].get("role") == "system":
+                    self.history[0]["content"] = full_p
+                else:
+                    self.history.insert(0, {"role": "system", "content": full_p})
+
+        if "min_silence_duration_s" in settings:
+            try:
+                self.min_silence_duration_s = max(0.15, min(2.0, float(settings["min_silence_duration_s"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "enable_thinking" in settings:
+            self.enable_thinking = bool(settings["enable_thinking"])
+
+        if "tts_mode" in settings and settings["tts_mode"]:
+            mode = str(settings["tts_mode"]).strip().lower()
+            if mode in ("server", "client"):
+                self.tts_mode = mode
+                if self.tts_mode == "server" and self.tts is None:
+                    self.initialize_workers()
+
+    def initialize_workers(self):
+        """Synchronously pre-warm or reference STT and TTS singleton instances on the current thread."""
+        if self.stt is None:
+            self.stt = WhisperSTT.get_instance(model_id=self.stt_model, device=self.stt_device)
+        if self.tts_mode == "server" and self.tts is None:
+            self.tts = get_tts_engine(model_id=self.tts_model, device=self.tts_device)
+
+    async def handle_audio_chunk(self, chunk: bytes):
+        """
+        Process incoming audio chunk (16-bit 16kHz PCM).
+        Performs real-time VAD, barge-in interruption detection, and turn triggering.
+        """
+        if not chunk or self._closed:
+            return
+
+        # Prepend leftover odd byte from previous chunk if present
+        if self._pcm_remainder:
+            chunk = self._pcm_remainder + chunk
+            self._pcm_remainder = b""
+
+        # Handle odd byte count safely (16-bit linear PCM requires even number of bytes)
+        if len(chunk) % 2 != 0:
+            self._pcm_remainder = chunk[-1:]
+            chunk = chunk[:-1]
+        if not chunk:
+            return
+
+        # Process oversized chunk (>64000 bytes = 2s) in sequential slices without dropping data
+        MAX_CHUNK_BYTES = 64000
+        if len(chunk) > MAX_CHUNK_BYTES:
+            for offset in range(0, len(chunk), MAX_CHUNK_BYTES):
+                sub = chunk[offset:offset + MAX_CHUNK_BYTES]
+                if sub:
+                    await self.handle_audio_chunk(sub)
+            return
+
+        # Convert int16 PCM to float32 numpy array for RMS energy calculation
+        try:
+            samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+        except Exception:
+            return
+
+        if len(samples) == 0:
+            return
+
+        rms = float(np.sqrt(np.mean(samples ** 2)))
+
+        # Adaptive threshold calibration based on background ambient noise
+        # Resilient to sudden loud spikes: only adapt if below ambient ceiling (0.04) and clamp
+        if not self.in_speech:
+            if rms < 0.04:
+                self.noise_floor = min(0.03, max(0.001, 0.95 * self.noise_floor + 0.05 * rms))
+
+        effective_threshold = max(self.speech_energy_threshold, self.noise_floor * 2.2)
+        is_voice = rms > effective_threshold
+
+        if is_voice:
+            self.vad_consecutive_speech_frames += 1
+        else:
+            self.vad_consecutive_speech_frames = 0
+
+        # --- BARGE-IN INTERRUPTION HANDLING ---
+        # Require sustained speech frames and higher energy threshold while AI is speaking
+        # to prevent speaker acoustic feedback/echo leaks from self-interrupting
+        bargein_energy_threshold = max(effective_threshold * 8.0, 0.40)
+        is_bargein_voice = rms > bargein_energy_threshold
+        if is_bargein_voice:
+            self.bargein_consecutive_frames += 1
+        else:
+            self.bargein_consecutive_frames = 0
+
+        # Protect initial transient of AI speech (first 1200ms) from acoustic feedback barge-in
+        ai_speaking_elapsed = time.perf_counter() - getattr(self, "ai_speaking_start_time", 0.0)
+        can_bargein = self.is_ai_speaking and ai_speaking_elapsed > 1.2
+
+        if is_bargein_voice and self.bargein_consecutive_frames >= self.min_bargein_frames_onset and can_bargein:
+            self.is_ai_speaking = False
+            self.bargein_consecutive_frames = 0
+            self.turn_id += 1
+            if self.current_processing_task and not self.current_processing_task.done():
+                self.current_processing_task.cancel()
+                self.current_processing_task = None
+            if self.current_tts_task and not self.current_tts_task.done():
+                self.current_tts_task.cancel()
+                self.current_tts_task = None
+            if self.current_tts_queue is not None:
+                while not self.current_tts_queue.empty():
+                    try:
+                        self.current_tts_queue.get_nowait()
+                        self.current_tts_queue.task_done()
+                    except Exception:
+                        break
+                self.current_tts_queue = None
+
+            await self.send_event({
+                "event": "interrupted",
+                "turn_id": self.turn_id,
+                "message": "User interruption detected (barge-in)",
+                "timestamp": time.time()
+            })
+
+        # --- VAD ONSET & BUFFERING ---
+        if not self.in_speech:
+            # Maintain rolling onset buffer of recent audio frames before speech onset
+            self._onset_buffer.append(chunk)
+            max_onset_chunks = max(self.min_speech_frames_onset + 2, 10)
+            if len(self._onset_buffer) > max_onset_chunks:
+                self._onset_buffer.pop(0)
+
+            if is_voice and self.vad_consecutive_speech_frames >= self.min_speech_frames_onset:
+                self.in_speech = True
+                self.speech_buffer = bytearray()
+                self.speech_start_time = time.time()
+                self.speech_samples_count = 0
+                # Prepend buffered onset frames so initial consonant/speech is preserved
+                for pre_chunk in self._onset_buffer:
+                    self.speech_buffer.extend(pre_chunk)
+                    self.speech_samples_count += len(pre_chunk) // self.bytes_per_sample
+                self._onset_buffer.clear()
+
+                await self.send_event({
+                    "event": "vad_speech_start",
+                    "timestamp": self.speech_start_time
+                })
+        else:
+            # Currently in speech
+            max_bytes = int(self.max_turn_duration_s * self.sample_rate * self.bytes_per_sample)
+            # Account duration of all incoming speech samples
+            self.speech_samples_count += len(samples)
+
+            if len(self.speech_buffer) < max_bytes:
+                room = max_bytes - len(self.speech_buffer)
+                to_add = chunk[:room]
+                to_add = to_add[:len(to_add) - (len(to_add) % 2)]
+                self.speech_buffer.extend(to_add)
+
+            if is_voice:
+                self.silence_samples_count = 0
+            else:
+                self.silence_samples_count += len(samples)
+                silence_duration_s = self.silence_samples_count / self.sample_rate
+
+                if silence_duration_s >= self.min_silence_duration_s:
+                    speech_duration_s = self.speech_samples_count / self.sample_rate
+                    if speech_duration_s >= self.min_speech_duration_s:
+                        await self._trigger_turn_completion()
+                    else:
+                        # Too short (click, breath, or background tap) -> discard
+                        self.in_speech = False
+                        self.speech_buffer = bytearray()
+                        self.silence_samples_count = 0
+                        self.speech_samples_count = 0
+                        self.vad_consecutive_speech_frames = 0
+                        self._onset_buffer.clear()
+                    return
+
+            # Safeguard max turn duration: finish at bounded threshold
+            if (self.speech_samples_count / self.sample_rate) >= self.max_turn_duration_s:
+                await self._trigger_turn_completion()
+
+    async def _trigger_turn_completion(self):
+        """End of user speech detected, trigger processing."""
+        self.in_speech = False
+        self.vad_consecutive_speech_frames = 0
+        speech_pcm = bytes(self.speech_buffer)
+        self.speech_buffer = bytearray()
+        self.silence_samples_count = 0
+        self.speech_samples_count = 0
+        self._onset_buffer.clear()
+        self._pcm_remainder = b""
+
+        self.turn_id += 1
+        turn_id = self.turn_id
+
+        await self.send_event({
+            "event": "vad_speech_end",
+            "turn_id": turn_id,
+            "timestamp": time.time()
+        })
+
+        # Cancel prior turn if still running
+        if self.current_processing_task and not self.current_processing_task.done():
+            self.current_processing_task.cancel()
+        if self.current_tts_task and not self.current_tts_task.done():
+            self.current_tts_task.cancel()
+        if self.current_tts_queue is not None:
+            while not self.current_tts_queue.empty():
+                try:
+                    self.current_tts_queue.get_nowait()
+                    self.current_tts_queue.task_done()
+                except Exception:
+                    break
+        self.current_tts_queue = None
+
+        self.current_processing_task = asyncio.create_task(
+            self._process_voice_turn(speech_pcm, turn_id)
+        )
+
+    def _extract_speech_chunks(
+        self,
+        buffer: str,
+        is_final: bool = False
+    ) -> Tuple[List[str], str]:
+        """
+        Extracts natural, prosodic speech chunks from incoming buffer.
+        Prefers complete sentences (. ! ? \\n) and safe clauses (; : , -),
+        avoiding arbitrary cuts at 6 words. Uses bounded fallback (18-22 words)
+        for unpunctuated text. Protects against emitting tool call markers or payloads.
+        """
+        chunks: List[str] = []
+        if not buffer:
+            return chunks, ""
+
+        # Check for tool call markers: e.g. [TOOL_CALL: ... or partial [TOOL or [
+        tool_start = buffer.find("[")
+        if tool_start != -1:
+            bracket_substr = buffer[tool_start:]
+            if "[tool" in bracket_substr.lower() or bracket_substr.startswith("["):
+                chunkable = buffer[:tool_start]
+                held_tail = buffer[tool_start:]
+            else:
+                chunkable = buffer
+                held_tail = ""
+        else:
+            chunkable = buffer
+            held_tail = ""
+
+        sentence_end_re = re.compile(r'([.!?\n]+)(?:\s+|$)')
+        safe_clause_re = re.compile(r'([,;:]|\s+[-—]\s+|\.{3}|…)(?:\s+|$)')
+        abbr_re = re.compile(r'\b(?:dott|dr|prof|ing|avv|sig|sigra|es|ecc|etc|vs|v|p|pag)\.$', re.IGNORECASE)
+
+        remaining = chunkable
+        while remaining:
+            # 1. Full sentence terminators (. ! ? \n)
+            match_sentence = sentence_end_re.search(remaining)
+            if match_sentence:
+                cand = remaining[:match_sentence.end()].strip()
+                delim = match_sentence.group(1)
+                is_abbr = "." in delim and (abbr_re.search(cand) or re.search(r'\d\.\d*$', cand))
+                words = cand.split()
+                if not is_abbr and (len(words) >= 2 or any(p in delim for p in ("!", "?", "\n")) or len(cand) >= 8):
+                    chunks.append(cand)
+                    remaining = remaining[match_sentence.end():].lstrip()
+                    continue
+
+            # 2. Safe clause delimiters (, ; : -) if clause is sufficiently long
+            match_clause = safe_clause_re.search(remaining)
+            if match_clause:
+                cand = remaining[:match_clause.end()].strip()
+                is_num = re.search(r'\d,\d*$', cand)
+                words = cand.split()
+                if not is_num and (len(words) >= 5 or len(cand) >= 25):
+                    chunks.append(cand)
+                    remaining = remaining[match_clause.end():].lstrip()
+                    continue
+
+            # 3. Bounded fallback for long unpunctuated output (>= 20 words)
+            words = remaining.split()
+            if len(words) >= 20 and not is_final:
+                conj_match = None
+                for m in re.finditer(r'\s+(?:e|ma|o|se|perché|poiché|quindi|dunque|anche|che|inoltre|tuttavia|però|con|da|in|su|per|tra|fra)\s+', remaining):
+                    cand_words = remaining[:m.start()].split()
+                    if 12 <= len(cand_words) <= 20:
+                        conj_match = m
+                        break
+
+                if conj_match:
+                    cand = remaining[:conj_match.start()].strip()
+                    chunks.append(cand)
+                    remaining = remaining[conj_match.start():].lstrip()
+                    continue
+                else:
+                    word_iter = list(re.finditer(r'\S+', remaining))
+                    if len(word_iter) >= 18:
+                        cut_idx = word_iter[17].end()
+                        cand = remaining[:cut_idx].strip()
+                        chunks.append(cand)
+                        remaining = remaining[cut_idx:].lstrip()
+                        continue
+
+            break
+
+        new_buffer = remaining + held_tail
+        if is_final and new_buffer.strip():
+            final_cand = new_buffer.strip()
+            if not final_cand.lower().startswith("[tool_call") and not final_cand.lower().startswith("[tool"):
+                chunks.append(final_cand)
+                new_buffer = ""
+
+        return chunks, new_buffer
+
+    async def _process_voice_turn(self, pcm_data: bytes, turn_id: int):
+        """
+        Processes a complete user turn with true LLM/TTS overlap:
+        1. STT: transcribe user audio -> text
+        2. LLM: stream reasoning tokens
+        3. Extract clean sentence chunks without arbitrary 6-word cuts
+        4. Push text chunks into a bounded per-turn queue
+        5. Single ordered TTS worker consumes queue asynchronously while LLM generates ahead
+        6. Await draining before emitting turn_complete
+        """
+        metrics = LiveTurnMetrics()
+        turn_start = time.perf_counter()
+
+        # Build WAV in memory for STT
+        try:
+            samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            if len(samples) < int(self.sample_rate * self.min_speech_duration_s):
+                return
+            rms = float(np.sqrt(np.mean(samples ** 2)))
+            peak = float(np.max(np.abs(samples))) if len(samples) > 0 else 0.0
+            if rms < self.speech_energy_threshold * 0.7 or peak < 0.03:
+                return
+
+            wav_io = io.BytesIO()
+            sf.write(wav_io, samples, self.sample_rate, format="WAV", subtype="PCM_16")
+            wav_bytes = wav_io.getvalue()
+        except Exception as e:
+            if turn_id == self.turn_id and not self._closed:
+                await self.send_event({"event": "error", "error": f"PCM conversion failed: {e}"})
+            return
+
+        # 1. Speech-to-Text
+        metrics.stt_start = time.perf_counter()
+        if not self.stt:
+            self.initialize_workers()
+
+        stt_res = await asyncio.to_thread(self.stt.transcribe, wav_bytes, language=self.language)
+        metrics.stt_latency_ms = (time.perf_counter() - metrics.stt_start) * 1000.0
+
+        if turn_id != self.turn_id or self._closed:
+            return  # Interrupted during STT
+
+        user_text = stt_res.get("text", "").strip()
+
+        # Filter hallucinations or empty silence
+        cleaned = re.sub(r'\[.*?\]|\(.*?\)', '', user_text).strip()
+        noise_phrases = {
+            "grazie", "grazie per la visione", "grazie per l'attenzione",
+            "grazie mille", "sottotitoli", "sottotitoli creati dalla comunità",
+            "you", "thank you", "thanks for watching", "bye", "ciao",
+            "...", ".", ""
+        }
+        if not cleaned or len(cleaned) < 2:
+            return
+        if cleaned.lower().strip(".!? ") in noise_phrases and rms < self.speech_energy_threshold * 1.3:
+            return
+
+        await self.send_event({
+            "event": "user_transcript",
+            "text": user_text,
+            "turn_id": turn_id,
+            "stt_latency_ms": round(metrics.stt_latency_ms, 1)
+        })
+
+        self.history.append({"role": "user", "content": user_text})
+        if turn_id == self.turn_id and not self._closed:
+            self.is_ai_speaking = True
+            self.ai_speaking_start_time = time.perf_counter()
+
+        # Snapshot tts_mode for this turn to guarantee consistent pipeline lifecycle
+        turn_tts_mode = self.tts_mode
+
+        # Proactive search intent detection
+        lower_u = user_text.strip().lower()
+        search_triggers = ("cerca ", "cercami ", "trova ", "ricerca ", "cerca su internet", "cerca sul web", "meteo ", "che tempo fa")
+        if any(lower_u.startswith(t) for t in search_triggers) or ("meteo" in lower_u and any(w in lower_u for w in ("domani", "oggi", "previsioni", "a "))):
+            clean_q = re.sub(r'^(cerca|cercami|trova|ricerca)\s+(su internet\s+|sul web\s+)?', '', user_text, flags=re.IGNORECASE).strip()
+            if not clean_q:
+                clean_q = user_text
+            await self._execute_tool_and_notify("web_search", {"query": clean_q}, turn_id)
+
+        self._prune_history()
+
+        # 2. LLM Streaming & Concurrent TTS Pipelining
+        metrics.llm_start = time.perf_counter()
+        target_url = f"http://{self.llm_host}:{self.llm_port}/v1/chat/completions"
+        tool_call_regex = re.compile(r'\[TOOL_CALL:\s*([a-zA-Z0-9_-]+)\s*\((.*?)\)\s*\]', re.DOTALL)
+
+        sentence_index = 0
+        first_token_received = False
+        final_assistant_text = ""
+
+        # Bounded per-turn queue for TTS: LLM can read ahead without blocking token consumption
+        tts_queue: Optional[asyncio.Queue] = None
+        tts_consumer_task: Optional[asyncio.Task] = None
+
+        if turn_tts_mode == "server":
+            tts_queue = asyncio.Queue(maxsize=8)
+            self.current_tts_queue = tts_queue
+
+            async def tts_consumer_loop():
+                try:
+                    while True:
+                        item = await tts_queue.get()
+                        if item is None:
+                            tts_queue.task_done()
+                            break
+                        chunk_idx, text_chunk = item
+                        if turn_id != self.turn_id or self._closed:
+                            tts_queue.task_done()
+                            break
+                        try:
+                            await self._synthesize_and_stream_chunk(
+                                text_chunk, chunk_idx, turn_id, metrics, turn_start, tts_mode=turn_tts_mode
+                            )
+                        except Exception as e:
+                            if turn_id == self.turn_id and not self._closed:
+                                await self.send_event({
+                                    "event": "tts_error",
+                                    "chunk_idx": chunk_idx,
+                                    "turn_id": turn_id,
+                                    "error": str(e)
+                                })
+                        finally:
+                            tts_queue.task_done()
+                except asyncio.CancelledError:
+                    pass
+
+            tts_consumer_task = asyncio.create_task(tts_consumer_loop())
+            self.current_tts_task = tts_consumer_task
+
+        try:
+            current_iteration = 0
+            max_iterations = 2
+
+            while current_iteration < max_iterations:
+                current_iteration += 1
+                self._prune_history()
+                messages_to_send = list(self.history)
+
+                payload = {
+                    "model": self.llm_model,
+                    "messages": messages_to_send,
+                    "stream": True,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "enable_thinking": self.enable_thinking if current_iteration == 1 else False,
+                }
+
+                current_text = ""
+                sentence_buffer = ""
+                thought_filter = StreamingThoughtFilter()
+                detected_tool: Optional[re.Match] = None
+
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with client.stream("POST", target_url, json=payload) as resp:
+                        if resp.status_code != 200:
+                            err_body = await resp.aread()
+                            await self.send_event({
+                                "event": "error",
+                                "error": f"LLM error {resp.status_code}: {err_body.decode('utf-8', 'replace')}"
+                            })
+                            if turn_id == self.turn_id:
+                                self.is_ai_speaking = False
+                            return
+
+                        async for line in resp.aiter_lines():
+                            if turn_id != self.turn_id or self._closed:
+                                break
+
+                            if not line or not line.startswith("data: "):
+                                continue
+
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                break
+
+                            try:
+                                delta_json = json.loads(data_str)
+                                choices = delta_json.get("choices", [])
+                                if not choices:
+                                    continue
+                                delta = choices[0].get("delta", {})
+                                content_piece = delta.get("content", "")
+                            except Exception:
+                                continue
+
+                            if not content_piece:
+                                continue
+
+                            filtered_piece = thought_filter.filter(content_piece)
+                            if not filtered_piece:
+                                continue
+
+                            if not first_token_received:
+                                first_token_received = True
+                                metrics.ttft_ms = (time.perf_counter() - metrics.llm_start) * 1000.0
+                                await self.send_event({
+                                    "event": "ttft",
+                                    "ttft_ms": round(metrics.ttft_ms, 1),
+                                    "turn_id": turn_id
+                                })
+
+                            current_text += filtered_piece
+                            sentence_buffer += filtered_piece
+
+                            # Intercept tool call without passing it to speech chunking
+                            if "[tool_call" in current_text.lower():
+                                m = tool_call_regex.search(current_text)
+                                if m:
+                                    detected_tool = m
+                                    break
+                                else:
+                                    continue
+
+                            # Extract ready speech clauses/sentences
+                            ready_chunks, sentence_buffer = self._extract_speech_chunks(sentence_buffer, is_final=False)
+                            for ready_sentence in ready_chunks:
+                                if turn_id != self.turn_id or self._closed:
+                                    break
+                                if "[tool_call" in ready_sentence.lower():
+                                    continue
+                                sentence_index += 1
+                                # Emit llm_chunk for ordered sentence display
+                                await self.send_event({
+                                    "event": "llm_chunk",
+                                    "chunk_idx": sentence_index,
+                                    "text": ready_sentence,
+                                    "turn_id": turn_id
+                                })
+                                # Enqueue chunk for parallel TTS synthesis in server mode
+                                if turn_tts_mode == "server" and tts_queue is not None:
+                                    await tts_queue.put((sentence_index, ready_sentence))
+
+                        thought_tail = thought_filter.flush()
+                        if thought_tail:
+                            current_text += thought_tail
+                            sentence_buffer += thought_tail
+
+                if turn_id != self.turn_id or self._closed:
+                    if turn_id == self.turn_id:
+                        self.is_ai_speaking = False
+                    return
+
+                if not detected_tool:
+                    m_end = tool_call_regex.search(current_text)
+                    if m_end:
+                        detected_tool = m_end
+
+                if detected_tool and turn_id == self.turn_id and not self._closed:
+                    t_name = detected_tool.group(1).strip()
+                    t_args_str = detected_tool.group(2).strip()
+                    try:
+                        t_args = json.loads(t_args_str)
+                    except Exception:
+                        if t_name == "bash":
+                            t_args = {"command": t_args_str.strip('"\'')}
+                        else:
+                            t_args = {"query": t_args_str.strip('"\'')}
+
+                    await self._execute_tool_and_notify(t_name, t_args, turn_id)
+                    continue
+                else:
+                    # Final flush of remaining unchunked text
+                    ready_chunks, sentence_buffer = self._extract_speech_chunks(sentence_buffer, is_final=True)
+                    for ready_sentence in ready_chunks:
+                        if turn_id != self.turn_id or self._closed:
+                            break
+                        if "[tool_call" in ready_sentence.lower():
+                            continue
+                        sentence_index += 1
+                        await self.send_event({
+                            "event": "llm_chunk",
+                            "chunk_idx": sentence_index,
+                            "text": ready_sentence,
+                            "turn_id": turn_id
+                        })
+                        if turn_tts_mode == "server" and tts_queue is not None:
+                            await tts_queue.put((sentence_index, ready_sentence))
+
+                    final_assistant_text = current_text
+                    final_assistant_text = tool_call_regex.sub("", final_assistant_text)
+                    break
+
+            # Await all queued TTS chunks to be synthesized and streamed before turn_complete
+            if turn_tts_mode == "server" and tts_queue is not None and tts_consumer_task is not None:
+                await tts_queue.put(None)  # Sentinel
+                await tts_consumer_task
+
+        except asyncio.CancelledError:
+            if turn_id == self.turn_id:
+                self.is_ai_speaking = False
+            return
+        except Exception as e:
+            if turn_id == self.turn_id and not self._closed:
+                await self.send_event({"event": "error", "error": f"Live LLM generation failed: {e}"})
+            if turn_id == self.turn_id:
+                self.is_ai_speaking = False
+            return
+        finally:
+            if tts_consumer_task and not tts_consumer_task.done():
+                tts_consumer_task.cancel()
+                try:
+                    await tts_consumer_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if tts_queue is not None:
+                while not tts_queue.empty():
+                    try:
+                        tts_queue.get_nowait()
+                        tts_queue.task_done()
+                    except Exception:
+                        break
+            if turn_id == self.turn_id:
+                self.is_ai_speaking = False
+
+        if turn_id == self.turn_id and not self._closed:
+            self.history.append({"role": "assistant", "content": final_assistant_text.strip()})
+            self._prune_history()
+            metrics.e2e_latency_ms = (time.perf_counter() - turn_start) * 1000.0
+
+            await self.send_event({
+                "event": "turn_complete",
+                "turn_id": turn_id,
+                "full_text": final_assistant_text.strip(),
+                "metrics": metrics.to_dict(),
+                "timestamp": time.time()
+            })
+            if turn_id == self.turn_id:
+                self.is_ai_speaking = False
+
+    async def _synthesize_and_stream_chunk(
+        self,
+        text_chunk: str,
+        chunk_idx: int,
+        turn_id: int,
+        metrics: LiveTurnMetrics,
+        turn_start: float,
+        tts_mode: Optional[str] = None
+    ):
+        """Synthesize a text chunk to speech and stream audio to client immediately."""
+        effective_mode = tts_mode if tts_mode is not None else self.tts_mode
+        if turn_id != self.turn_id or self._closed or effective_mode == "client":
+            return
+
+        t_chunk_start = time.perf_counter()
+
+        if not self.tts:
+            self.initialize_workers()
+
+        if not self.tts:
+            return
+
+        tts_res = await asyncio.to_thread(
+            self.tts.generate,
+            text=text_chunk,
+            voice=self.voice,
+            speed=getattr(self, "speed", 1.0),
+            max_new_tokens=250,
+            temperature=0.8
+        )
+
+        if turn_id != self.turn_id or self._closed:
+            return
+
+        chunk_lat = (time.perf_counter() - t_chunk_start) * 1000.0
+        metrics.tts_total_ms += chunk_lat
+
+        if metrics.ttfa_ms == 0.0:
+            metrics.ttfa_ms = (time.perf_counter() - turn_start) * 1000.0
+
+        if tts_res.get("status") == "success":
+            audio_path = tts_res.get("audio_path")
+            audio_b64 = ""
+            if audio_path and os.path.exists(audio_path):
+                with open(audio_path, "rb") as af:
+                    audio_b64 = base64.b64encode(af.read()).decode("utf-8")
+
+            await self.send_event({
+                "event": "audio_chunk",
+                "chunk_idx": chunk_idx,
+                "audio_b64": audio_b64,
+                "format": "wav",
+                "sample_rate": self.output_sample_rate,
+                "text": text_chunk,
+                "turn_id": turn_id,
+                "duration_sec": tts_res.get("duration_sec", 0.0),
+                "ttfa_ms": round(metrics.ttfa_ms, 1),
+                "chunk_latency_ms": round(chunk_lat, 1)
+            })
+        else:
+            await self.send_event({
+                "event": "tts_error",
+                "chunk_idx": chunk_idx,
+                "turn_id": turn_id,
+                "error": tts_res.get("error", "Unknown TTS error")
+            })

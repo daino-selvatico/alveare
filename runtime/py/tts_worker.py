@@ -38,6 +38,17 @@ def init_npu_lib():
         return None
     try:
         lib = ctypes.CDLL(str(LIB_PATH))
+        lib.alveare_device_create.restype = ctypes.c_void_p
+        lib.alveare_device_create.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        lib.alveare_device_free.argtypes = [ctypes.c_void_p]
+        lib.alveare_device_create_gemv_weight.restype = ctypes.c_uint32
+        lib.alveare_device_create_gemv_weight.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+        lib.alveare_device_run_gemv.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
+        lib.alveare_device_run_gemv_seq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        lib.alveare_device_has_shape.restype = ctypes.c_int
+        lib.alveare_device_has_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+
+        # Legacy NPU bindings
         lib.alveare_npu_create_registry.restype = ctypes.c_void_p
         lib.alveare_npu_create_registry.argtypes = [ctypes.c_char_p]
         lib.alveare_npu_free_registry.argtypes = [ctypes.c_void_p]
@@ -49,7 +60,7 @@ def init_npu_lib():
         lib.alveare_npu_has_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         return lib
     except Exception as e:
-        sys.stderr.write(f"[TTS Worker] NPU lib load failed: {e}\n")
+        sys.stderr.write(f"[TTS Worker] Hardware accel lib load failed: {e}\n")
         return None
 
 def main():
@@ -117,11 +128,11 @@ def main():
     except Exception as e:
         sys.stderr.write(f"[TTS Worker] Pre-loading codec vocoder: {e}\n")
 
-    if device == "npu":
+    if device in ("npu", "gpu"):
         npu_lib = init_npu_lib()
         manifest_path = ROOT_DIR / "kernels" / "build" / "manifest.json"
-        if npu_lib and manifest_path.exists():
-            reg = npu_lib.alveare_npu_create_registry(str(manifest_path).encode("utf-8"))
+        if npu_lib:
+            reg = npu_lib.alveare_device_create(device.encode("utf-8"), str(manifest_path).encode("utf-8") if manifest_path.exists() else None)
             if reg:
                 class NPULinear(nn.Module):
                     def __init__(self, linear_layer: nn.Linear):
@@ -134,7 +145,7 @@ def main():
                         self.bias = linear_layer.bias.detach().clone() if linear_layer.bias is not None else None
                         
                         packed = pack_weight_q4(W)
-                        self.wh = npu_lib.alveare_npu_create_gemv_weight(
+                        self.wh = npu_lib.alveare_device_create_gemv_weight(
                             reg, self.N, self.K, packed.ctypes.data_as(ctypes.c_void_p), packed.nbytes
                         )
 
@@ -145,33 +156,33 @@ def main():
                         
                         if n_tokens == 1:
                             y = torch.zeros((1, self.N), dtype=torch.bfloat16, device=x.device)
-                            npu_lib.alveare_npu_run_gemv(reg, self.N, self.K, self.wh, x_2d.data_ptr(), y.data_ptr())
+                            npu_lib.alveare_device_run_gemv(reg, self.N, self.K, self.wh, x_2d.data_ptr(), y.data_ptr())
                             out = y.to(x.dtype)
                             if self.bias is not None:
                                 out = out + self.bias
                             return out.reshape(*orig_shape[:-1], self.out_features)
                         else:
                             y = torch.zeros((n_tokens, self.N), dtype=torch.bfloat16, device=x.device)
-                            npu_lib.alveare_npu_run_gemv_seq(reg, self.N, self.K, self.wh, x_2d.data_ptr(), y.data_ptr(), n_tokens)
+                            npu_lib.alveare_device_run_gemv_seq(reg, self.N, self.K, self.wh, x_2d.data_ptr(), y.data_ptr(), n_tokens)
                             out = y.to(x.dtype)
                             if self.bias is not None:
                                 out = out + self.bias
                             return out.reshape(*orig_shape[:-1], self.out_features)
 
                 offloaded_count = 0
-                # Recursively offload all Linear layers matching NPU XDNA2 shapes
+                # Recursively offload all Linear layers matching hardware shapes
                 for name, module in list(model.named_modules()):
                     for child_name, child in list(module.named_children()):
                         if isinstance(child, nn.Linear):
-                            if npu_lib.alveare_npu_has_shape(reg, child.out_features, child.in_features):
+                            if npu_lib.alveare_device_has_shape(reg, child.out_features, child.in_features):
                                 setattr(module, child_name, NPULinear(child))
                                 offloaded_count += 1
 
-                sys.stderr.write(f"[TTS Worker] Offloaded {offloaded_count} linear projections to AMD Ryzen AI NPU cores!\n")
+                sys.stderr.write(f"[TTS Worker] Offloaded {offloaded_count} linear projections to {device.upper()} hardware acceleration!\n")
             else:
-                sys.stderr.write("[TTS Worker] Could not initialize NPU registry.\n")
+                sys.stderr.write(f"[TTS Worker] Could not initialize {device.upper()} device.\n")
         else:
-            sys.stderr.write("[TTS Worker] NPU library or manifest not found.\n")
+            sys.stderr.write("[TTS Worker] Hardware acceleration library not found.\n")
 
     sys.stderr.write(f"[TTS Worker] {model_id} fully loaded and ready on {device}.\n")
     ipc_out.write("READY\n")

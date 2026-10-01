@@ -19,22 +19,18 @@ import numpy as np
 
 def find_torch_python() -> Optional[str]:
     """Find a Python interpreter that has torch installed."""
-    # 1. Check current interpreter
-    try:
-        import torch
-        return sys.executable
-    except Exception:
-        pass
-
-    # 2. Check known conda envs
     clean_env = os.environ.copy()
     clean_env.pop("PYTHONPATH", None)
 
     candidates = [
-        Path(os.path.expanduser("~/miniconda3/envs/gemma4-ref/bin/python")),
         Path(os.path.expanduser("~/miniconda3/envs/comfyui/bin/python")),
+        Path(os.path.expanduser("~/miniconda3/envs/gemma4-ref/bin/python")),
+        Path(os.path.expanduser("~/progetti/voice-studio/.venv/bin/python")),
+        Path(os.path.expanduser("~/miniconda3/envs/alveare-aie/bin/python")),
+        Path(os.path.expanduser("~/anaconda3/envs/comfyui/bin/python")),
         Path(os.path.expanduser("~/anaconda3/envs/gemma4-ref/bin/python")),
-        Path("/opt/conda/envs/gemma4-ref/bin/python")
+        Path("/opt/conda/envs/comfyui/bin/python"),
+        Path("/opt/conda/envs/gemma4-ref/bin/python"),
     ]
     for cand in candidates:
         if cand.exists():
@@ -44,6 +40,15 @@ def find_torch_python() -> Optional[str]:
                     return str(cand)
             except Exception:
                 pass
+
+    # Robust fallback: check sys.executable
+    try:
+        res = subprocess.run([sys.executable, "-c", "import torch; print('ok')"], capture_output=True, text=True, timeout=5, env=clean_env)
+        if res.returncode == 0 and "ok" in res.stdout:
+            return sys.executable
+    except Exception:
+        pass
+
     return None
 
 class WhisperSTT:
@@ -54,21 +59,37 @@ class WhisperSTT:
     _loading = False
     _external_py = None
 
-    def __init__(self, model_id: str = "openai/whisper-base", device: str = "npu"):
-        self.model_id = model_id
-        self.device = device or "npu"
+    @staticmethod
+    def normalize_model_id(model_id: str) -> str:
+        m = (model_id or "").lower().strip()
+        if "large-v3-turbo" in m or "turbo" in m:
+            return "openai/whisper-large-v3-turbo"
+        elif "large-v3" in m or "large" in m:
+            return "openai/whisper-large-v3"
+        elif "base" in m:
+            return "openai/whisper-base"
+        elif "tiny" in m:
+            return "openai/whisper-tiny"
+        elif "whisper" in m:
+            return "openai/whisper-large-v3-turbo"
+        return model_id
+
+    def __init__(self, model_id: str = "openai/whisper-large-v3-turbo", device: str = "cpu"):
+        self.model_id = self.normalize_model_id(model_id)
+        self.device = device or "cpu"
         self._external_py = None
 
     @classmethod
-    def get_instance(cls, model_id: str = "openai/whisper-base", device: str = "npu"):
-        dev = device or "npu"
-        if cls._instance is None or cls._instance.model_id != model_id or cls._instance.device != dev:
+    def get_instance(cls, model_id: str = "openai/whisper-large-v3-turbo", device: str = "cpu"):
+        dev = device or "cpu"
+        norm_id = cls.normalize_model_id(model_id)
+        if cls._instance is None or cls._instance.model_id != norm_id or cls._instance.device != dev:
             if cls._instance and cls._instance._worker_proc:
                 try:
                     cls._instance._worker_proc.terminate()
                 except Exception:
                     pass
-            cls._instance = cls(model_id=model_id, device=dev)
+            cls._instance = cls(model_id=norm_id, device=dev)
         return cls._instance
 
     def _ensure_loaded(self):
@@ -82,7 +103,12 @@ class WhisperSTT:
         self._loading = True
         try:
             print(f"[WhisperSTT] Initializing {self.model_id} on {self.device}...")
-            ext_py = find_torch_python() or sys.executable
+            ext_py = find_torch_python()
+            if not ext_py:
+                raise RuntimeError(
+                    "Python environment with PyTorch not found for STT worker. "
+                    "Please ensure ~/miniconda3/envs/comfyui or ~/miniconda3/envs/gemma4-ref is available with torch installed."
+                )
             self._external_py = ext_py
             worker_script = str(Path(__file__).resolve().parent / "stt_worker.py")
             clean_env = os.environ.copy()
@@ -95,7 +121,8 @@ class WhisperSTT:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                env=clean_env
+                env=clean_env,
+                start_new_session=True
             )
             # Wait for worker to load weights and output READY
             ready_line = proc.stdout.readline().strip()
@@ -122,7 +149,7 @@ class WhisperSTT:
     def transcribe(
         self,
         audio_input: Union[str, bytes, np.ndarray, Path],
-        language: str = "auto",
+        language: str = "it",
         use_itn: bool = True
     ) -> Dict[str, Any]:
         """
